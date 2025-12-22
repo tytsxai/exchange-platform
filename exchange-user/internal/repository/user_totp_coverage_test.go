@@ -346,6 +346,14 @@ func TestTOTPUserHelpers(t *testing.T) {
 		t.Fatalf("expected parsed array, got %v", arr)
 	}
 
+	arr = nil
+	if err := scanner.Scan(`{"10.0.0.1","10.0.0.2"}`); err != nil {
+		t.Fatalf("scan pg array: %v", err)
+	}
+	if len(arr) != 2 || arr[0] != "10.0.0.1" || arr[1] != "10.0.0.2" {
+		t.Fatalf("expected parsed pg array, got %v", arr)
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
