@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exchange/common/pkg/logger"
 	"github.com/exchange/gateway/internal/config"
 	"github.com/exchange/gateway/internal/middleware"
 	"github.com/exchange/gateway/internal/ws"
@@ -31,7 +32,8 @@ var httpClient = &http.Client{
 
 func main() {
 	cfg := config.Load()
-	log.Printf("Starting %s...", cfg.ServiceName)
+	l := logger.New(cfg.ServiceName, os.Stdout)
+	l.Info(fmt.Sprintf("Starting %s...", cfg.ServiceName))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -48,9 +50,10 @@ func main() {
 	defer redisClient.Close()
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		l.Error(fmt.Sprintf("Failed to connect to Redis: %v", err))
+		os.Exit(1)
 	}
-	log.Printf("Connected to Redis")
+	l.Info("Connected to Redis")
 
 	// 创建路由
 	mux := http.NewServeMux()
@@ -163,18 +166,54 @@ func main() {
 	// 需要鉴权的接口
 	authCfg := &middleware.AuthConfig{
 		TimeWindow: 30 * time.Second,
-		GetSecret: func(apiKey string) (string, int64, int, error) {
-			if apiKey == "test-api-key" {
-				return "test-secret", 1, middleware.PermRead | middleware.PermTrade, nil
-			}
-			return "", 0, 0, fmt.Errorf("invalid api key")
-		},
+		GetSecret:  nil, // 使用 VerifySignature
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
-			// 简化实现：实际应该调用 user 服务 VerifySignature RPC
-			if req.APIKey == "test-api-key" {
-				return 1, middleware.PermRead | middleware.PermTrade, nil
+			// 构造请求
+			payload := map[string]interface{}{
+				"apiKey":    req.APIKey,
+				"timestamp": req.Timestamp,
+				"nonce":     req.Nonce,
+				"signature": req.Signature,
+				"method":    req.Method,
+				"path":      req.Path,
+				"query":     req.Query,
 			}
-			return 0, 0, fmt.Errorf("invalid signature")
+			body, _ := json.Marshal(payload)
+
+			verifyURL := cfg.UserServiceURL + "/internal/verify-signature"
+			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, verifyURL, bytes.NewReader(body))
+			if err != nil {
+				return 0, 0, fmt.Errorf("create validation request: %w", err)
+			}
+
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("X-Internal-Token", cfg.InternalToken)
+
+			resp, err := httpClient.Do(httpReq)
+			if err != nil {
+				return 0, 0, fmt.Errorf("call user service: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return 0, 0, fmt.Errorf("user service returned %d", resp.StatusCode)
+			}
+
+			var result struct {
+				Valid       bool   `json:"valid"`
+				UserID      int64  `json:"userId"`
+				Permissions int    `json:"permissions"`
+				Error       string `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return 0, 0, fmt.Errorf("decode response: %w", err)
+			}
+
+			if !result.Valid {
+				return 0, 0, fmt.Errorf("signature validation failed: %s", result.Error)
+			}
+
+			return result.UserID, result.Permissions, nil
 		},
 	}
 
@@ -183,7 +222,7 @@ func main() {
 	consumer := ws.NewConsumer(redisClient, hub, cfg.PrivateUserEventChannel)
 	go func() {
 		if err := consumer.Run(ctx); err != nil && err != context.Canceled {
-			log.Printf("private consumer stopped: %v", err)
+			l.Error(fmt.Sprintf("private consumer stopped: %v", err))
 		}
 	}()
 	go func() {
@@ -194,7 +233,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				log.Printf("private ws connections: %d", hub.ConnectionCount())
+				l.Info(fmt.Sprintf("private ws connections: %d", hub.ConnectionCount()))
 			}
 		}
 	}()
@@ -226,7 +265,7 @@ func main() {
 
 	// 添加 CORS 和日志
 	handler = corsMiddleware(handler)
-	handler = loggingMiddleware(handler)
+	handler = loggingMiddleware(l, handler)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -236,9 +275,10 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("HTTP server listening on :%d", cfg.HTTPPort)
+		l.Info(fmt.Sprintf("HTTP server listening on :%d", cfg.HTTPPort))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			l.Error(fmt.Sprintf("HTTP server error: %v", err))
+			os.Exit(1)
 		}
 	}()
 
@@ -247,13 +287,13 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
-	log.Println("Shutting down...")
+	l.Info("Shutting down...")
 	cancel()
 	hub.CloseAll()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	server.Shutdown(shutdownCtx)
-	log.Println("Shutdown complete")
+	l.Info("Shutdown complete")
 }
 
 type dependencyStatus struct {
@@ -403,14 +443,14 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 // loggingMiddleware 日志中间件
-func loggingMiddleware(next http.Handler) http.Handler {
+func loggingMiddleware(l *logger.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
 		next.ServeHTTP(wrapped, r)
 
-		log.Printf("%s %s %d %v", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start))
+		l.Info(fmt.Sprintf("%s %s %d %v", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start)))
 	})
 }
 

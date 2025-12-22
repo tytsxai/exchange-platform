@@ -25,6 +25,9 @@ type Config struct {
 	// Private events (pub/sub)
 	PrivateUserEventChannel string
 
+	// Internal Auth
+	InternalToken string
+
 	// 限流
 	IPRateLimit   int // 每秒请求数
 	UserRateLimit int
@@ -46,6 +49,8 @@ func Load() *Config {
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 
 		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+
+		InternalToken: getEnv("INTERNAL_TOKEN", "internal-secret"),
 
 		IPRateLimit:   getEnvInt("IP_RATE_LIMIT", 100),
 		UserRateLimit: getEnvInt("USER_RATE_LIMIT", 50),
