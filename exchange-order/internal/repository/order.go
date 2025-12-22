@@ -171,6 +171,24 @@ func (r *OrderRepository) UpdateOrderStatus(ctx context.Context, orderID int64, 
 	return nil
 }
 
+// AddOrderCumulativeQuoteQty 增量更新累计成交额
+func (r *OrderRepository) AddOrderCumulativeQuoteQty(ctx context.Context, orderID int64, delta int64, updateTimeMs int64) error {
+	query := `
+		UPDATE exchange_order.orders
+		SET cumulative_quote_qty = cumulative_quote_qty + $1, update_time_ms = $2
+		WHERE order_id = $3
+	`
+	result, err := r.db.ExecContext(ctx, query, delta, updateTimeMs, orderID)
+	if err != nil {
+		return fmt.Errorf("update cumulative quote qty: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrOrderNotFound
+	}
+	return nil
+}
+
 // CancelOrder 取消订单
 func (r *OrderRepository) CancelOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error {
 	query := `

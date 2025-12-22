@@ -15,15 +15,15 @@ import (
 
 // OrderMessage 订单消息（从 Redis Stream 接收）
 type OrderMessage struct {
-	Type          string `json:"type"`           // NEW / CANCEL
+	Type          string `json:"type"` // NEW / CANCEL
 	OrderID       int64  `json:"orderId"`
 	ClientOrderID string `json:"clientOrderId"`
 	UserID        int64  `json:"userId"`
 	Symbol        string `json:"symbol"`
-	Side          string `json:"side"`           // BUY / SELL
-	OrderType     string `json:"orderType"`      // LIMIT / MARKET
-	TimeInForce   string `json:"timeInForce"`    // GTC / IOC / FOK / POST_ONLY
-	Price         int64  `json:"price"`          // 最小单位整数
+	Side          string `json:"side"`        // BUY / SELL
+	OrderType     string `json:"orderType"`   // LIMIT / MARKET
+	TimeInForce   string `json:"timeInForce"` // GTC / IOC / FOK / POST_ONLY
+	Price         int64  `json:"price"`       // 最小单位整数
 	Qty           int64  `json:"qty"`
 }
 
@@ -42,36 +42,36 @@ type Handler struct {
 	engines map[string]*engine.Engine
 	mu      sync.RWMutex
 
-	inputStream  string // 输入流名称
-	outputStream string // 输出流名称
-	group        string // 消费者组
-	consumer     string // 消费者名称
+	orderStream string // 输入流名称
+	eventStream string // 输出流名称
+	group       string // 消费者组
+	consumer    string // 消费者名称
 }
 
 // Config 配置
 type Config struct {
-	InputStream  string
-	OutputStream string
-	Group        string
-	Consumer     string
+	OrderStream string
+	EventStream string
+	Group       string
+	Consumer    string
 }
 
 // NewHandler 创建处理器
 func NewHandler(redisClient *redis.Client, cfg *Config) *Handler {
 	return &Handler{
-		redis:        redisClient,
-		engines:      make(map[string]*engine.Engine),
-		inputStream:  cfg.InputStream,
-		outputStream: cfg.OutputStream,
-		group:        cfg.Group,
-		consumer:     cfg.Consumer,
+		redis:       redisClient,
+		engines:     make(map[string]*engine.Engine),
+		orderStream: cfg.OrderStream,
+		eventStream: cfg.EventStream,
+		group:       cfg.Group,
+		consumer:    cfg.Consumer,
 	}
 }
 
 // Start 启动处理器
 func (h *Handler) Start(ctx context.Context) error {
 	// 创建消费者组
-	err := h.redis.XGroupCreateMkStream(ctx, h.inputStream, h.group, "0").Err()
+	err := h.redis.XGroupCreateMkStream(ctx, h.orderStream, h.group, "0").Err()
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return fmt.Errorf("create consumer group: %w", err)
 	}
@@ -94,7 +94,7 @@ func (h *Handler) consumeLoop(ctx context.Context) {
 		results, err := h.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    h.group,
 			Consumer: h.consumer,
-			Streams:  []string{h.inputStream, ">"},
+			Streams:  []string{h.orderStream, ">"},
 			Count:    100,
 			Block:    1000, // 1秒超时
 		}).Result()
@@ -189,7 +189,7 @@ func (h *Handler) forwardEvents(eng *engine.Engine) {
 
 		// 发送到输出流
 		_, err = h.redis.XAdd(ctx, &redis.XAddArgs{
-			Stream: h.outputStream,
+			Stream: h.eventStream,
 			Values: map[string]interface{}{
 				"data": string(data),
 			},
@@ -258,7 +258,7 @@ func (h *Handler) toCommand(msg *OrderMessage) *engine.Command {
 }
 
 func (h *Handler) ack(ctx context.Context, id string) {
-	h.redis.XAck(ctx, h.inputStream, h.group, id)
+	h.redis.XAck(ctx, h.orderStream, h.group, id)
 }
 
 func eventTypeToString(t engine.EventType) string {

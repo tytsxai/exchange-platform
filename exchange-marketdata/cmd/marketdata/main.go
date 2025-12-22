@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/exchange/marketdata/internal/config"
 	"github.com/exchange/marketdata/internal/service"
@@ -64,8 +65,16 @@ func main() {
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		deps := []dependencyStatus{
+			checkRedis(r.Context(), redisClient),
+		}
+		writeHealth(w, deps)
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		deps := []dependencyStatus{
+			checkRedis(r.Context(), redisClient),
+		}
+		writeHealth(w, deps)
 	})
 
 	// 盘口
@@ -145,4 +154,51 @@ func main() {
 	cancel()
 	server.Shutdown(context.Background())
 	log.Println("Shutdown complete")
+}
+
+type dependencyStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Latency int64  `json:"latency"`
+}
+
+type healthResponse struct {
+	Status       string             `json:"status"`
+	Dependencies []dependencyStatus `json:"dependencies"`
+}
+
+func checkRedis(ctx context.Context, client *redis.Client) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := client.Ping(timeoutCtx).Err()
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "redis",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
+	status := "ok"
+	for _, dep := range deps {
+		if dep.Status != "ok" {
+			status = "degraded"
+			break
+		}
+	}
+	code := http.StatusOK
+	if status != "ok" {
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(healthResponse{
+		Status:       status,
+		Dependencies: deps,
+	})
 }

@@ -13,7 +13,7 @@ import (
 
 // MarketDataService 行情服务
 type MarketDataService struct {
-	redis       *redis.Client
+	redis       RedisClient
 	eventStream string
 	group       string
 	consumer    string
@@ -90,7 +90,7 @@ type Config struct {
 }
 
 // NewMarketDataService 创建行情服务
-func NewMarketDataService(redisClient *redis.Client, cfg *Config) *MarketDataService {
+func NewMarketDataService(redisClient RedisClient, cfg *Config) *MarketDataService {
 	return &MarketDataService{
 		redis:       redisClient,
 		eventStream: cfg.EventStream,

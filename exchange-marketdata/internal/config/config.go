@@ -17,9 +17,13 @@ type Config struct {
 	RedisPassword string
 
 	// Streams
+	OrderStream   string
 	EventStream   string
 	ConsumerGroup string
 	ConsumerName  string
+
+	// Private events (pub/sub)
+	PrivateUserEventChannel string
 }
 
 // Load 加载配置
@@ -29,12 +33,15 @@ func Load() *Config {
 		HTTPPort:    getEnvInt("HTTP_PORT", 8084),
 		WSPort:      getEnvInt("WS_PORT", 8094),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"),  // 默认使用6380避免与本地Redis冲突
+		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 
+		OrderStream:   getEnv("ORDER_STREAM", "exchange:orders"),
 		EventStream:   getEnv("EVENT_STREAM", "exchange:events"),
 		ConsumerGroup: getEnv("CONSUMER_GROUP", "marketdata-group"),
 		ConsumerName:  getEnv("CONSUMER_NAME", "marketdata-1"),
+
+		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 	}
 }
 

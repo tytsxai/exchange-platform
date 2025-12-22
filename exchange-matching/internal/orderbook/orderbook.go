@@ -22,11 +22,11 @@ type Order struct {
 	ClientOrderID string
 	Symbol        string
 	Side          Side
-	Price         int64  // 最小单位整数
-	OrigQty       int64  // 原始数量
-	LeavesQty     int64  // 剩余数量
-	TimeInForce   int    // 1=GTC, 2=IOC, 3=FOK, 4=POST_ONLY
-	Timestamp     int64  // 纳秒时间戳
+	Price         int64 // 最小单位整数
+	OrigQty       int64 // 原始数量
+	LeavesQty     int64 // 剩余数量
+	TimeInForce   int   // 1=GTC, 2=IOC, 3=FOK, 4=POST_ONLY
+	Timestamp     int64 // 纳秒时间戳
 	element       *list.Element
 }
 
@@ -228,8 +228,8 @@ func (ob *OrderBook) Depth(limit int) (bids, asks []PriceQty) {
 
 // PriceQty 价格数量对
 type PriceQty struct {
-	Price int64
-	Qty   int64
+	Price int64 `json:"price"`
+	Qty   int64 `json:"qty"`
 }
 
 // MatchResult 撮合结果
@@ -293,6 +293,7 @@ func (ob *OrderBook) Match(taker *Order) *MatchResult {
 		}
 
 		level := levels[bestPrice]
+		matchedInLevel := false // 追踪本档位是否有匹配
 		for e := level.Orders.Front(); e != nil && taker.LeavesQty > 0; {
 			maker := e.Value.(*Order)
 			next := e.Next()
@@ -302,6 +303,8 @@ func (ob *OrderBook) Match(taker *Order) *MatchResult {
 				e = next
 				continue
 			}
+
+			matchedInLevel = true
 
 			// 计算成交数量
 			matchQty := min(taker.LeavesQty, maker.LeavesQty)
@@ -335,6 +338,11 @@ func (ob *OrderBook) Match(taker *Order) *MatchResult {
 			}
 
 			e = next
+		}
+
+		// 如果本档位没有任何匹配（全是自成交），跳出循环
+		if !matchedInLevel {
+			break
 		}
 
 		// 移除空档位

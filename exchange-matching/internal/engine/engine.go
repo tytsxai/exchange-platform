@@ -149,6 +149,14 @@ func (e *Engine) Stop() {
 
 // Submit 提交命令
 func (e *Engine) Submit(cmd *Command) error {
+	// 先检查是否已停止
+	select {
+	case <-e.ctx.Done():
+		return fmt.Errorf("engine stopped")
+	default:
+	}
+
+	// 尝试发送命令
 	select {
 	case e.cmdCh <- cmd:
 		return nil

@@ -8,16 +8,32 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/exchange/order/internal/client"
+	"github.com/exchange/order/internal/metrics"
 	"github.com/exchange/order/internal/repository"
 	"github.com/redis/go-redis/v9"
 )
 
 // OrderService 订单服务
 type OrderService struct {
-	repo        *repository.OrderRepository
+	repo        OrderStore
 	redis       *redis.Client
 	idGen       IDGenerator
 	orderStream string
+	validator   *PriceValidator
+	clearing    *client.ClearingClient
+	metrics     *metrics.Metrics
+}
+
+// OrderStore 订单数据接口
+type OrderStore interface {
+	GetSymbolConfig(ctx context.Context, symbol string) (*repository.SymbolConfig, error)
+	GetOrderByClientID(ctx context.Context, userID int64, clientOrderID string) (*repository.Order, error)
+	CreateOrder(ctx context.Context, order *repository.Order) error
+	GetOrder(ctx context.Context, orderID int64) (*repository.Order, error)
+	ListOpenOrders(ctx context.Context, userID int64, symbol string, limit int) ([]*repository.Order, error)
+	ListOrders(ctx context.Context, userID int64, symbol string, startTime, endTime int64, limit int) ([]*repository.Order, error)
+	ListSymbolConfigs(ctx context.Context) ([]*repository.SymbolConfig, error)
 }
 
 // IDGenerator ID 生成器接口
@@ -26,12 +42,15 @@ type IDGenerator interface {
 }
 
 // NewOrderService 创建订单服务
-func NewOrderService(repo *repository.OrderRepository, redisClient *redis.Client, idGen IDGenerator, orderStream string) *OrderService {
+func NewOrderService(repo OrderStore, redisClient *redis.Client, idGen IDGenerator, orderStream string, validator *PriceValidator, clearingClient *client.ClearingClient, metricsClient *metrics.Metrics) *OrderService {
 	return &OrderService{
 		repo:        repo,
 		redis:       redisClient,
 		idGen:       idGen,
 		orderStream: orderStream,
+		validator:   validator,
+		clearing:    clearingClient,
+		metrics:     metricsClient,
 	}
 }
 
@@ -44,7 +63,7 @@ type CreateOrderRequest struct {
 	TimeInForce   string // GTC / IOC / FOK / POST_ONLY
 	Price         int64
 	Quantity      int64
-	QuoteOrderQty int64  // 市价买单：花多少钱
+	QuoteOrderQty int64 // 市价买单：花多少钱
 	ClientOrderID string
 }
 
@@ -56,20 +75,32 @@ type CreateOrderResponse struct {
 
 // CreateOrder 创建订单
 func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest) (*CreateOrderResponse, error) {
+	start := time.Now()
+	if s.metrics != nil {
+		defer s.metrics.ObserveOrderLatency(time.Since(start))
+	}
+
+	reject := func(code string) *CreateOrderResponse {
+		if s.metrics != nil && code != "" {
+			s.metrics.IncOrderRejected(code)
+		}
+		return &CreateOrderResponse{ErrorCode: code}
+	}
+
 	// 1. 获取交易对配置
 	cfg, err := s.repo.GetSymbolConfig(ctx, req.Symbol)
 	if err != nil {
-		return &CreateOrderResponse{ErrorCode: "SYMBOL_NOT_FOUND"}, nil
+		return reject("SYMBOL_NOT_FOUND"), nil
 	}
 
 	// 2. 检查交易对状态
 	if cfg.Status != 1 {
-		return &CreateOrderResponse{ErrorCode: "SYMBOL_NOT_TRADING"}, nil
+		return reject("SYMBOL_NOT_TRADING"), nil
 	}
 
 	// 3. 参数校验
 	if err := s.validateOrder(req, cfg); err != nil {
-		return &CreateOrderResponse{ErrorCode: err.Error()}, nil
+		return reject(err.Error()), nil
 	}
 
 	// 4. 幂等检查
@@ -77,6 +108,13 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		existing, err := s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
 		if err == nil && existing != nil {
 			return &CreateOrderResponse{Order: existing}, nil
+		}
+	}
+
+	// 5. 价格保护（仅限价单）
+	if req.Type == "LIMIT" && s.validator != nil {
+		if err := s.validator.ValidatePrice(req.Symbol, req.Side, req.Price); err != nil {
+			return reject(err.Error()), nil
 		}
 	}
 
@@ -99,7 +137,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		UpdateTimeMs:       now,
 	}
 
-	// 5. 计算冻结金额
+	// 6. 计算冻结金额
 	var freezeAsset string
 	var freezeAmount int64
 	if order.Side == repository.SideBuy {
@@ -107,32 +145,46 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		if order.Type == repository.TypeMarket {
 			freezeAmount = req.QuoteOrderQty
 		} else {
-			freezeAmount = req.Price * req.Quantity / 1e8 // 假设精度 8 位
+			freezeAmount = quoteQty(req.Price, req.Quantity, cfg.QtyPrecision)
 		}
 	} else {
 		freezeAsset = cfg.BaseAsset
 		freezeAmount = req.Quantity
 	}
 
-	// 6. 调用清算服务冻结资金（这里简化，实际应该 HTTP/gRPC 调用）
-	freezeResp, err := s.freezeBalance(ctx, order.UserID, freezeAsset, freezeAmount, order.OrderID)
+	// 7. 调用清算服务冻结资金
+	freezeKey := fmt.Sprintf("freeze:order:%d", order.OrderID)
+	freezeResp, err := s.clearing.FreezeBalance(ctx, order.UserID, freezeAsset, freezeAmount, freezeKey)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
 		return nil, fmt.Errorf("freeze balance: %w", err)
 	}
 	if !freezeResp.Success {
-		return &CreateOrderResponse{ErrorCode: freezeResp.ErrorCode}, nil
+		return reject(freezeResp.ErrorCode), nil
 	}
 
-	// 7. 保存订单
+	// 8. 保存订单
 	if err := s.repo.CreateOrder(ctx, order); err != nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
 		// 回滚冻结（实际应该调用解冻）
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
-	// 8. 发送到撮合队列
+	// 9. 发送到撮合队列
 	if err := s.sendToMatching(ctx, order); err != nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
 		// 订单已创建，撮合失败需要告警
 		return nil, fmt.Errorf("send to matching: %w", err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.IncOrderCreated(order.Symbol, sideToString(order.Side))
 	}
 
 	return &CreateOrderResponse{Order: order}, nil
@@ -230,28 +282,40 @@ func (s *OrderService) GetExchangeInfo(ctx context.Context) ([]*repository.Symbo
 }
 
 func (s *OrderService) validateOrder(req *CreateOrderRequest, cfg *repository.SymbolConfig) error {
-	// 解析配置值
-	minQty, _ := strconv.ParseFloat(cfg.MinQty, 64)
-	maxQty, _ := strconv.ParseFloat(cfg.MaxQty, 64)
-	qtyStep, _ := strconv.ParseFloat(cfg.QtyStep, 64)
-	priceTick, _ := strconv.ParseFloat(cfg.PriceTick, 64)
-	minNotional, _ := strconv.ParseFloat(cfg.MinNotional, 64)
+	// 解析配置值（兼容小数与最小单位整数）
+	qtyPrecision := normalizePrecision(cfg.QtyPrecision)
+	pricePrecision := normalizePrecision(cfg.PricePrecision)
 
-	reqQty := float64(req.Quantity) / 1e8
-	reqPrice := float64(req.Price) / 1e8
+	minQty, err := parseScaledValue(cfg.MinQty, qtyPrecision)
+	if err != nil {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
+	maxQty, err := parseScaledValue(cfg.MaxQty, qtyPrecision)
+	if err != nil {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
+	qtyStep, err := parseScaledValue(cfg.QtyStep, qtyPrecision)
+	if err != nil {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
+	priceTick, err := parseScaledValue(cfg.PriceTick, pricePrecision)
+	if err != nil {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
+	minNotional, err := parseScaledValue(cfg.MinNotional, pricePrecision)
+	if err != nil {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
 
 	// 数量校验
-	if reqQty < minQty {
+	if req.Quantity < minQty {
 		return fmt.Errorf("QTY_TOO_SMALL")
 	}
-	if reqQty > maxQty {
+	if req.Quantity > maxQty {
 		return fmt.Errorf("QTY_TOO_LARGE")
 	}
-	if qtyStep > 0 {
-		remainder := reqQty / qtyStep
-		if remainder != float64(int64(remainder)) {
-			return fmt.Errorf("INVALID_QUANTITY")
-		}
+	if qtyStep > 0 && req.Quantity%qtyStep != 0 {
+		return fmt.Errorf("INVALID_QUANTITY")
 	}
 
 	// 限价单价格校验
@@ -259,32 +323,17 @@ func (s *OrderService) validateOrder(req *CreateOrderRequest, cfg *repository.Sy
 		if req.Price <= 0 {
 			return fmt.Errorf("INVALID_PRICE")
 		}
-		if priceTick > 0 {
-			remainder := reqPrice / priceTick
-			if remainder != float64(int64(remainder)) {
-				return fmt.Errorf("INVALID_PRICE")
-			}
+		if priceTick > 0 && req.Price%priceTick != 0 {
+			return fmt.Errorf("INVALID_PRICE")
 		}
 		// 最小成交额
-		notional := reqPrice * reqQty
+		notional := quoteQty(req.Price, req.Quantity, cfg.QtyPrecision)
 		if notional < minNotional {
 			return fmt.Errorf("NOTIONAL_TOO_SMALL")
 		}
 	}
 
 	return nil
-}
-
-// FreezeResponse 冻结响应
-type FreezeResponse struct {
-	Success   bool
-	ErrorCode string
-}
-
-func (s *OrderService) freezeBalance(ctx context.Context, userID int64, asset string, amount, orderID int64) (*FreezeResponse, error) {
-	// 简化实现：实际应该调用 clearing 服务
-	// 这里假设总是成功
-	return &FreezeResponse{Success: true}, nil
 }
 
 // OrderMessage 发送到撮合的消息
@@ -297,11 +346,13 @@ type OrderMessage struct {
 	Side          string `json:"side"`
 	OrderType     string `json:"orderType"`
 	TimeInForce   string `json:"timeInForce"`
-	Price         string `json:"price"`
-	Qty           string `json:"qty"`
+	Price         int64  `json:"price"`
+	Qty           int64  `json:"qty"`
 }
 
 func (s *OrderService) sendToMatching(ctx context.Context, order *repository.Order) error {
+	price, _ := strconv.ParseInt(order.Price, 10, 64)
+	qty, _ := strconv.ParseInt(order.OrigQty, 10, 64)
 	msg := &OrderMessage{
 		Type:          "NEW",
 		OrderID:       order.OrderID,
@@ -311,8 +362,8 @@ func (s *OrderService) sendToMatching(ctx context.Context, order *repository.Ord
 		Side:          sideToString(order.Side),
 		OrderType:     typeToString(order.Type),
 		TimeInForce:   tifToString(order.TimeInForce),
-		Price:         order.Price,
-		Qty:           order.OrigQty,
+		Price:         price,
+		Qty:           qty,
 	}
 
 	data, err := json.Marshal(msg)
@@ -355,10 +406,10 @@ func (s *OrderService) sendCancelToMatching(ctx context.Context, order *reposito
 }
 
 func parseSide(s string) int {
-	if s == "BUY" {
-		return repository.SideBuy
+	if s == "SELL" {
+		return repository.SideSell
 	}
-	return repository.SideSell
+	return repository.SideBuy
 }
 
 func parseType(t string) int {

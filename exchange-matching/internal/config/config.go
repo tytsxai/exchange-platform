@@ -19,10 +19,13 @@ type Config struct {
 	RedisDB       int
 
 	// Streams
-	InputStream  string
-	OutputStream string
+	OrderStream   string
+	EventStream   string
 	ConsumerGroup string
 	ConsumerName  string
+
+	// Private events (pub/sub)
+	PrivateUserEventChannel string
 
 	// Worker
 	WorkerID int64
@@ -35,14 +38,16 @@ func Load() *Config {
 		HTTPPort:    getEnvInt("HTTP_PORT", 8082),
 		MetricsPort: getEnvInt("METRICS_PORT", 9082),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"),  // 默认使用6380避免与本地Redis冲突
+		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		RedisDB:       getEnvInt("REDIS_DB", 0),
 
-		InputStream:   getEnv("INPUT_STREAM", "exchange:orders"),
-		OutputStream:  getEnv("OUTPUT_STREAM", "exchange:events"),
+		OrderStream:   getEnv("ORDER_STREAM", "exchange:orders"),
+		EventStream:   getEnv("EVENT_STREAM", "exchange:events"),
 		ConsumerGroup: getEnv("CONSUMER_GROUP", "matching-group"),
 		ConsumerName:  getEnv("CONSUMER_NAME", "matching-1"),
+
+		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
 		WorkerID: int64(getEnvInt("WORKER_ID", 1)),
 	}
