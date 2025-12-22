@@ -19,6 +19,83 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
+declare -A SYMBOL_PRICE_PRECISION
+declare -A SYMBOL_QTY_PRECISION
+
+symbol_precisions() {
+    local symbol=$1
+    if [ -n "${SYMBOL_PRICE_PRECISION[$symbol]:-}" ] && [ -n "${SYMBOL_QTY_PRECISION[$symbol]:-}" ]; then
+        echo "${SYMBOL_PRICE_PRECISION[$symbol]} ${SYMBOL_QTY_PRECISION[$symbol]}"
+        return 0
+    fi
+
+    local resp
+    resp=$(curl -sf "${ORDER_URL}/v1/exchangeInfo" 2>/dev/null || echo "")
+    if [ -z "$resp" ]; then
+        echo "8 8"
+        return 0
+    fi
+
+    local result
+    result=$(python3 - "$resp" "$symbol" <<'PY'
+import json,sys
+resp=sys.argv[1]
+symbol=sys.argv[2]
+try:
+    data=json.loads(resp)
+    symbols=data.get("symbols") or []
+    for item in symbols:
+        if item.get("symbol") == symbol:
+            price=item.get("pricePrecision") or 8
+            qty=item.get("qtyPrecision") or 8
+            print(f"{price} {qty}")
+            sys.exit(0)
+except Exception:
+    pass
+print("8 8")
+PY
+)
+    SYMBOL_PRICE_PRECISION[$symbol]=${result%% *}
+    SYMBOL_QTY_PRECISION[$symbol]=${result##* }
+    echo "$result"
+}
+
+scale_int64() {
+    local value=$1
+    local precision=$2
+    python3 - "$value" "$precision" <<'PY'
+from decimal import Decimal, InvalidOperation
+import sys
+
+value = sys.argv[1]
+precision = int(sys.argv[2])
+try:
+    scaled = int(Decimal(value) * (Decimal(10) ** precision))
+except (InvalidOperation, ValueError):
+    print("")
+    sys.exit(1)
+print(scaled)
+PY
+}
+
+scale_symbol_price() {
+    local symbol=$1
+    local value=$2
+    local precisions
+    precisions=$(symbol_precisions "$symbol")
+    local price_precision=${precisions%% *}
+    scale_int64 "$value" "$price_precision"
+}
+
+scale_symbol_qty() {
+    local symbol=$1
+    local value=$2
+    local precisions
+    precisions=$(symbol_precisions "$symbol")
+    local qty_precision=${precisions##* }
+    scale_int64 "$value" "$qty_precision"
+}
+
 # 健康检查
 check_health() {
     local name=$1
@@ -149,15 +226,24 @@ test_create_order() {
     log_info "Testing create order..."
 
     local idempotency_key="test_$(date +%s)_$$"
+    local symbol="BTCUSDT"
+    local price_int
+    local qty_int
+    price_int=$(scale_symbol_price "$symbol" "50000")
+    qty_int=$(scale_symbol_qty "$symbol" "0.1")
+    if [ -z "$price_int" ] || [ -z "$qty_int" ]; then
+        log_error "Failed to scale order payload"
+        return 1
+    fi
     local resp=$(curl -sf -X POST "${ORDER_URL}/v1/order?userId=${user_id}" \
         -H "Content-Type: application/json" \
         -d "{
             \"clientOrderId\":\"${idempotency_key}\",
-            \"symbol\":\"BTCUSDT\",
+            \"symbol\":\"${symbol}\",
             \"side\":\"BUY\",
             \"type\":\"LIMIT\",
-            \"price\":5000000000000,
-            \"quantity\":100000
+            \"price\":${price_int},
+            \"quantity\":${qty_int}
         }" 2>/dev/null || echo '{"error":"failed"}')
 
     if echo "$resp" | grep -q "OrderID\|orderId\|errorCode"; then

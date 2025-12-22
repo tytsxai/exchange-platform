@@ -172,6 +172,8 @@ Signature = HMAC-SHA256(secret, timestamp + "\n" + nonce + "\n" + METHOD + "\n" 
 canonicalQuery = sorted query string (exclude `signature` if present); request body is not signed.
 ```
 
+如果历史 API Key 使用 bcrypt 存储 secret，需要重新生成（可用 `scripts/disable-bcrypt-api-keys.sql` 批量禁用旧 key）。
+
 **管理接口 (Admin/Wallet)**: Bearer Token
 ```
 Headers:
