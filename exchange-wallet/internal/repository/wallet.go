@@ -29,15 +29,15 @@ type Asset struct {
 
 // Network 网络配置
 type Network struct {
-	Asset                 string  `json:"asset"`
-	Network               string  `json:"network"`
-	DepositEnabled        bool    `json:"depositEnabled"`
-	WithdrawEnabled       bool    `json:"withdrawEnabled"`
-	MinWithdraw           int64   `json:"minWithdraw"`
-	WithdrawFee           int64   `json:"withdrawFee"`
-	ConfirmationsRequired int     `json:"confirmationsRequired"`
-	ContractAddress       string  `json:"contractAddress,omitempty"`
-	Status                int     `json:"status"`
+	Asset                 string `json:"asset"`
+	Network               string `json:"network"`
+	DepositEnabled        bool   `json:"depositEnabled"`
+	WithdrawEnabled       bool   `json:"withdrawEnabled"`
+	MinWithdraw           int64  `json:"minWithdraw"`
+	WithdrawFee           int64  `json:"withdrawFee"`
+	ConfirmationsRequired int    `json:"confirmationsRequired"`
+	ContractAddress       string `json:"contractAddress,omitempty"`
+	Status                int    `json:"status"`
 }
 
 // DepositAddress 充值地址
@@ -52,38 +52,38 @@ type DepositAddress struct {
 
 // Deposit 充值记录
 type Deposit struct {
-	DepositID     int64   `json:"depositId"`
-	UserID        int64   `json:"userId"`
-	Asset         string  `json:"asset"`
-	Network       string  `json:"network"`
-	Amount        int64   `json:"amount"`
-	Txid          string  `json:"txid"`
-	Vout          int     `json:"vout"`
-	Confirmations int     `json:"confirmations"`
-	Status        int     `json:"status"` // 1=PENDING, 2=CONFIRMED, 3=CREDITED
-	CreditedAtMs  int64   `json:"creditedAtMs,omitempty"`
-	CreatedAtMs   int64   `json:"createdAtMs"`
-	UpdatedAtMs   int64   `json:"updatedAtMs"`
+	DepositID     int64  `json:"depositId"`
+	UserID        int64  `json:"userId"`
+	Asset         string `json:"asset"`
+	Network       string `json:"network"`
+	Amount        int64  `json:"amount"`
+	Txid          string `json:"txid"`
+	Vout          int    `json:"vout"`
+	Confirmations int    `json:"confirmations"`
+	Status        int    `json:"status"` // 1=PENDING, 2=CONFIRMED, 3=CREDITED
+	CreditedAtMs  int64  `json:"creditedAtMs,omitempty"`
+	CreatedAtMs   int64  `json:"createdAtMs"`
+	UpdatedAtMs   int64  `json:"updatedAtMs"`
 }
 
 // Withdrawal 提现记录
 type Withdrawal struct {
-	WithdrawID     int64   `json:"withdrawId"`
-	IdempotencyKey string  `json:"idempotencyKey"`
-	UserID         int64   `json:"userId"`
-	Asset          string  `json:"asset"`
-	Network        string  `json:"network"`
-	Amount         int64   `json:"amount"`
-	Fee            int64   `json:"fee"`
-	Address        string  `json:"address"`
-	Tag            string  `json:"tag,omitempty"`
-	Status         int     `json:"status"` // 1=PENDING, 2=APPROVED, 3=REJECTED, 4=PROCESSING, 5=COMPLETED, 6=FAILED
-	Txid           string  `json:"txid,omitempty"`
-	RequestedAtMs  int64   `json:"requestedAtMs"`
-	ApprovedAtMs   int64   `json:"approvedAtMs,omitempty"`
-	ApprovedBy     int64   `json:"approvedBy,omitempty"`
-	SentAtMs       int64   `json:"sentAtMs,omitempty"`
-	CompletedAtMs  int64   `json:"completedAtMs,omitempty"`
+	WithdrawID     int64  `json:"withdrawId"`
+	IdempotencyKey string `json:"idempotencyKey"`
+	UserID         int64  `json:"userId"`
+	Asset          string `json:"asset"`
+	Network        string `json:"network"`
+	Amount         int64  `json:"amount"`
+	Fee            int64  `json:"fee"`
+	Address        string `json:"address"`
+	Tag            string `json:"tag,omitempty"`
+	Status         int    `json:"status"` // 1=PENDING, 2=APPROVED, 3=REJECTED, 4=PROCESSING, 5=COMPLETED, 6=FAILED
+	Txid           string `json:"txid,omitempty"`
+	RequestedAtMs  int64  `json:"requestedAtMs"`
+	ApprovedAtMs   int64  `json:"approvedAtMs,omitempty"`
+	ApprovedBy     int64  `json:"approvedBy,omitempty"`
+	SentAtMs       int64  `json:"sentAtMs,omitempty"`
+	CompletedAtMs  int64  `json:"completedAtMs,omitempty"`
 }
 
 // WithdrawalStatus 提现状态
@@ -207,6 +207,37 @@ func (r *WalletRepository) GetOrCreateDepositAddress(ctx context.Context, userID
 	}, nil
 }
 
+// ListDepositAddresses 列出充值地址（用于扫描任务）
+func (r *WalletRepository) ListDepositAddresses(ctx context.Context, asset, network string, limit int) ([]*DepositAddress, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	query := `
+		SELECT user_id, asset, network, address, tag, created_at_ms
+		FROM exchange_wallet.deposit_addresses
+		WHERE asset = $1 AND network = $2
+		ORDER BY created_at_ms DESC
+		LIMIT $3
+	`
+	rows, err := r.db.QueryContext(ctx, query, asset, network, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*DepositAddress
+	for rows.Next() {
+		var addr DepositAddress
+		var tag sql.NullString
+		if err := rows.Scan(&addr.UserID, &addr.Asset, &addr.Network, &addr.Address, &tag, &addr.CreatedAtMs); err != nil {
+			return nil, err
+		}
+		addr.Tag = tag.String
+		results = append(results, &addr)
+	}
+	return results, nil
+}
+
 // CreateDeposit 创建充值记录
 func (r *WalletRepository) CreateDeposit(ctx context.Context, d *Deposit) error {
 	now := time.Now().UnixMilli()
@@ -220,6 +251,44 @@ func (r *WalletRepository) CreateDeposit(ctx context.Context, d *Deposit) error 
 	`
 	_, err := r.db.ExecContext(ctx, query, d.DepositID, d.UserID, d.Asset, d.Network, d.Amount, d.Txid, d.Vout, d.Confirmations, d.Status, d.CreatedAtMs, d.UpdatedAtMs)
 	return err
+}
+
+// UpsertDeposit 创建或更新充值记录，返回数据库中的记录（用于幂等与确认数更新）
+func (r *WalletRepository) UpsertDeposit(ctx context.Context, d *Deposit) (*Deposit, error) {
+	now := time.Now().UnixMilli()
+	d.CreatedAtMs = now
+	d.UpdatedAtMs = now
+
+	query := `
+		INSERT INTO exchange_wallet.deposits (
+			deposit_id, user_id, asset, network, amount, txid, vout, confirmations, status, created_at_ms, updated_at_ms
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		)
+		ON CONFLICT (asset, network, txid, vout) DO UPDATE SET
+			confirmations = GREATEST(exchange_wallet.deposits.confirmations, EXCLUDED.confirmations),
+			status = CASE
+				WHEN exchange_wallet.deposits.status = 3 THEN 3
+				WHEN EXCLUDED.status = 3 THEN 3
+				WHEN exchange_wallet.deposits.status = 2 OR EXCLUDED.status = 2 THEN 2
+				ELSE 1
+			END,
+			updated_at_ms = EXCLUDED.updated_at_ms
+		RETURNING deposit_id, user_id, asset, network, amount, txid, vout, confirmations, status, credited_at_ms, created_at_ms, updated_at_ms
+	`
+
+	var out Deposit
+	var creditedAt sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, query,
+		d.DepositID, d.UserID, d.Asset, d.Network, d.Amount, d.Txid, d.Vout, d.Confirmations, d.Status, d.CreatedAtMs, d.UpdatedAtMs,
+	).Scan(
+		&out.DepositID, &out.UserID, &out.Asset, &out.Network, &out.Amount, &out.Txid, &out.Vout,
+		&out.Confirmations, &out.Status, &creditedAt, &out.CreatedAtMs, &out.UpdatedAtMs,
+	); err != nil {
+		return nil, err
+	}
+	out.CreditedAtMs = creditedAt.Int64
+	return &out, nil
 }
 
 // UpdateDepositStatus 更新充值状态

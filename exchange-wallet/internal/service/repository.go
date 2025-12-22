@@ -15,9 +15,11 @@ type WalletRepository interface {
 
 	// 充值地址
 	GetOrCreateDepositAddress(ctx context.Context, userID int64, asset, network, address string) (*repository.DepositAddress, error)
+	ListDepositAddresses(ctx context.Context, asset, network string, limit int) ([]*repository.DepositAddress, error)
 
 	// 充值记录
 	CreateDeposit(ctx context.Context, d *repository.Deposit) error
+	UpsertDeposit(ctx context.Context, d *repository.Deposit) (*repository.Deposit, error)
 	UpdateDepositStatus(ctx context.Context, depositID int64, status, confirmations int) error
 	ListDeposits(ctx context.Context, userID int64, limit int) ([]*repository.Deposit, error)
 

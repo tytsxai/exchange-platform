@@ -97,12 +97,32 @@ func (m *mockWalletRepository) GetOrCreateDepositAddress(ctx context.Context, us
 	return addr, nil
 }
 
+func (m *mockWalletRepository) ListDepositAddresses(ctx context.Context, asset, network string, limit int) ([]*repository.DepositAddress, error) {
+	var result []*repository.DepositAddress
+	for _, addr := range m.depositAddresses {
+		if addr.Asset == asset && addr.Network == network {
+			result = append(result, addr)
+		}
+	}
+	if limit > 0 && len(result) > limit {
+		return result[:limit], nil
+	}
+	return result, nil
+}
+
 func (m *mockWalletRepository) CreateDeposit(ctx context.Context, d *repository.Deposit) error {
 	if m.createDepositErr != nil {
 		return m.createDepositErr
 	}
 	m.deposits[d.DepositID] = d
 	return nil
+}
+
+func (m *mockWalletRepository) UpsertDeposit(ctx context.Context, d *repository.Deposit) (*repository.Deposit, error) {
+	if err := m.CreateDeposit(ctx, d); err != nil {
+		return nil, err
+	}
+	return d, nil
 }
 
 func (m *mockWalletRepository) UpdateDepositStatus(ctx context.Context, depositID int64, status, confirmations int) error {
@@ -194,10 +214,14 @@ func (m *mockWalletRepository) ListPendingWithdrawals(ctx context.Context, limit
 
 // mockClearingClient mock 清算客户端
 type mockClearingClient struct {
-	freezeErr   error
-	unfreezeErr error
-	deductErr   error
-	freezeCalls []client.FreezeRequest
+	freezeErr     error
+	unfreezeErr   error
+	deductErr     error
+	creditErr     error
+	freezeCalls   []client.FreezeRequest
+	unfreezeCalls []client.UnfreezeRequest
+	deductCalls   []client.DeductRequest
+	creditCalls   []client.CreditRequest
 }
 
 func newMockClearingClient() *mockClearingClient {
@@ -213,9 +237,25 @@ func (m *mockClearingClient) Freeze(ctx context.Context, req *client.FreezeReque
 }
 
 func (m *mockClearingClient) Unfreeze(ctx context.Context, req *client.UnfreezeRequest) error {
-	return m.unfreezeErr
+	if m.unfreezeErr != nil {
+		return m.unfreezeErr
+	}
+	m.unfreezeCalls = append(m.unfreezeCalls, *req)
+	return nil
 }
 
 func (m *mockClearingClient) Deduct(ctx context.Context, req *client.DeductRequest) error {
-	return m.deductErr
+	if m.deductErr != nil {
+		return m.deductErr
+	}
+	m.deductCalls = append(m.deductCalls, *req)
+	return nil
+}
+
+func (m *mockClearingClient) Credit(ctx context.Context, req *client.CreditRequest) error {
+	if m.creditErr != nil {
+		return m.creditErr
+	}
+	m.creditCalls = append(m.creditCalls, *req)
+	return nil
 }

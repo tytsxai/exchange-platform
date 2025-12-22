@@ -23,6 +23,18 @@ type Config struct {
 	EventStream             string
 	PrivateUserEventChannel string
 
+	// Tron
+	TronNodeURL    string
+	TronGridAPIKey string
+
+	// Dependencies
+	ClearingServiceURL string
+
+	// Jobs
+	DepositScannerEnabled      bool
+	DepositScannerIntervalSecs int
+	DepositScannerMaxAddresses int
+
 	WorkerID int64
 }
 
@@ -30,7 +42,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: getEnv("SERVICE_NAME", "exchange-wallet"),
-		HTTPPort:    getEnvInt("HTTP_PORT", 8087),
+		HTTPPort:    getEnvInt("HTTP_PORT", 8086),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
@@ -41,6 +53,15 @@ func Load() *Config {
 		OrderStream:             getEnv("ORDER_STREAM", "exchange:orders"),
 		EventStream:             getEnv("EVENT_STREAM", "exchange:events"),
 		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+
+		TronNodeURL:    getEnv("TRON_NODE_URL", "https://api.trongrid.io"),
+		TronGridAPIKey: getEnv("TRON_GRID_API_KEY", ""),
+
+		ClearingServiceURL: getEnv("CLEARING_SERVICE_URL", "http://localhost:8083"),
+
+		DepositScannerEnabled:      getEnvBool("DEPOSIT_SCANNER_ENABLED", false),
+		DepositScannerIntervalSecs: getEnvInt("DEPOSIT_SCANNER_INTERVAL_SECS", 15),
+		DepositScannerMaxAddresses: getEnvInt("DEPOSIT_SCANNER_MAX_ADDRESSES", 200),
 
 		WorkerID: int64(getEnvInt("WORKER_ID", 7)),
 	}
@@ -67,6 +88,16 @@ func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if i, err := strconv.Atoi(value); err == nil {
 			return i
+		}
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		b, err := strconv.ParseBool(value)
+		if err == nil {
+			return b
 		}
 	}
 	return defaultValue

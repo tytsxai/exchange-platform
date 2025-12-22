@@ -18,6 +18,7 @@ type WalletService struct {
 	repo        WalletRepository
 	idGen       IDGenerator
 	clearingCli ClearingClient
+	tronCli     TronClient
 }
 
 // IDGenerator ID 生成器接口
@@ -25,12 +26,21 @@ type IDGenerator interface {
 	NextID() int64
 }
 
+// TronClient 链客户端（MVP: TRON）
+type TronClient interface {
+	GetTransactions(address string, limit int) ([]client.Transaction, error)
+	GetTRC20Transfers(address string, limit int, contractAddress string) ([]client.TRC20Transfer, error)
+	GetTransactionInfo(txid string) (*client.TransactionInfo, error)
+	GetNowBlockNumber() (int64, error)
+}
+
 // NewWalletService 创建钱包服务
-func NewWalletService(repo WalletRepository, idGen IDGenerator, clearingCli ClearingClient) *WalletService {
+func NewWalletService(repo WalletRepository, idGen IDGenerator, clearingCli ClearingClient, tronCli TronClient) *WalletService {
 	return &WalletService{
 		repo:        repo,
 		idGen:       idGen,
 		clearingCli: clearingCli,
+		tronCli:     tronCli,
 	}
 }
 
@@ -78,6 +88,16 @@ func (s *WalletService) ListDeposits(ctx context.Context, userID int64, limit in
 
 // ProcessDeposit 处理充值（链上监听调用，amount 为最小单位整数）
 func (s *WalletService) ProcessDeposit(ctx context.Context, userID int64, asset, network, txid string, vout int, amount int64, confirmations int) error {
+	if userID <= 0 {
+		return fmt.Errorf("invalid userID")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("invalid amount")
+	}
+	if txid == "" {
+		return fmt.Errorf("txid required")
+	}
+
 	// 检查网络配置
 	net, err := s.repo.GetNetwork(ctx, asset, network)
 	if err != nil {
@@ -87,8 +107,12 @@ func (s *WalletService) ProcessDeposit(ctx context.Context, userID int64, asset,
 		return fmt.Errorf("network not found")
 	}
 
-	// 创建充值记录
-	deposit := &repository.Deposit{
+	status := repository.DepositStatusPending
+	if confirmations >= net.ConfirmationsRequired {
+		status = repository.DepositStatusConfirmed
+	}
+
+	deposit, err := s.repo.UpsertDeposit(ctx, &repository.Deposit{
 		DepositID:     s.idGen.NextID(),
 		UserID:        userID,
 		Asset:         asset,
@@ -97,14 +121,39 @@ func (s *WalletService) ProcessDeposit(ctx context.Context, userID int64, asset,
 		Txid:          txid,
 		Vout:          vout,
 		Confirmations: confirmations,
-		Status:        repository.DepositStatusPending,
+		Status:        status,
+	})
+	if err != nil {
+		return err
 	}
 
-	if confirmations >= net.ConfirmationsRequired {
-		deposit.Status = repository.DepositStatusConfirmed
+	// 未达到确认数：仅记录
+	if deposit.Confirmations < net.ConfirmationsRequired {
+		return nil
 	}
 
-	return s.repo.CreateDeposit(ctx, deposit)
+	// 已入账：幂等
+	if deposit.Status == repository.DepositStatusCredited {
+		return nil
+	}
+
+	// 达到确认数 -> 记账入可用余额
+	creditReq := &client.CreditRequest{
+		IdempotencyKey: fmt.Sprintf("deposit:%s:%s:%s:%d", asset, network, txid, vout),
+		UserID:         deposit.UserID,
+		Asset:          deposit.Asset,
+		Amount:         deposit.Amount,
+		RefType:        "DEPOSIT",
+		RefID:          fmt.Sprintf("%d", deposit.DepositID),
+	}
+	if err := s.clearingCli.Credit(ctx, creditReq); err != nil {
+		return fmt.Errorf("credit deposit: %w", err)
+	}
+
+	if err := s.repo.UpdateDepositStatus(ctx, deposit.DepositID, repository.DepositStatusCredited, deposit.Confirmations); err != nil {
+		return fmt.Errorf("update deposit status: %w", err)
+	}
+	return nil
 }
 
 // ========== 提现 ==========
@@ -182,6 +231,15 @@ func (s *WalletService) RequestWithdraw(ctx context.Context, req *WithdrawReques
 	// 2. 创建提现记录
 
 	if err := s.repo.CreateWithdrawal(ctx, withdrawal); err != nil {
+		// 资金已冻结但记录创建失败：尽力补偿解冻
+		_ = s.clearingCli.Unfreeze(ctx, &client.UnfreezeRequest{
+			IdempotencyKey: fmt.Sprintf("withdraw:create_failed:%s", req.IdempotencyKey),
+			UserID:         req.UserID,
+			Asset:          req.Asset,
+			Amount:         req.Amount,
+			RefType:        "WITHDRAW_CREATE_FAILED",
+			RefID:          req.IdempotencyKey,
+		})
 		return nil, err
 	}
 
@@ -211,16 +269,13 @@ func (s *WalletService) ApproveWithdraw(ctx context.Context, withdrawID, approve
 
 // RejectWithdraw 拒绝提现
 func (s *WalletService) RejectWithdraw(ctx context.Context, withdrawID, approverID int64) error {
-	// 1. 拒绝提现
-	if err := s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusRejected, approverID, ""); err != nil {
-		return err
-	}
-
-	// 2. 调用 clearing 服务解冻资金
+	// 1. 获取提现记录
 	withdraw, err := s.repo.GetWithdrawal(ctx, withdrawID)
 	if err != nil {
-		// Log error but proceed? Or return error?
 		return fmt.Errorf("get withdraw: %w", err)
+	}
+	if withdraw == nil {
+		return fmt.Errorf("withdraw not found")
 	}
 
 	unfreezeReq := &client.UnfreezeRequest{
@@ -236,20 +291,19 @@ func (s *WalletService) RejectWithdraw(ctx context.Context, withdrawID, approver
 		return fmt.Errorf("unfreeze funds: %w", err)
 	}
 
-	return nil
+	// 2. 更新状态
+	return s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusRejected, approverID, "")
 }
 
 // CompleteWithdraw 完成提现（出款后调用）
 func (s *WalletService) CompleteWithdraw(ctx context.Context, withdrawID int64, txid string) error {
-	// 1. 完成提现
-	if err := s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusCompleted, 0, txid); err != nil {
-		return err
-	}
-
-	// 2. 扣除冻结资金
+	// 1. 获取提现记录
 	withdraw, err := s.repo.GetWithdrawal(ctx, withdrawID)
 	if err != nil {
 		return fmt.Errorf("get withdraw: %w", err)
+	}
+	if withdraw == nil {
+		return fmt.Errorf("withdraw not found")
 	}
 
 	deductReq := &client.DeductRequest{
@@ -265,6 +319,11 @@ func (s *WalletService) CompleteWithdraw(ctx context.Context, withdrawID int64, 
 		return fmt.Errorf("deduct funds: %w", err)
 	}
 
+	// 2. 标记完成
+	if err := s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusCompleted, 0, txid); err != nil {
+		log.Printf("[CRITICAL] Funds deducted but failed to mark withdrawal completed: withdrawID=%d err=%v", withdrawID, err)
+		return err
+	}
 	return nil
 }
 

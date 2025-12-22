@@ -52,9 +52,18 @@ func main() {
 	// 创建服务
 	idGen := &SimpleIDGen{workerID: cfg.WorkerID}
 	repo := repository.NewWalletRepository(db)
-	clearingBaseURL := "http://localhost:8083" // TODO: use config
+	clearingBaseURL := cfg.ClearingServiceURL
 	clearingCli := client.NewClearingClient(clearingBaseURL)
-	svc := service.NewWalletService(repo, idGen, clearingCli)
+	tronCli := client.NewTronClient(cfg.TronNodeURL, cfg.TronGridAPIKey)
+	svc := service.NewWalletService(repo, idGen, clearingCli, tronCli)
+
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	if cfg.DepositScannerEnabled {
+		interval := time.Duration(cfg.DepositScannerIntervalSecs) * time.Second
+		scanner := service.NewDepositScanner(svc, interval, cfg.DepositScannerMaxAddresses)
+		go scanner.Start(bgCtx)
+	}
 
 	// HTTP 服务
 	mux := http.NewServeMux()
@@ -206,12 +215,12 @@ func main() {
 
 		userID := getUserID(r)
 		var req struct {
-			IdempotencyKey string  `json:"idempotencyKey"`
-			Asset          string  `json:"asset"`
-			Network        string  `json:"network"`
-			Amount         int64   `json:"amount"`
-			Address        string  `json:"address"`
-			Tag            string  `json:"tag"`
+			IdempotencyKey string `json:"idempotencyKey"`
+			Asset          string `json:"asset"`
+			Network        string `json:"network"`
+			Amount         int64  `json:"amount"`
+			Address        string `json:"address"`
+			Tag            string `json:"tag"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -366,6 +375,7 @@ func main() {
 	<-sigCh
 
 	log.Println("Shutting down...")
+	bgCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server.Shutdown(ctx)

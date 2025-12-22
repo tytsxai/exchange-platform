@@ -64,6 +64,19 @@ func (c *ClearingClient) Deduct(ctx context.Context, req *DeductRequest) error {
 	return c.post(ctx, "/internal/deduct", req)
 }
 
+type CreditRequest struct {
+	IdempotencyKey string `json:"IdempotencyKey"`
+	UserID         int64  `json:"UserID"`
+	Asset          string `json:"Asset"`
+	Amount         int64  `json:"Amount"`
+	RefType        string `json:"RefType"`
+	RefID          string `json:"RefID"`
+}
+
+func (c *ClearingClient) Credit(ctx context.Context, req *CreditRequest) error {
+	return c.post(ctx, "/internal/credit", req)
+}
+
 func (c *ClearingClient) post(ctx context.Context, path string, body interface{}) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
