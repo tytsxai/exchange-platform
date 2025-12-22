@@ -535,6 +535,115 @@ func TestClearingServiceDeduct_InsufficientBalance(t *testing.T) {
 	}
 }
 
+func TestClearingServiceCredit_InvalidAmount(t *testing.T) {
+	svc, _, closeFn := newMockService(t, &mockIDGen{})
+	defer closeFn()
+
+	resp, err := svc.Credit(context.Background(), &CreditRequest{
+		IdempotencyKey: "credit:bad",
+		UserID:         1,
+		Asset:          "USDT",
+		Amount:         0,
+		RefType:        "DEPOSIT",
+		RefID:          "d-1",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if resp.Success {
+		t.Fatalf("expected failure")
+	}
+	if resp.ErrorCode != "INVALID_AMOUNT" {
+		t.Fatalf("expected INVALID_AMOUNT, got %s", resp.ErrorCode)
+	}
+}
+
+func TestClearingServiceCredit_Success(t *testing.T) {
+	svc, mock, closeFn := newMockService(t, &mockIDGen{})
+	defer closeFn()
+
+	req := &CreditRequest{
+		IdempotencyKey: "credit:success",
+		UserID:         11,
+		Asset:          "USDT",
+		Amount:         100,
+		RefType:        "DEPOSIT",
+		RefID:          "d-11",
+	}
+
+	mock.ExpectBegin()
+	expectCheckIdempotencyMiss(mock, req.IdempotencyKey)
+	expectBalanceForUpdate(mock, req.UserID, req.Asset, 50, 0, 1)
+	expectUpdateBalance(mock, 150, 0, req.UserID, req.Asset, 1, 1)
+	expectInsertLedger(mock, &repository.LedgerEntry{
+		IdempotencyKey: req.IdempotencyKey,
+		UserID:         req.UserID,
+		Asset:          req.Asset,
+		AvailableDelta: req.Amount,
+		FrozenDelta:    0,
+		AvailableAfter: 150,
+		FrozenAfter:    0,
+		Reason:         repository.ReasonDeposit,
+		RefType:        req.RefType,
+		RefID:          req.RefID,
+	})
+	mock.ExpectCommit()
+	mock.ExpectQuery(`SELECT user_id, asset, available, frozen, version, updated_at_ms\s+FROM exchange_clearing\.account_balances\s+WHERE user_id = \$1 AND asset = \$2`).
+		WithArgs(req.UserID, req.Asset).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen", "version", "updated_at_ms"}).
+			AddRow(req.UserID, req.Asset, 150, 0, 2, 1000))
+
+	resp, err := svc.Credit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success")
+	}
+	if resp.Balance == nil || resp.Balance.Available != 150 {
+		t.Fatalf("unexpected balance: %+v", resp.Balance)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestClearingServiceCredit_Idempotent(t *testing.T) {
+	svc, mock, closeFn := newMockService(t, &mockIDGen{})
+	defer closeFn()
+
+	req := &CreditRequest{
+		IdempotencyKey: "credit:idempotent",
+		UserID:         12,
+		Asset:          "USDT",
+		Amount:         100,
+		RefType:        "DEPOSIT",
+		RefID:          "d-12",
+	}
+
+	mock.ExpectBegin()
+	expectCheckIdempotency(mock, req.IdempotencyKey)
+	mock.ExpectQuery(`SELECT user_id, asset, available, frozen, version, updated_at_ms\s+FROM exchange_clearing\.account_balances\s+WHERE user_id = \$1 AND asset = \$2`).
+		WithArgs(req.UserID, req.Asset).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen", "version", "updated_at_ms"}).
+			AddRow(req.UserID, req.Asset, 150, 0, 2, 1000))
+	mock.ExpectRollback()
+
+	resp, err := svc.Credit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success")
+	}
+	if resp.Balance == nil || resp.Balance.Available != 150 {
+		t.Fatalf("unexpected balance: %+v", resp.Balance)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestClearingServiceFreeze_OptimisticLockConflict(t *testing.T) {
 	svc, mock, closeFn := newMockService(t, &mockIDGen{})
 	defer closeFn()

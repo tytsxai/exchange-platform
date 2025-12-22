@@ -183,6 +183,29 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	})
 
+	// 入账（充值确认）
+	mux.HandleFunc("/internal/credit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req service.CreditRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		resp, err := svc.Credit(r.Context(), &req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
 		Handler: mux,
@@ -394,19 +417,19 @@ func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.C
 
 	var makerBaseDelta, makerQuoteDelta, takerBaseDelta, takerQuoteDelta int64
 	if trade.TakerSide == 1 { // Taker BUY
-		makerBaseDelta = -trade.Qty   // maker 卖出 base（从冻结扣）
-		makerQuoteDelta = quoteQty    // maker 收到 quote
-		takerBaseDelta = trade.Qty    // taker 收到 base
-		takerQuoteDelta = -quoteQty   // taker 支付 quote（从冻结扣）
+		makerBaseDelta = -trade.Qty // maker 卖出 base（从冻结扣）
+		makerQuoteDelta = quoteQty  // maker 收到 quote
+		takerBaseDelta = trade.Qty  // taker 收到 base
+		takerQuoteDelta = -quoteQty // taker 支付 quote（从冻结扣）
 	} else { // Taker SELL
-		makerBaseDelta = trade.Qty    // maker 收到 base
-		makerQuoteDelta = -quoteQty   // maker 支付 quote（从冻结扣）
-		takerBaseDelta = -trade.Qty   // taker 卖出 base（从冻结扣）
-		takerQuoteDelta = quoteQty    // taker 收到 quote
+		makerBaseDelta = trade.Qty  // maker 收到 base
+		makerQuoteDelta = -quoteQty // maker 支付 quote（从冻结扣）
+		takerBaseDelta = -trade.Qty // taker 卖出 base（从冻结扣）
+		takerQuoteDelta = quoteQty  // taker 收到 quote
 	}
 
 	// 手续费（简化：0.1%）
-	makerFee := int64(0) // maker 0 费率
+	makerFee := int64(0)        // maker 0 费率
 	takerFee := quoteQty / 1000 // 0.1%
 
 	req := &service.SettleTradeRequest{

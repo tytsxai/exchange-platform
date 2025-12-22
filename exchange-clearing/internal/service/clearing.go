@@ -12,9 +12,9 @@ import (
 
 // ClearingService 清算服务
 type ClearingService struct {
-	db       *sql.DB
-	balRepo  *repository.BalanceRepository
-	idGen    IDGenerator
+	db      *sql.DB
+	balRepo *repository.BalanceRepository
+	idGen   IDGenerator
 }
 
 // IDGenerator ID 生成器接口
@@ -203,6 +203,65 @@ func (s *ClearingService) Deduct(ctx context.Context, req *DeductRequest) (*Dedu
 	return &DeductResponse{Success: true, Balance: balance}, nil
 }
 
+// CreditRequest 入账请求（充值）
+type CreditRequest struct {
+	IdempotencyKey string
+	UserID         int64
+	Asset          string
+	Amount         int64
+	RefType        string
+	RefID          string
+}
+
+// CreditResponse 入账响应
+type CreditResponse struct {
+	Success   bool
+	ErrorCode string
+	Balance   *repository.Balance
+}
+
+// Credit 入账（充值确认后调用）
+func (s *ClearingService) Credit(ctx context.Context, req *CreditRequest) (*CreditResponse, error) {
+	if req.Amount <= 0 {
+		return &CreditResponse{Success: false, ErrorCode: "INVALID_AMOUNT"}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	entry := &repository.LedgerEntry{
+		LedgerID:       s.idGen.NextID(),
+		IdempotencyKey: req.IdempotencyKey,
+		UserID:         req.UserID,
+		Asset:          req.Asset,
+		AvailableDelta: req.Amount,
+		FrozenDelta:    0,
+		Reason:         repository.ReasonDeposit,
+		RefType:        req.RefType,
+		RefID:          req.RefID,
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+
+	err = s.balRepo.Credit(ctx, tx, entry)
+	if err != nil {
+		if err == repository.ErrIdempotencyConflict {
+			balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
+			return &CreditResponse{Success: true, Balance: balance}, nil
+		}
+		return nil, fmt.Errorf("credit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
+	return &CreditResponse{Success: true, Balance: balance}, nil
+}
+
 // SettleTradeRequest 清算请求
 type SettleTradeRequest struct {
 	IdempotencyKey string
@@ -210,20 +269,20 @@ type SettleTradeRequest struct {
 	Symbol         string
 
 	// Maker 侧
-	MakerUserID    int64
-	MakerOrderID   string
-	MakerBaseDelta int64 // base 资产变动
+	MakerUserID     int64
+	MakerOrderID    string
+	MakerBaseDelta  int64 // base 资产变动
 	MakerQuoteDelta int64 // quote 资产变动
-	MakerFee       int64
-	MakerFeeAsset  string
+	MakerFee        int64
+	MakerFeeAsset   string
 
 	// Taker 侧
-	TakerUserID    int64
-	TakerOrderID   string
-	TakerBaseDelta int64
+	TakerUserID     int64
+	TakerOrderID    string
+	TakerBaseDelta  int64
 	TakerQuoteDelta int64
-	TakerFee       int64
-	TakerFeeAsset  string
+	TakerFee        int64
+	TakerFeeAsset   string
 
 	BaseAsset  string
 	QuoteAsset string
