@@ -19,19 +19,23 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
-declare -A SYMBOL_PRICE_PRECISION
-declare -A SYMBOL_QTY_PRECISION
+SYMBOL_PRECISION_SYMBOL=""
+SYMBOL_PRICE_PRECISION_CACHE=""
+SYMBOL_QTY_PRECISION_CACHE=""
 
 symbol_precisions() {
     local symbol=$1
-    if [ -n "${SYMBOL_PRICE_PRECISION[$symbol]:-}" ] && [ -n "${SYMBOL_QTY_PRECISION[$symbol]:-}" ]; then
-        echo "${SYMBOL_PRICE_PRECISION[$symbol]} ${SYMBOL_QTY_PRECISION[$symbol]}"
+    if [ "$SYMBOL_PRECISION_SYMBOL" = "$symbol" ] && [ -n "$SYMBOL_PRICE_PRECISION_CACHE" ] && [ -n "$SYMBOL_QTY_PRECISION_CACHE" ]; then
+        echo "${SYMBOL_PRICE_PRECISION_CACHE} ${SYMBOL_QTY_PRECISION_CACHE}"
         return 0
     fi
 
     local resp
-    resp=$(curl -sf "${ORDER_URL}/v1/exchangeInfo" 2>/dev/null || echo "")
+    resp=$(curl -sf "${ORDER_URL}/v1/exchangeInfo" 2>/dev/null || true)
     if [ -z "$resp" ]; then
+        SYMBOL_PRECISION_SYMBOL="$symbol"
+        SYMBOL_PRICE_PRECISION_CACHE=8
+        SYMBOL_QTY_PRECISION_CACHE=8
         echo "8 8"
         return 0
     fi
@@ -54,16 +58,21 @@ except Exception:
     pass
 print("8 8")
 PY
-)
-    SYMBOL_PRICE_PRECISION[$symbol]=${result%% *}
-    SYMBOL_QTY_PRECISION[$symbol]=${result##* }
+    ) || result=""
+    if [ -z "$result" ]; then
+        result="8 8"
+    fi
+    SYMBOL_PRECISION_SYMBOL="$symbol"
+    SYMBOL_PRICE_PRECISION_CACHE=${result%% *}
+    SYMBOL_QTY_PRECISION_CACHE=${result##* }
     echo "$result"
 }
 
 scale_int64() {
     local value=$1
     local precision=$2
-    python3 - "$value" "$precision" <<'PY'
+    local result
+    result=$(python3 - "$value" "$precision" <<'PY'
 from decimal import Decimal, InvalidOperation
 import sys
 
@@ -76,6 +85,8 @@ except (InvalidOperation, ValueError):
     sys.exit(1)
 print(scaled)
 PY
+    ) || result=""
+    printf '%s\n' "$result"
 }
 
 scale_symbol_price() {
