@@ -14,6 +14,7 @@ info:
     2. Admin reviews pending withdrawals via `GET /wallet/admin/withdrawals/pending`
     3. Admin approves/rejects via `POST /wallet/admin/withdraw/approve` or `reject`
     4. After blockchain confirmation, mark complete via `POST /wallet/admin/withdraw/complete`
+    All amount/fee fields are scaled by the asset precision (int64).
 
 tags:
   - name: Assets
@@ -328,9 +329,10 @@ components:
           type: string
           example: TRC20
         amount:
-          type: number
-          format: double
-          example: 100.5
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 100000000
         address:
           type: string
           description: Destination wallet address
@@ -381,54 +383,54 @@ components:
         precision:
           type: integer
           example: 8
-        minWithdraw:
-          type: string
-          example: "0.001"
-        maxWithdraw:
-          type: string
-          example: "100"
-        withdrawFee:
-          type: string
-          example: "0.0005"
-        depositEnabled:
-          type: boolean
-        withdrawEnabled:
-          type: boolean
+        status:
+          type: integer
+          example: 1
+        createdAtMs:
+          type: integer
+          format: int64
+        updatedAtMs:
+          type: integer
+          format: int64
 
     Network:
       type: object
       properties:
-        network:
-          type: string
-          example: TRC20
-        name:
-          type: string
-          example: Tron (TRC20)
         asset:
           type: string
           example: USDT
-        minConfirm:
-          type: integer
-          description: Minimum confirmations for deposit
-          example: 20
-        withdrawFee:
+        network:
           type: string
-          example: "1"
+          example: TRC20
         depositEnabled:
           type: boolean
         withdrawEnabled:
           type: boolean
-        addressRegex:
+        minWithdraw:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 1000000
+        withdrawFee:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 10000
+        confirmationsRequired:
+          type: integer
+          example: 20
+        contractAddress:
           type: string
-          description: Regex pattern for address validation
-          example: "^T[a-zA-Z0-9]{33}$"
-        tagRequired:
-          type: boolean
-          description: Whether memo/tag is required
+        status:
+          type: integer
+          example: 1
 
     DepositAddress:
       type: object
       properties:
+        userId:
+          type: integer
+          format: int64
         asset:
           type: string
           example: USDT
@@ -441,11 +443,17 @@ components:
         tag:
           type: string
           description: Memo/Tag if required by network
+        createdAtMs:
+          type: integer
+          format: int64
 
     Deposit:
       type: object
       properties:
-        id:
+        depositId:
+          type: integer
+          format: int64
+        userId:
           type: integer
           format: int64
         asset:
@@ -455,54 +463,46 @@ components:
           type: string
           example: BTC
         amount:
-          type: string
-          example: "0.5"
-        address:
-          type: string
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 50000000
         txid:
           type: string
           description: Blockchain transaction ID
+        vout:
+          type: integer
         confirmations:
           type: integer
         status:
-          type: string
-          enum: [PENDING, CONFIRMED, CREDITED]
-        createdAt:
+          type: integer
+          description: 1=PENDING, 2=CONFIRMED, 3=CREDITED
+        creditedAtMs:
           type: integer
           format: int64
-        updatedAt:
+        createdAtMs:
+          type: integer
+          format: int64
+        updatedAtMs:
           type: integer
           format: int64
 
     WithdrawResponse:
       type: object
       properties:
-        withdrawId:
-          type: integer
-          format: int64
-        asset:
+        withdrawal:
+          $ref: '#/components/schemas/Withdrawal'
+        errorCode:
           type: string
-        network:
-          type: string
-        amount:
-          type: string
-        fee:
-          type: string
-        address:
-          type: string
-        status:
-          type: string
-          enum: [PENDING]
-        createdAt:
-          type: integer
-          format: int64
 
     Withdrawal:
       type: object
       properties:
-        id:
+        withdrawId:
           type: integer
           format: int64
+        idempotencyKey:
+          type: string
         userId:
           type: integer
           format: int64
@@ -513,11 +513,15 @@ components:
           type: string
           example: TRC20
         amount:
-          type: string
-          example: "100.5"
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 100000000
         fee:
-          type: string
-          example: "1"
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 10000
         address:
           type: string
         tag:
@@ -526,18 +530,23 @@ components:
           type: string
           description: Blockchain transaction ID (after completion)
         status:
-          type: string
-          enum: [PENDING, APPROVED, REJECTED, PROCESSING, COMPLETED, FAILED]
+          type: integer
+          description: 1=PENDING, 2=APPROVED, 3=REJECTED, 4=PROCESSING, 5=COMPLETED, 6=FAILED
         approvedBy:
           type: integer
           format: int64
           description: Admin user ID who approved
-        approvedAt:
+        requestedAtMs:
           type: integer
           format: int64
-        createdAt:
+        approvedAtMs:
           type: integer
           format: int64
-        updatedAt:
+        sentAtMs:
+          type: integer
+          format: int64
+        completedAtMs:
+          type: integer
+          format: int64
           type: integer
           format: int64
