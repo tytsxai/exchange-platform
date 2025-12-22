@@ -1,0 +1,16 @@
+# AI tooling
+.auto-claude/
+.auto-codex/
+.claude/
+.claude_settings.json
+
+# Build/run artifacts
+**/bin/
+**/logs/
+**/pids/
+**/coverage*.out
+**/*.log
+**/*.pid
+
+# Auto Codex data directory
+.auto-codex/
