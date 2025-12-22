@@ -328,7 +328,7 @@ components:
     # ==================== Request Schemas ====================
     CreateSymbolRequest:
       type: object
-      required: [symbol, baseAsset, quoteAsset]
+      required: [symbol, baseAsset, quoteAsset, pricePrecision, qtyPrecision, priceTick, qtyStep, minQty, maxQty, minNotional]
       properties:
         symbol:
           type: string
@@ -343,29 +343,51 @@ components:
           type: integer
           description: "1=Trading, 2=Halt, 3=CancelOnly"
           default: 1
-        basePrecision:
+        pricePrecision:
           type: integer
-          default: 8
-        quotePrecision:
+          default: 2
+        qtyPrecision:
           type: integer
-          default: 8
+          default: 4
+        priceTick:
+          type: integer
+          format: int64
+          description: Scaled by 10^pricePrecision
+          example: 1
+        qtyStep:
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
+          example: 1
         minQty:
-          type: string
-          example: "0.00001"
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
+          example: 1
         maxQty:
-          type: string
-          example: "1000"
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
+          example: 10000000
         minNotional:
-          type: string
-          example: "10"
-        makerFee:
-          type: string
-          description: Maker fee rate (e.g., "0.001" for 0.1%)
-          example: "0.001"
-        takerFee:
-          type: string
+          type: integer
+          format: int64
+          description: Scaled by 10^pricePrecision
+          example: 1000
+        priceLimitRate:
+          type: number
+          format: double
+          example: 0.05
+        makerFeeRate:
+          type: number
+          format: double
+          description: Maker fee rate (e.g., 0.001 for 0.1%)
+          example: 0.001
+        takerFeeRate:
+          type: number
+          format: double
           description: Taker fee rate
-          example: "0.001"
+          example: 0.001
 
     UpdateSymbolRequest:
       type: object
@@ -373,16 +395,39 @@ components:
         status:
           type: integer
           description: "1=Trading, 2=Halt, 3=CancelOnly"
+        pricePrecision:
+          type: integer
+        qtyPrecision:
+          type: integer
+        priceTick:
+          type: integer
+          format: int64
+          description: Scaled by 10^pricePrecision
+        qtyStep:
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
         minQty:
-          type: string
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
         maxQty:
-          type: string
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
         minNotional:
-          type: string
-        makerFee:
-          type: string
-        takerFee:
-          type: string
+          type: integer
+          format: int64
+          description: Scaled by 10^pricePrecision
+        priceLimitRate:
+          type: number
+          format: double
+        makerFeeRate:
+          type: number
+          format: double
+        takerFeeRate:
+          type: number
+          format: double
 
     KillSwitchRequest:
       type: object
@@ -462,27 +507,46 @@ components:
         quoteAsset:
           type: string
           example: USDT
+        priceTick:
+          type: integer
+          format: int64
+          description: Scaled by 10^pricePrecision
+        qtyStep:
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
+        pricePrecision:
+          type: integer
+        qtyPrecision:
+          type: integer
         status:
           type: integer
           description: "1=Trading, 2=Halt, 3=CancelOnly"
-        basePrecision:
-          type: integer
-        quotePrecision:
-          type: integer
         minQty:
-          type: string
-        maxQty:
-          type: string
-        minNotional:
-          type: string
-        makerFee:
-          type: string
-        takerFee:
-          type: string
-        createdAt:
           type: integer
           format: int64
-        updatedAt:
+          description: Scaled by 10^qtyPrecision
+        maxQty:
+          type: integer
+          format: int64
+          description: Scaled by 10^qtyPrecision
+        minNotional:
+          type: integer
+          format: int64
+          description: Scaled by 10^pricePrecision
+        priceLimitRate:
+          type: number
+          format: double
+        makerFeeRate:
+          type: number
+          format: double
+        takerFeeRate:
+          type: number
+          format: double
+        createdAtMs:
+          type: integer
+          format: int64
+        updatedAtMs:
           type: integer
           format: int64
 

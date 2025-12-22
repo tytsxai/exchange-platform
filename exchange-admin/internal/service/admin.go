@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/exchange/admin/internal/repository"
@@ -11,7 +12,7 @@ import (
 
 // AdminService 后台服务
 type AdminService struct {
-	repo  *repository.AdminRepository
+	repo  AdminRepository
 	idGen IDGenerator
 }
 
@@ -21,7 +22,7 @@ type IDGenerator interface {
 }
 
 // NewAdminService 创建后台服务
-func NewAdminService(repo *repository.AdminRepository, idGen IDGenerator) *AdminService {
+func NewAdminService(repo AdminRepository, idGen IDGenerator) *AdminService {
 	return &AdminService{
 		repo:  repo,
 		idGen: idGen,
@@ -109,7 +110,11 @@ func (s *AdminService) SetSymbolStatus(ctx context.Context, actorID int64, ip, s
 	}
 
 	// 审计日志
-	beforeJSON, _ := json.Marshal(map[string]interface{}{"status": before.Status})
+	beforeStatus := 0
+	if before != nil {
+		beforeStatus = before.Status
+	}
+	beforeJSON, _ := json.Marshal(map[string]interface{}{"status": beforeStatus})
 	afterJSON, _ := json.Marshal(map[string]interface{}{"status": status})
 	s.repo.CreateAuditLog(ctx, &repository.AuditLog{
 		AuditID:     s.idGen.NextID(),
@@ -223,7 +228,7 @@ func (s *AdminService) AssignRole(ctx context.Context, actorID int64, ip string,
 		ActorUserID: actorID,
 		Action:      "ASSIGN_ROLE",
 		TargetType:  "USER_ROLE",
-		TargetID:    string(rune(userID)),
+		TargetID:    strconv.FormatInt(userID, 10),
 		AfterJSON:   afterJSON,
 		IP:          ip,
 	})
@@ -244,7 +249,7 @@ func (s *AdminService) RemoveRole(ctx context.Context, actorID int64, ip string,
 		ActorUserID: actorID,
 		Action:      "REMOVE_ROLE",
 		TargetType:  "USER_ROLE",
-		TargetID:    string(rune(userID)),
+		TargetID:    strconv.FormatInt(userID, 10),
 		BeforeJSON:  beforeJSON,
 		IP:          ip,
 	})

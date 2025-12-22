@@ -24,13 +24,13 @@ type SymbolConfig struct {
 	Symbol         string  `json:"symbol"`
 	BaseAsset      string  `json:"baseAsset"`
 	QuoteAsset     string  `json:"quoteAsset"`
-	PriceTick      float64 `json:"priceTick"`
-	QtyStep        float64 `json:"qtyStep"`
+	PriceTick      int64   `json:"priceTick"`
+	QtyStep        int64   `json:"qtyStep"`
 	PricePrecision int     `json:"pricePrecision"`
 	QtyPrecision   int     `json:"qtyPrecision"`
-	MinQty         float64 `json:"minQty"`
-	MaxQty         float64 `json:"maxQty"`
-	MinNotional    float64 `json:"minNotional"`
+	MinQty         int64   `json:"minQty"`
+	MaxQty         int64   `json:"maxQty"`
+	MinNotional    int64   `json:"minNotional"`
 	PriceLimitRate float64 `json:"priceLimitRate"`
 	MakerFeeRate   float64 `json:"makerFeeRate"`
 	TakerFeeRate   float64 `json:"takerFeeRate"`
