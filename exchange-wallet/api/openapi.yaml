@@ -548,5 +548,3 @@ components:
         completedAtMs:
           type: integer
           format: int64
-          type: integer
-          format: int64
