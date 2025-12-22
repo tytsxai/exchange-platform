@@ -1,0 +1,171 @@
+syntax = "proto3";
+
+package exchange.user.v1;
+
+option go_package = "github.com/exchange/common/gen/user/v1;userv1";
+
+// 用户状态
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_FROZEN = 2;
+  USER_STATUS_DISABLED = 3;
+}
+
+// KYC 状态
+enum KycStatus {
+  KYC_STATUS_UNSPECIFIED = 0;
+  KYC_STATUS_NOT_STARTED = 1;
+  KYC_STATUS_IN_REVIEW = 2;
+  KYC_STATUS_APPROVED = 3;
+  KYC_STATUS_REJECTED = 4;
+}
+
+// 用户
+message User {
+  string user_id = 1;
+  string email = 2;
+  string phone = 3;
+  UserStatus status = 4;
+  KycStatus kyc_status = 5;
+  int64 created_at_ms = 6;
+  int64 updated_at_ms = 7;
+}
+
+// 用户安全设置
+message UserSecurity {
+  string user_id = 1;
+  bool totp_enabled = 2;
+  bool withdraw_whitelist_enabled = 3;
+  string anti_phishing_code = 4;
+  int64 updated_at_ms = 5;
+}
+
+// API Key 权限
+enum ApiKeyPermission {
+  API_KEY_PERMISSION_UNSPECIFIED = 0;
+  API_KEY_PERMISSION_READ = 1;
+  API_KEY_PERMISSION_TRADE = 2;
+  API_KEY_PERMISSION_WITHDRAW = 3;
+}
+
+// API Key 状态
+enum ApiKeyStatus {
+  API_KEY_STATUS_UNSPECIFIED = 0;
+  API_KEY_STATUS_ACTIVE = 1;
+  API_KEY_STATUS_DISABLED = 2;
+}
+
+// API Key
+message ApiKey {
+  string api_key_id = 1;
+  string user_id = 2;
+  string api_key = 3;  // 公开部分
+  string label = 4;
+  repeated ApiKeyPermission permissions = 5;
+  repeated string ip_whitelist = 6;
+  ApiKeyStatus status = 7;
+  int64 created_at_ms = 8;
+  int64 updated_at_ms = 9;
+  int64 last_used_at_ms = 10;
+}
+
+// ========== Auth API ==========
+
+// 注册请求
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+  string invite_code = 3;  // 可选
+}
+
+message RegisterResponse {
+  User user = 1;
+}
+
+// 登录请求
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+  string totp_code = 3;  // 如启用 2FA
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_at_ms = 3;
+  User user = 4;
+}
+
+// 刷新 Token
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_at_ms = 3;
+}
+
+// ========== API Key 管理 ==========
+
+// 创建 API Key
+message CreateApiKeyRequest {
+  string label = 1;
+  repeated ApiKeyPermission permissions = 2;
+  repeated string ip_whitelist = 3;
+  string totp_code = 4;  // 必须 2FA
+}
+
+message CreateApiKeyResponse {
+  ApiKey api_key = 1;
+  string secret = 2;  // 仅创建时返回一次
+}
+
+// 列出 API Key
+message ListApiKeysRequest {}
+
+message ListApiKeysResponse {
+  repeated ApiKey api_keys = 1;
+}
+
+// 删除 API Key
+message DeleteApiKeyRequest {
+  string api_key_id = 1;
+  string totp_code = 2;
+}
+
+message DeleteApiKeyResponse {
+  bool success = 1;
+}
+
+// ========== 2FA ==========
+
+// 启用 2FA
+message Enable2FARequest {
+  string totp_code = 1;  // 验证码
+}
+
+message Enable2FAResponse {
+  bool success = 1;
+  string secret = 2;     // TOTP secret（首次启用时返回）
+  string qr_code_url = 3;
+}
+
+// 禁用 2FA
+message Disable2FARequest {
+  string totp_code = 1;
+  string password = 2;
+}
+
+message Disable2FAResponse {
+  bool success = 1;
+}
+
+// 获取安全状态
+message GetSecurityStatusRequest {}
+
+message GetSecurityStatusResponse {
+  UserSecurity security = 1;
+}

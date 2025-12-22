@@ -1,0 +1,6 @@
+2025/12/22 09:36:46 Starting exchange-order...
+2025/12/22 09:36:46 Connected to PostgreSQL
+2025/12/22 09:36:46 Connected to Redis
+2025/12/22 09:36:46 HTTP server listening on :8081
+2025/12/22 09:43:04 Shutting down...
+2025/12/22 09:43:04 Shutdown complete

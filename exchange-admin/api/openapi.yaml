@@ -1,0 +1,550 @@
+openapi: 3.0.3
+info:
+  title: Exchange Admin API
+  version: 1.0.0
+  description: |
+    Management API for Exchange Administrators
+
+    ## Authentication
+    All endpoints (except /health, /docs) require Bearer token authentication.
+    Token format: `Bearer token_{userId}`
+
+    ## Permissions
+    Admin operations are logged in audit trail. Different roles have different permissions:
+    - Super Admin: Full access
+    - Risk Manager: Kill switch, symbol status
+    - Operator: View only
+
+tags:
+  - name: System
+    description: System status and health
+  - name: Symbols
+    description: Trading pair management
+  - name: Risk Control
+    description: Emergency controls and kill switch
+  - name: Audit
+    description: Audit logs and compliance
+  - name: RBAC
+    description: Role-based access control
+
+servers:
+  - url: http://localhost:8087
+    description: Admin Service
+
+paths:
+  # ==================== System ====================
+  /health:
+    get:
+      tags: [System]
+      summary: Health Check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  /admin/status:
+    get:
+      tags: [System]
+      summary: System Status
+      description: Get overall system status including all services
+      operationId: getSystemStatus
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: System status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemStatus'
+        '401':
+          description: Unauthorized
+
+  # ==================== Symbol Management ====================
+  /admin/symbols:
+    get:
+      tags: [Symbols]
+      summary: List Trading Pairs
+      description: Get all configured trading pairs
+      operationId: listSymbols
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of symbols
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SymbolConfig'
+
+    post:
+      tags: [Symbols]
+      summary: Create Trading Pair
+      description: Create a new trading pair configuration
+      operationId: createSymbol
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSymbolRequest'
+      responses:
+        '200':
+          description: Symbol created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+
+  /admin/symbols/{symbol}:
+    get:
+      tags: [Symbols]
+      summary: Get Trading Pair Config
+      description: Get configuration for a specific trading pair
+      operationId: getSymbol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+          example: BTCUSDT
+      responses:
+        '200':
+          description: Symbol configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolConfig'
+        '404':
+          description: Symbol not found
+
+    patch:
+      tags: [Symbols]
+      summary: Update Trading Pair
+      description: Update trading pair configuration (status, limits, etc.)
+      operationId: updateSymbol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSymbolRequest'
+      responses:
+        '200':
+          description: Symbol updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+        '404':
+          description: Symbol not found
+
+  # ==================== Risk Control ====================
+  /admin/killSwitch:
+    post:
+      tags: [Risk Control]
+      summary: Emergency Kill Switch
+      description: |
+        Execute emergency actions:
+        - **halt**: Stop all trading (no new orders, no cancels)
+        - **cancelOnly**: Allow only order cancellations
+        - **resume**: Resume normal trading
+
+        Can be applied globally or to a specific symbol.
+      operationId: killSwitch
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KillSwitchRequest'
+      responses:
+        '200':
+          description: Action executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid action
+        '401':
+          description: Unauthorized
+
+  # ==================== Audit ====================
+  /admin/auditLogs:
+    get:
+      tags: [Audit]
+      summary: View Audit Logs
+      description: Get audit trail of admin actions
+      operationId: listAuditLogs
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: targetType
+          in: query
+          schema:
+            type: string
+            enum: [SYMBOL, USER, ROLE, SYSTEM]
+          description: Filter by target type
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+          description: Maximum number of logs to return
+      responses:
+        '200':
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLog'
+
+  # ==================== RBAC ====================
+  /admin/roles:
+    get:
+      tags: [RBAC]
+      summary: List Roles
+      description: Get all available roles
+      operationId: listRoles
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+
+  /admin/userRoles:
+    get:
+      tags: [RBAC]
+      summary: Get User Roles
+      description: Get roles assigned to a user
+      operationId: getUserRoles
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: User roles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRoles'
+        '400':
+          description: userId required
+
+    post:
+      tags: [RBAC]
+      summary: Assign Role
+      description: Assign a role to a user
+      operationId: assignRole
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleAssignment'
+      responses:
+        '200':
+          description: Role assigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+    delete:
+      tags: [RBAC]
+      summary: Remove Role
+      description: Remove a role from a user
+      operationId: removeRole
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleAssignment'
+      responses:
+        '200':
+          description: Role removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token from login (format: token_{userId})
+
+  schemas:
+    # ==================== Request Schemas ====================
+    CreateSymbolRequest:
+      type: object
+      required: [symbol, baseAsset, quoteAsset]
+      properties:
+        symbol:
+          type: string
+          example: BTCUSDT
+        baseAsset:
+          type: string
+          example: BTC
+        quoteAsset:
+          type: string
+          example: USDT
+        status:
+          type: integer
+          description: "1=Trading, 2=Halt, 3=CancelOnly"
+          default: 1
+        basePrecision:
+          type: integer
+          default: 8
+        quotePrecision:
+          type: integer
+          default: 8
+        minQty:
+          type: string
+          example: "0.00001"
+        maxQty:
+          type: string
+          example: "1000"
+        minNotional:
+          type: string
+          example: "10"
+        makerFee:
+          type: string
+          description: Maker fee rate (e.g., "0.001" for 0.1%)
+          example: "0.001"
+        takerFee:
+          type: string
+          description: Taker fee rate
+          example: "0.001"
+
+    UpdateSymbolRequest:
+      type: object
+      properties:
+        status:
+          type: integer
+          description: "1=Trading, 2=Halt, 3=CancelOnly"
+        minQty:
+          type: string
+        maxQty:
+          type: string
+        minNotional:
+          type: string
+        makerFee:
+          type: string
+        takerFee:
+          type: string
+
+    KillSwitchRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [halt, cancelOnly, resume]
+          description: |
+            - halt: Stop all trading
+            - cancelOnly: Allow only cancellations
+            - resume: Resume normal trading
+        symbol:
+          type: string
+          description: Specific symbol (optional, omit for global action)
+          example: BTCUSDT
+
+    RoleAssignment:
+      type: object
+      required: [userId, roleId]
+      properties:
+        userId:
+          type: integer
+          format: int64
+          example: 12345
+        roleId:
+          type: integer
+          format: int64
+          example: 1
+
+    # ==================== Response Schemas ====================
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+
+    SystemStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [NORMAL, DEGRADED, MAINTENANCE]
+        tradingEnabled:
+          type: boolean
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceStatus'
+        timestamp:
+          type: integer
+          format: int64
+
+    ServiceStatus:
+      type: object
+      properties:
+        name:
+          type: string
+          example: exchange-order
+        status:
+          type: string
+          enum: [UP, DOWN, DEGRADED]
+        latency:
+          type: integer
+          description: Response time in ms
+
+    SymbolConfig:
+      type: object
+      properties:
+        symbol:
+          type: string
+          example: BTCUSDT
+        baseAsset:
+          type: string
+          example: BTC
+        quoteAsset:
+          type: string
+          example: USDT
+        status:
+          type: integer
+          description: "1=Trading, 2=Halt, 3=CancelOnly"
+        basePrecision:
+          type: integer
+        quotePrecision:
+          type: integer
+        minQty:
+          type: string
+        maxQty:
+          type: string
+        minNotional:
+          type: string
+        makerFee:
+          type: string
+        takerFee:
+          type: string
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        actorId:
+          type: integer
+          format: int64
+          description: User who performed the action
+        action:
+          type: string
+          example: UPDATE_SYMBOL
+        targetType:
+          type: string
+          enum: [SYMBOL, USER, ROLE, SYSTEM]
+        targetId:
+          type: string
+          example: BTCUSDT
+        oldValue:
+          type: string
+          description: JSON of previous state
+        newValue:
+          type: string
+          description: JSON of new state
+        ipAddress:
+          type: string
+          example: "192.168.1.1"
+        createdAt:
+          type: integer
+          format: int64
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: risk_manager
+        description:
+          type: string
+          example: Can manage risk controls and kill switch
+        permissions:
+          type: array
+          items:
+            type: string
+          example: ["symbol:read", "symbol:write", "killswitch:execute"]
+
+    UserRoles:
+      type: object
+      properties:
+        userId:
+          type: integer
+          format: int64
+        roleIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          example: [1, 2]

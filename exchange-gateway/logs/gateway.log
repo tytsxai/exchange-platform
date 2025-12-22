@@ -1,0 +1,4 @@
+2025/12/22 09:36:53 Starting exchange-gateway...
+2025/12/22 09:36:53 HTTP server listening on :8080
+2025/12/22 09:36:54 GET /health 200 25.583µs
+2025/12/22 09:36:54 GET /health 200 7.125µs

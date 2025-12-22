@@ -1,0 +1,409 @@
+// Package service 订单服务
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/exchange/order/internal/repository"
+	"github.com/redis/go-redis/v9"
+)
+
+// OrderService 订单服务
+type OrderService struct {
+	repo        *repository.OrderRepository
+	redis       *redis.Client
+	idGen       IDGenerator
+	orderStream string
+}
+
+// IDGenerator ID 生成器接口
+type IDGenerator interface {
+	NextID() int64
+}
+
+// NewOrderService 创建订单服务
+func NewOrderService(repo *repository.OrderRepository, redisClient *redis.Client, idGen IDGenerator, orderStream string) *OrderService {
+	return &OrderService{
+		repo:        repo,
+		redis:       redisClient,
+		idGen:       idGen,
+		orderStream: orderStream,
+	}
+}
+
+// CreateOrderRequest 下单请求
+type CreateOrderRequest struct {
+	UserID        int64
+	Symbol        string
+	Side          string // BUY / SELL
+	Type          string // LIMIT / MARKET
+	TimeInForce   string // GTC / IOC / FOK / POST_ONLY
+	Price         int64
+	Quantity      int64
+	QuoteOrderQty int64  // 市价买单：花多少钱
+	ClientOrderID string
+}
+
+// CreateOrderResponse 下单响应
+type CreateOrderResponse struct {
+	Order     *repository.Order
+	ErrorCode string
+}
+
+// CreateOrder 创建订单
+func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest) (*CreateOrderResponse, error) {
+	// 1. 获取交易对配置
+	cfg, err := s.repo.GetSymbolConfig(ctx, req.Symbol)
+	if err != nil {
+		return &CreateOrderResponse{ErrorCode: "SYMBOL_NOT_FOUND"}, nil
+	}
+
+	// 2. 检查交易对状态
+	if cfg.Status != 1 {
+		return &CreateOrderResponse{ErrorCode: "SYMBOL_NOT_TRADING"}, nil
+	}
+
+	// 3. 参数校验
+	if err := s.validateOrder(req, cfg); err != nil {
+		return &CreateOrderResponse{ErrorCode: err.Error()}, nil
+	}
+
+	// 4. 幂等检查
+	if req.ClientOrderID != "" {
+		existing, err := s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
+		if err == nil && existing != nil {
+			return &CreateOrderResponse{Order: existing}, nil
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	order := &repository.Order{
+		OrderID:            s.idGen.NextID(),
+		ClientOrderID:      req.ClientOrderID,
+		UserID:             req.UserID,
+		Symbol:             req.Symbol,
+		Side:               parseSide(req.Side),
+		Type:               parseType(req.Type),
+		TimeInForce:        parseTIF(req.TimeInForce),
+		Price:              strconv.FormatInt(req.Price, 10),
+		StopPrice:          "0",
+		OrigQty:            strconv.FormatInt(req.Quantity, 10),
+		ExecutedQty:        "0",
+		CumulativeQuoteQty: "0",
+		Status:             repository.StatusNew,
+		CreateTimeMs:       now,
+		UpdateTimeMs:       now,
+	}
+
+	// 5. 计算冻结金额
+	var freezeAsset string
+	var freezeAmount int64
+	if order.Side == repository.SideBuy {
+		freezeAsset = cfg.QuoteAsset
+		if order.Type == repository.TypeMarket {
+			freezeAmount = req.QuoteOrderQty
+		} else {
+			freezeAmount = req.Price * req.Quantity / 1e8 // 假设精度 8 位
+		}
+	} else {
+		freezeAsset = cfg.BaseAsset
+		freezeAmount = req.Quantity
+	}
+
+	// 6. 调用清算服务冻结资金（这里简化，实际应该 HTTP/gRPC 调用）
+	freezeResp, err := s.freezeBalance(ctx, order.UserID, freezeAsset, freezeAmount, order.OrderID)
+	if err != nil {
+		return nil, fmt.Errorf("freeze balance: %w", err)
+	}
+	if !freezeResp.Success {
+		return &CreateOrderResponse{ErrorCode: freezeResp.ErrorCode}, nil
+	}
+
+	// 7. 保存订单
+	if err := s.repo.CreateOrder(ctx, order); err != nil {
+		// 回滚冻结（实际应该调用解冻）
+		return nil, fmt.Errorf("create order: %w", err)
+	}
+
+	// 8. 发送到撮合队列
+	if err := s.sendToMatching(ctx, order); err != nil {
+		// 订单已创建，撮合失败需要告警
+		return nil, fmt.Errorf("send to matching: %w", err)
+	}
+
+	return &CreateOrderResponse{Order: order}, nil
+}
+
+// CancelOrderRequest 撤单请求
+type CancelOrderRequest struct {
+	UserID        int64
+	Symbol        string
+	OrderID       int64
+	ClientOrderID string
+}
+
+// CancelOrderResponse 撤单响应
+type CancelOrderResponse struct {
+	Order     *repository.Order
+	ErrorCode string
+}
+
+// CancelOrder 撤销订单
+func (s *OrderService) CancelOrder(ctx context.Context, req *CancelOrderRequest) (*CancelOrderResponse, error) {
+	// 1. 获取订单
+	var order *repository.Order
+	var err error
+	if req.OrderID > 0 {
+		order, err = s.repo.GetOrder(ctx, req.OrderID)
+	} else if req.ClientOrderID != "" {
+		order, err = s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
+	} else {
+		return &CancelOrderResponse{ErrorCode: "INVALID_PARAM"}, nil
+	}
+
+	if err != nil {
+		return &CancelOrderResponse{ErrorCode: "ORDER_NOT_FOUND"}, nil
+	}
+
+	// 2. 检查权限
+	if order.UserID != req.UserID {
+		return &CancelOrderResponse{ErrorCode: "ORDER_NOT_FOUND"}, nil
+	}
+
+	// 3. 检查状态
+	if order.Status != repository.StatusNew && order.Status != repository.StatusPartiallyFilled {
+		if order.Status == repository.StatusCanceled {
+			return &CancelOrderResponse{Order: order}, nil // 幂等
+		}
+		return &CancelOrderResponse{ErrorCode: "ORDER_ALREADY_FILLED"}, nil
+	}
+
+	// 4. 发送撤单到撮合
+	if err := s.sendCancelToMatching(ctx, order); err != nil {
+		return nil, fmt.Errorf("send cancel to matching: %w", err)
+	}
+
+	return &CancelOrderResponse{Order: order}, nil
+}
+
+// GetOrder 获取订单
+func (s *OrderService) GetOrder(ctx context.Context, userID, orderID int64) (*repository.Order, error) {
+	order, err := s.repo.GetOrder(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if order.UserID != userID {
+		return nil, repository.ErrOrderNotFound
+	}
+	return order, nil
+}
+
+// ListOpenOrders 查询当前委托
+func (s *OrderService) ListOpenOrders(ctx context.Context, userID int64, symbol string, limit int) ([]*repository.Order, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	return s.repo.ListOpenOrders(ctx, userID, symbol, limit)
+}
+
+// ListOrders 查询历史订单
+func (s *OrderService) ListOrders(ctx context.Context, userID int64, symbol string, startTime, endTime int64, limit int) ([]*repository.Order, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	if endTime == 0 {
+		endTime = time.Now().UnixMilli()
+	}
+	if startTime == 0 {
+		startTime = endTime - 7*24*3600*1000 // 默认 7 天
+	}
+	return s.repo.ListOrders(ctx, userID, symbol, startTime, endTime, limit)
+}
+
+// GetExchangeInfo 获取交易所信息
+func (s *OrderService) GetExchangeInfo(ctx context.Context) ([]*repository.SymbolConfig, error) {
+	return s.repo.ListSymbolConfigs(ctx)
+}
+
+func (s *OrderService) validateOrder(req *CreateOrderRequest, cfg *repository.SymbolConfig) error {
+	// 解析配置值
+	minQty, _ := strconv.ParseFloat(cfg.MinQty, 64)
+	maxQty, _ := strconv.ParseFloat(cfg.MaxQty, 64)
+	qtyStep, _ := strconv.ParseFloat(cfg.QtyStep, 64)
+	priceTick, _ := strconv.ParseFloat(cfg.PriceTick, 64)
+	minNotional, _ := strconv.ParseFloat(cfg.MinNotional, 64)
+
+	reqQty := float64(req.Quantity) / 1e8
+	reqPrice := float64(req.Price) / 1e8
+
+	// 数量校验
+	if reqQty < minQty {
+		return fmt.Errorf("QTY_TOO_SMALL")
+	}
+	if reqQty > maxQty {
+		return fmt.Errorf("QTY_TOO_LARGE")
+	}
+	if qtyStep > 0 {
+		remainder := reqQty / qtyStep
+		if remainder != float64(int64(remainder)) {
+			return fmt.Errorf("INVALID_QUANTITY")
+		}
+	}
+
+	// 限价单价格校验
+	if req.Type == "LIMIT" {
+		if req.Price <= 0 {
+			return fmt.Errorf("INVALID_PRICE")
+		}
+		if priceTick > 0 {
+			remainder := reqPrice / priceTick
+			if remainder != float64(int64(remainder)) {
+				return fmt.Errorf("INVALID_PRICE")
+			}
+		}
+		// 最小成交额
+		notional := reqPrice * reqQty
+		if notional < minNotional {
+			return fmt.Errorf("NOTIONAL_TOO_SMALL")
+		}
+	}
+
+	return nil
+}
+
+// FreezeResponse 冻结响应
+type FreezeResponse struct {
+	Success   bool
+	ErrorCode string
+}
+
+func (s *OrderService) freezeBalance(ctx context.Context, userID int64, asset string, amount, orderID int64) (*FreezeResponse, error) {
+	// 简化实现：实际应该调用 clearing 服务
+	// 这里假设总是成功
+	return &FreezeResponse{Success: true}, nil
+}
+
+// OrderMessage 发送到撮合的消息
+type OrderMessage struct {
+	Type          string `json:"type"`
+	OrderID       int64  `json:"orderId"`
+	ClientOrderID string `json:"clientOrderId"`
+	UserID        int64  `json:"userId"`
+	Symbol        string `json:"symbol"`
+	Side          string `json:"side"`
+	OrderType     string `json:"orderType"`
+	TimeInForce   string `json:"timeInForce"`
+	Price         string `json:"price"`
+	Qty           string `json:"qty"`
+}
+
+func (s *OrderService) sendToMatching(ctx context.Context, order *repository.Order) error {
+	msg := &OrderMessage{
+		Type:          "NEW",
+		OrderID:       order.OrderID,
+		ClientOrderID: order.ClientOrderID,
+		UserID:        order.UserID,
+		Symbol:        order.Symbol,
+		Side:          sideToString(order.Side),
+		OrderType:     typeToString(order.Type),
+		TimeInForce:   tifToString(order.TimeInForce),
+		Price:         order.Price,
+		Qty:           order.OrigQty,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: s.orderStream,
+		Values: map[string]interface{}{
+			"data": string(data),
+		},
+	}).Result()
+
+	return err
+}
+
+func (s *OrderService) sendCancelToMatching(ctx context.Context, order *repository.Order) error {
+	msg := &OrderMessage{
+		Type:          "CANCEL",
+		OrderID:       order.OrderID,
+		ClientOrderID: order.ClientOrderID,
+		UserID:        order.UserID,
+		Symbol:        order.Symbol,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: s.orderStream,
+		Values: map[string]interface{}{
+			"data": string(data),
+		},
+	}).Result()
+
+	return err
+}
+
+func parseSide(s string) int {
+	if s == "BUY" {
+		return repository.SideBuy
+	}
+	return repository.SideSell
+}
+
+func parseType(t string) int {
+	if t == "MARKET" {
+		return repository.TypeMarket
+	}
+	return repository.TypeLimit
+}
+
+func parseTIF(tif string) int {
+	switch tif {
+	case "IOC":
+		return 2
+	case "FOK":
+		return 3
+	case "POST_ONLY":
+		return 4
+	default:
+		return 1 // GTC
+	}
+}
+
+func sideToString(side int) string {
+	if side == repository.SideBuy {
+		return "BUY"
+	}
+	return "SELL"
+}
+
+func typeToString(t int) string {
+	if t == repository.TypeMarket {
+		return "MARKET"
+	}
+	return "LIMIT"
+}
+
+func tifToString(tif int) string {
+	switch tif {
+	case 2:
+		return "IOC"
+	case 3:
+		return "FOK"
+	case 4:
+		return "POST_ONLY"
+	default:
+		return "GTC"
+	}
+}

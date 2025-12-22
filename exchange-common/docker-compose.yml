@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: exchange-postgres
+    environment:
+      POSTGRES_USER: exchange
+      POSTGRES_PASSWORD: exchange123
+      POSTGRES_DB: exchange
+    ports:
+      - "5436:5432"  # 外部端口改为5436避免与其他项目冲突
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U exchange"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis (Streams)
+  redis:
+    image: redis:7-alpine
+    container_name: exchange-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6380:6379"  # 外部端口改为6380避免与本地Redis冲突
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Prometheus 监控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: exchange-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./scripts/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana 可视化
+  grafana:
+    image: grafana/grafana:latest
+    container_name: exchange-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # Jaeger 链路追踪
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: exchange-jaeger
+    ports:
+      - "16686:16686"  # UI
+      - "14268:14268"  # HTTP collector
+      - "6831:6831/udp"  # UDP agent
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: exchange-network

@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package exchange.account.v1;
+
+option go_package = "github.com/exchange/common/gen/account/v1;accountv1";
+
+// 账户余额
+message Balance {
+  string asset = 1;
+  string available = 2;
+  string frozen = 3;
+  int64 updated_at_ms = 4;
+}
+
+// 账户信息
+message Account {
+  string user_id = 1;
+  repeated Balance balances = 2;
+  int64 updated_at_ms = 3;
+}
+
+// 账本变动原因
+enum LedgerReason {
+  LEDGER_REASON_UNSPECIFIED = 0;
+  LEDGER_REASON_ORDER_FREEZE = 1;      // 下单冻结
+  LEDGER_REASON_ORDER_UNFREEZE = 2;    // 撤单解冻
+  LEDGER_REASON_TRADE_SETTLE = 3;      // 成交清算
+  LEDGER_REASON_FEE = 4;               // 手续费
+  LEDGER_REASON_DEPOSIT = 5;           // 充值
+  LEDGER_REASON_WITHDRAW = 6;          // 提现
+  LEDGER_REASON_WITHDRAW_FREEZE = 7;   // 提现冻结
+  LEDGER_REASON_WITHDRAW_UNFREEZE = 8; // 提现解冻（取消）
+  LEDGER_REASON_ADJUST = 9;            // 人工调账
+  LEDGER_REASON_TRANSFER_IN = 10;      // 划转入
+  LEDGER_REASON_TRANSFER_OUT = 11;     // 划转出
+}
+
+// 账本流水（资金 truth）
+message LedgerEntry {
+  string ledger_id = 1;
+  string idempotency_key = 2;  // 幂等键，唯一
+
+  string user_id = 3;
+  string asset = 4;
+
+  // 变动量（可正可负）
+  string available_delta = 5;
+  string frozen_delta = 6;
+
+  // 变动后余额
+  string available_after = 7;
+  string frozen_after = 8;
+
+  LedgerReason reason = 9;
+  string ref_type = 10;  // ORDER / TRADE / DEPOSIT / WITHDRAW
+  string ref_id = 11;    // 关联 ID
+
+  string note = 12;      // 备注
+  int64 created_at_ms = 13;
+}
+
+// 查询账户请求
+message GetAccountRequest {
+  // 从鉴权上下文获取 user_id
+}
+
+// 查询账户响应
+message GetAccountResponse {
+  Account account = 1;
+}
+
+// 查询账本请求
+message ListLedgerRequest {
+  string asset = 1;           // 可选
+  LedgerReason reason = 2;    // 可选
+  int64 start_time_ms = 3;
+  int64 end_time_ms = 4;
+  string from_ledger_id = 5;  // 分页游标
+  int32 limit = 6;
+}
+
+// 查询账本响应
+message ListLedgerResponse {
+  repeated LedgerEntry entries = 1;
+}
+
+// ========== 内部服务接口 ==========
+
+// 冻结请求（下单时调用）
+message FreezeRequest {
+  string idempotency_key = 1;
+  string user_id = 2;
+  string asset = 3;
+  string amount = 4;
+  string ref_type = 5;
+  string ref_id = 6;
+}
+
+// 冻结响应
+message FreezeResponse {
+  bool success = 1;
+  string error_code = 2;
+  Balance balance = 3;
+}
+
+// 解冻请求（撤单时调用）
+message UnfreezeRequest {
+  string idempotency_key = 1;
+  string user_id = 2;
+  string asset = 3;
+  string amount = 4;
+  string ref_type = 5;
+  string ref_id = 6;
+}
+
+// 解冻响应
+message UnfreezeResponse {
+  bool success = 1;
+  string error_code = 2;
+  Balance balance = 3;
+}
+
+// 清算请求（成交时调用）
+message SettleTradeRequest {
+  string idempotency_key = 1;
+  string trade_id = 2;
+  string symbol = 3;
+
+  // Maker 侧
+  string maker_user_id = 4;
+  string maker_order_id = 5;
+  string maker_base_delta = 6;   // base 资产变动
+  string maker_quote_delta = 7;  // quote 资产变动
+  string maker_fee = 8;
+  string maker_fee_asset = 9;
+
+  // Taker 侧
+  string taker_user_id = 10;
+  string taker_order_id = 11;
+  string taker_base_delta = 12;
+  string taker_quote_delta = 13;
+  string taker_fee = 14;
+  string taker_fee_asset = 15;
+}
+
+// 清算响应
+message SettleTradeResponse {
+  bool success = 1;
+  string error_code = 2;
+}

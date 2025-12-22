@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package exchange.trade.v1;
+
+option go_package = "github.com/exchange/common/gen/trade/v1;tradev1";
+
+import "order.proto";
+
+// 成交记录
+message Trade {
+  string trade_id = 1;
+  string symbol = 2;
+
+  string maker_order_id = 3;
+  string taker_order_id = 4;
+  string maker_user_id = 5;
+  string taker_user_id = 6;
+
+  string price = 7;
+  string qty = 8;
+  string quote_qty = 9;
+
+  // 手续费
+  string maker_fee = 10;
+  string taker_fee = 11;
+  string fee_asset = 12;
+
+  exchange.order.v1.Side taker_side = 13;  // taker 方向
+
+  int64 timestamp_ms = 14;
+}
+
+// 用户成交记录（带方向）
+message UserTrade {
+  string trade_id = 1;
+  string symbol = 2;
+  string order_id = 3;
+
+  string price = 4;
+  string qty = 5;
+  string quote_qty = 6;
+  string fee = 7;
+  string fee_asset = 8;
+
+  exchange.order.v1.Side side = 9;
+  bool is_maker = 10;
+
+  int64 timestamp_ms = 11;
+}
+
+// 查询用户成交请求
+message ListUserTradesRequest {
+  string symbol = 1;
+  string order_id = 2;       // 可选，按订单过滤
+  int64 start_time_ms = 3;
+  int64 end_time_ms = 4;
+  string from_trade_id = 5;  // 分页游标
+  int32 limit = 6;
+}
+
+// 用户成交列表响应
+message ListUserTradesResponse {
+  repeated UserTrade trades = 1;
+}
+
+// 市场逐笔成交请求
+message ListMarketTradesRequest {
+  string symbol = 1;
+  int32 limit = 2;
+}
+
+// 市场逐笔成交响应
+message ListMarketTradesResponse {
+  repeated Trade trades = 1;
+}
