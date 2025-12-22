@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	commonredis "github.com/exchange/common/pkg/redis"
 	"github.com/exchange/common/pkg/signature"
 	"github.com/exchange/user/internal/config"
 	"github.com/exchange/user/internal/middleware"
@@ -65,6 +66,7 @@ func main() {
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
+	nonceStore := commonredis.NewNonceStore(&commonredis.Client{Client: rdb}, cfg.NonceKeyPrefix)
 
 	// HTTP 服务
 	mux := http.NewServeMux()
@@ -226,12 +228,13 @@ func main() {
 		}
 
 		var req struct {
-			APIKey    string `json:"apiKey"`
-			Timestamp int64  `json:"timestamp"`
-			Nonce     string `json:"nonce"`
-			Signature string `json:"signature"`
-			Method    string `json:"method"`
-			Path      string `json:"path"`
+			APIKey    string              `json:"apiKey"`
+			Timestamp int64               `json:"timestamp"`
+			Nonce     string              `json:"nonce"`
+			Signature string              `json:"signature"`
+			Method    string              `json:"method"`
+			Path      string              `json:"path"`
+			Query     map[string][]string `json:"query"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -250,7 +253,7 @@ func main() {
 			return
 		}
 
-		secret, userID, _, err := svc.GetApiKeyInfo(r.Context(), req.APIKey)
+		secret, userID, permissions, err := svc.GetApiKeyInfo(r.Context(), req.APIKey)
 		if err != nil {
 			resp["error"] = "invalid api key"
 			w.Header().Set("Content-Type", "application/json")
@@ -260,19 +263,41 @@ func main() {
 
 		path := req.Path
 		query := url.Values{}
-		if parsed, err := url.ParseRequestURI(req.Path); err == nil {
+		if len(req.Query) > 0 {
+			query = url.Values(req.Query)
+		} else if parsed, err := url.ParseRequestURI(req.Path); err == nil {
 			path = parsed.Path
 			query = parsed.Query()
 		}
 
 		query.Del("signature")
-		canonical := signature.BuildCanonicalString(req.Timestamp, req.Nonce, req.Method, path, query, nil)
-		if signature.NewSigner(secret).Verify(canonical, req.Signature) {
+		verifier := signature.NewVerifier(secret, signature.WithNonceStore(nonceStore))
+		err = verifier.VerifyRequest(&signature.Request{
+			ApiKey:      req.APIKey,
+			TimestampMs: req.Timestamp,
+			Nonce:       req.Nonce,
+			Signature:   req.Signature,
+			Method:      req.Method,
+			Path:        path,
+			Query:       query,
+			Body:        nil,
+		})
+		if err == nil {
 			resp["valid"] = true
 			resp["userId"] = userID
+			resp["permissions"] = permissions
 		} else {
-			resp["error"] = "invalid signature"
 			resp["userId"] = userID
+			switch err {
+			case signature.ErrInvalidTimestamp:
+				resp["error"] = "invalid timestamp"
+			case signature.ErrNonceReused:
+				resp["error"] = "nonce reused"
+			case signature.ErrInvalidSignature:
+				resp["error"] = "invalid signature"
+			default:
+				resp["error"] = err.Error()
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

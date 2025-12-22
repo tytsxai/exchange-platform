@@ -342,8 +342,8 @@ func TestTOTPUserHelpers(t *testing.T) {
 	if err := scanner.Scan("value"); err != nil {
 		t.Fatalf("scan value: %v", err)
 	}
-	if len(arr) != 0 {
-		t.Fatalf("expected empty array, got %d", len(arr))
+	if len(arr) != 1 || arr[0] != "value" {
+		t.Fatalf("expected parsed array, got %v", arr)
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)

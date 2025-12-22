@@ -19,9 +19,10 @@ type Config struct {
 	DBName     string
 
 	// Redis
-	RedisAddr     string
-	RedisPassword string
-	RedisDB       int
+	RedisAddr      string
+	RedisPassword  string
+	RedisDB        int
+	NonceKeyPrefix string
 
 	// Streams
 	OrderStream             string
@@ -43,9 +44,10 @@ func Load() *Config {
 		DBPassword: getEnv("DB_PASSWORD", "exchange123"),
 		DBName:     getEnv("DB_NAME", "exchange"),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
-		RedisDB:       getEnvInt("REDIS_DB", 0),
+		RedisAddr:      getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
+		RedisPassword:  getEnv("REDIS_PASSWORD", ""),
+		RedisDB:        getEnvInt("REDIS_DB", 0),
+		NonceKeyPrefix: getEnv("NONCE_KEY_PREFIX", "nonce:user:"),
 
 		OrderStream:             getEnv("ORDER_STREAM", "exchange:orders"),
 		EventStream:             getEnv("EVENT_STREAM", "exchange:events"),

@@ -9,15 +9,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 var (
-	ErrUserNotFound     = errors.New("user not found")
-	ErrEmailExists      = errors.New("email already exists")
-	ErrInvalidPassword  = errors.New("invalid password")
-	ErrApiKeyNotFound   = errors.New("api key not found")
+	ErrUserNotFound    = errors.New("user not found")
+	ErrEmailExists     = errors.New("email already exists")
+	ErrInvalidPassword = errors.New("invalid password")
+	ErrApiKeyNotFound  = errors.New("api key not found")
 )
 
 // UserStatus 用户状态
@@ -327,7 +328,34 @@ func (p *pqStringArray) Scan(src interface{}) error {
 		*p.arr = nil
 		return nil
 	}
-	// 简化实现
-	*p.arr = []string{}
+
+	var source string
+	switch v := src.(type) {
+	case string:
+		source = v
+	case []byte:
+		source = string(v)
+	default:
+		return fmt.Errorf("incompatible type for string array: %T", src)
+	}
+
+	if source == "{}" {
+		*p.arr = []string{}
+		return nil
+	}
+
+	// 简单解析：去除 {}，按 , 分割
+	// 注意：这里未处理带引号和转义的复杂情况，对于 current usage (IP addresses) 足够
+	trimmed := strings.Trim(source, "{}")
+	parts := strings.Split(trimmed, ",")
+
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		// 去除可能的引号
+		part = strings.Trim(part, "\"")
+		result = append(result, part)
+	}
+
+	*p.arr = result
 	return nil
 }
