@@ -189,6 +189,48 @@ func (r *BalanceRepository) Unfreeze(ctx context.Context, tx *sql.Tx, entry *Led
 	return r.insertLedger(ctx, tx, entry)
 }
 
+// Deduct 扣除冻结资金（提现完成）
+func (r *BalanceRepository) Deduct(ctx context.Context, tx *sql.Tx, entry *LedgerEntry) error {
+	// 1. 检查幂等
+	exists, err := r.checkIdempotency(ctx, tx, entry.IdempotencyKey)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrIdempotencyConflict
+	}
+
+	// 2. 获取当前余额（加锁）
+	balance, err := r.getBalanceForUpdate(ctx, tx, entry.UserID, entry.Asset)
+	if err != nil {
+		return err
+	}
+
+	// 3. 检查冻结余额
+	amount := -entry.FrozenDelta
+	if balance.Frozen < amount {
+		return ErrInsufficientBalance
+	}
+
+	// 4. 更新余额（仅减少冻结）
+	newAvailable := balance.Available + entry.AvailableDelta
+	newFrozen := balance.Frozen + entry.FrozenDelta
+
+	if newAvailable < 0 || newFrozen < 0 {
+		return ErrInsufficientBalance
+	}
+
+	entry.AvailableAfter = newAvailable
+	entry.FrozenAfter = newFrozen
+
+	if err := r.updateBalance(ctx, tx, entry.UserID, entry.Asset, newAvailable, newFrozen, balance.Version); err != nil {
+		return err
+	}
+
+	// 5. 写入账本
+	return r.insertLedger(ctx, tx, entry)
+}
+
 // Settle 清算（成交）
 func (r *BalanceRepository) Settle(ctx context.Context, tx *sql.Tx, entries []*LedgerEntry) error {
 	for _, entry := range entries {

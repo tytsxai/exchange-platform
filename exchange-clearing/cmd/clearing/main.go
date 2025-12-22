@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/exchange/clearing/internal/config"
+	"github.com/exchange/clearing/internal/metrics"
 	"github.com/exchange/clearing/internal/service"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
@@ -70,10 +72,25 @@ func main() {
 	go consumeEvents(ctx, redisClient, svc, cfg)
 
 	// HTTP 服务
+	metricsCollector := metrics.NewDefault()
 	mux := http.NewServeMux()
+	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
+	mux.Handle("/metrics", metricsCollector.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		deps := []dependencyStatus{
+			checkPostgres(r.Context(), db),
+			checkRedis(r.Context(), redisClient),
+			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
+		}
+		writeHealth(w, deps)
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		deps := []dependencyStatus{
+			checkPostgres(r.Context(), db),
+			checkRedis(r.Context(), redisClient),
+			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
+		}
+		writeHealth(w, deps)
 	})
 
 	// 获取余额
@@ -143,7 +160,7 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	// 扣除资金（提现完成）
+	// 扣除冻结资金（提现完成）
 	mux.HandleFunc("/internal/deduct", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -187,6 +204,96 @@ func main() {
 	cancel()
 	server.Shutdown(context.Background())
 	log.Println("Shutdown complete")
+}
+
+type dependencyStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Latency int64  `json:"latency"`
+}
+
+type healthResponse struct {
+	Status       string             `json:"status"`
+	Dependencies []dependencyStatus `json:"dependencies"`
+}
+
+func checkPostgres(ctx context.Context, db *sql.DB) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := db.PingContext(timeoutCtx)
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "postgres",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkRedis(ctx context.Context, client *redis.Client) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := client.Ping(timeoutCtx).Err()
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "redis",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkHTTP(ctx context.Context, name, baseURL string, client *http.Client) dependencyStatus {
+	start := time.Now()
+	status := "ok"
+	if baseURL == "" {
+		status = "down"
+	} else {
+		healthURL := strings.TrimRight(baseURL, "/") + "/health"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			status = "down"
+		} else {
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				status = "down"
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+	return dependencyStatus{
+		Name:    name,
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
+	status := "ok"
+	for _, dep := range deps {
+		if dep.Status != "ok" {
+			status = "degraded"
+			break
+		}
+	}
+	code := http.StatusOK
+	if status != "ok" {
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(healthResponse{
+		Status:       status,
+		Dependencies: deps,
+	})
 }
 
 // TradeEvent 成交事件

@@ -33,8 +33,8 @@ type Network struct {
 	Network               string  `json:"network"`
 	DepositEnabled        bool    `json:"depositEnabled"`
 	WithdrawEnabled       bool    `json:"withdrawEnabled"`
-	MinWithdraw           float64 `json:"minWithdraw"`
-	WithdrawFee           float64 `json:"withdrawFee"`
+	MinWithdraw           int64   `json:"minWithdraw"`
+	WithdrawFee           int64   `json:"withdrawFee"`
 	ConfirmationsRequired int     `json:"confirmationsRequired"`
 	ContractAddress       string  `json:"contractAddress,omitempty"`
 	Status                int     `json:"status"`
@@ -56,7 +56,7 @@ type Deposit struct {
 	UserID        int64   `json:"userId"`
 	Asset         string  `json:"asset"`
 	Network       string  `json:"network"`
-	Amount        float64 `json:"amount"`
+	Amount        int64   `json:"amount"`
 	Txid          string  `json:"txid"`
 	Vout          int     `json:"vout"`
 	Confirmations int     `json:"confirmations"`
@@ -73,8 +73,8 @@ type Withdrawal struct {
 	UserID         int64   `json:"userId"`
 	Asset          string  `json:"asset"`
 	Network        string  `json:"network"`
-	Amount         float64 `json:"amount"`
-	Fee            float64 `json:"fee"`
+	Amount         int64   `json:"amount"`
+	Fee            int64   `json:"fee"`
 	Address        string  `json:"address"`
 	Tag            string  `json:"tag,omitempty"`
 	Status         int     `json:"status"` // 1=PENDING, 2=APPROVED, 3=REJECTED, 4=PROCESSING, 5=COMPLETED, 6=FAILED

@@ -145,6 +145,64 @@ func (s *ClearingService) Unfreeze(ctx context.Context, req *UnfreezeRequest) (*
 	return &UnfreezeResponse{Success: true, Balance: balance}, nil
 }
 
+// DeductRequest 扣除请求
+type DeductRequest struct {
+	IdempotencyKey string
+	UserID         int64
+	Asset          string
+	Amount         int64
+	RefType        string
+	RefID          string
+}
+
+// DeductResponse 扣除响应
+type DeductResponse struct {
+	Success   bool
+	ErrorCode string
+	Balance   *repository.Balance
+}
+
+// Deduct 扣除冻结资金（提现完成调用）
+func (s *ClearingService) Deduct(ctx context.Context, req *DeductRequest) (*DeductResponse, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	entry := &repository.LedgerEntry{
+		LedgerID:       s.idGen.NextID(),
+		IdempotencyKey: req.IdempotencyKey,
+		UserID:         req.UserID,
+		Asset:          req.Asset,
+		AvailableDelta: 0,
+		FrozenDelta:    -req.Amount,
+		Reason:         repository.ReasonWithdraw,
+		RefType:        req.RefType,
+		RefID:          req.RefID,
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+
+	err = s.balRepo.Deduct(ctx, tx, entry)
+	if err != nil {
+		if err == repository.ErrInsufficientBalance {
+			return &DeductResponse{Success: false, ErrorCode: "INSUFFICIENT_BALANCE"}, nil
+		}
+		if err == repository.ErrIdempotencyConflict {
+			balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
+			return &DeductResponse{Success: true, Balance: balance}, nil
+		}
+		return nil, fmt.Errorf("deduct: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
+	return &DeductResponse{Success: true, Balance: balance}, nil
+}
+
 // SettleTradeRequest 清算请求
 type SettleTradeRequest struct {
 	IdempotencyKey string

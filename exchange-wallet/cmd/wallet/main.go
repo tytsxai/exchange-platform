@@ -52,16 +52,28 @@ func main() {
 	// 创建服务
 	idGen := &SimpleIDGen{workerID: cfg.WorkerID}
 	repo := repository.NewWalletRepository(db)
-	clearingCli := client.NewClearingClient("http://localhost:8083") // TODO: use config
+	clearingBaseURL := "http://localhost:8083" // TODO: use config
+	clearingCli := client.NewClearingClient(clearingBaseURL)
 	svc := service.NewWalletService(repo, idGen, clearingCli)
 
 	// HTTP 服务
 	mux := http.NewServeMux()
+	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
 
 	// 健康检查 (不受中间件保护，或在中间件中豁免)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		deps := []dependencyStatus{
+			checkPostgres(r.Context(), db),
+			checkHTTP(r.Context(), "clearing", clearingBaseURL, healthHTTPClient),
+		}
+		writeHealth(w, deps)
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		deps := []dependencyStatus{
+			checkPostgres(r.Context(), db),
+			checkHTTP(r.Context(), "clearing", clearingBaseURL, healthHTTPClient),
+		}
+		writeHealth(w, deps)
 	})
 
 	// Swagger UI - API 文档
@@ -197,7 +209,7 @@ func main() {
 			IdempotencyKey string  `json:"idempotencyKey"`
 			Asset          string  `json:"asset"`
 			Network        string  `json:"network"`
-			Amount         float64 `json:"amount"`
+			Amount         int64   `json:"amount"`
 			Address        string  `json:"address"`
 			Tag            string  `json:"tag"`
 		}
@@ -370,10 +382,84 @@ func getApproverID(r *http.Request) int64 {
 	return approverID
 }
 
+type dependencyStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Latency int64  `json:"latency"`
+}
+
+type healthResponse struct {
+	Status       string             `json:"status"`
+	Dependencies []dependencyStatus `json:"dependencies"`
+}
+
+func checkPostgres(ctx context.Context, db *sql.DB) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := db.PingContext(timeoutCtx)
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "postgres",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkHTTP(ctx context.Context, name, baseURL string, client *http.Client) dependencyStatus {
+	start := time.Now()
+	status := "ok"
+	if baseURL == "" {
+		status = "down"
+	} else {
+		healthURL := strings.TrimRight(baseURL, "/") + "/health"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			status = "down"
+		} else {
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				status = "down"
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+	return dependencyStatus{
+		Name:    name,
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
+	status := "ok"
+	for _, dep := range deps {
+		if dep.Status != "ok" {
+			status = "degraded"
+			break
+		}
+	}
+	code := http.StatusOK
+	if status != "ok" {
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(healthResponse{
+		Status:       status,
+		Dependencies: deps,
+	})
+}
+
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. 跳过健康检查和文档
-		if r.URL.Path == "/health" || r.URL.Path == "/docs" || r.URL.Path == "/openapi.yaml" {
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/docs" || r.URL.Path == "/openapi.yaml" {
 			next.ServeHTTP(w, r)
 			return
 		}

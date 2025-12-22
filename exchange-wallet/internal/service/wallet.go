@@ -15,9 +15,9 @@ import (
 
 // WalletService 钱包服务
 type WalletService struct {
-	repo         *repository.WalletRepository
-	idGen        IDGenerator
-	clearingCli  *client.ClearingClient
+	repo        WalletRepository
+	idGen       IDGenerator
+	clearingCli ClearingClient
 }
 
 // IDGenerator ID 生成器接口
@@ -26,7 +26,7 @@ type IDGenerator interface {
 }
 
 // NewWalletService 创建钱包服务
-func NewWalletService(repo *repository.WalletRepository, idGen IDGenerator, clearingCli *client.ClearingClient) *WalletService {
+func NewWalletService(repo WalletRepository, idGen IDGenerator, clearingCli ClearingClient) *WalletService {
 	return &WalletService{
 		repo:        repo,
 		idGen:       idGen,
@@ -76,8 +76,8 @@ func (s *WalletService) ListDeposits(ctx context.Context, userID int64, limit in
 	return s.repo.ListDeposits(ctx, userID, limit)
 }
 
-// ProcessDeposit 处理充值（链上监听调用）
-func (s *WalletService) ProcessDeposit(ctx context.Context, userID int64, asset, network, txid string, vout int, amount float64, confirmations int) error {
+// ProcessDeposit 处理充值（链上监听调用，amount 为最小单位整数）
+func (s *WalletService) ProcessDeposit(ctx context.Context, userID int64, asset, network, txid string, vout int, amount int64, confirmations int) error {
 	// 检查网络配置
 	net, err := s.repo.GetNetwork(ctx, asset, network)
 	if err != nil {
@@ -115,7 +115,7 @@ type WithdrawRequest struct {
 	UserID         int64
 	Asset          string
 	Network        string
-	Amount         float64
+	Amount         int64
 	Address        string
 	Tag            string
 }
@@ -171,7 +171,7 @@ func (s *WalletService) RequestWithdraw(ctx context.Context, req *WithdrawReques
 		IdempotencyKey: req.IdempotencyKey,
 		UserID:         req.UserID,
 		Asset:          req.Asset,
-		Amount:         int64(req.Amount * 1e8),
+		Amount:         req.Amount,
 		RefType:        "WITHDRAW",
 		RefID:          req.IdempotencyKey,
 	}
@@ -227,7 +227,7 @@ func (s *WalletService) RejectWithdraw(ctx context.Context, withdrawID, approver
 		IdempotencyKey: fmt.Sprintf("reject:%d", withdrawID),
 		UserID:         withdraw.UserID,
 		Asset:          withdraw.Asset,
-		Amount:         int64(withdraw.Amount * 1e8),
+		Amount:         withdraw.Amount,
 		RefType:        "WITHDRAW_REJECT",
 		RefID:          fmt.Sprintf("%d", withdrawID),
 	}
@@ -256,7 +256,7 @@ func (s *WalletService) CompleteWithdraw(ctx context.Context, withdrawID int64, 
 		IdempotencyKey: fmt.Sprintf("complete:%d", withdrawID),
 		UserID:         withdraw.UserID,
 		Asset:          withdraw.Asset,
-		Amount:         int64(withdraw.Amount * 1e8),
+		Amount:         withdraw.Amount,
 		RefType:        "WITHDRAW_COMPLETE",
 		RefID:          fmt.Sprintf("%d", withdrawID),
 	}

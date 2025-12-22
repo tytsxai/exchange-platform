@@ -56,6 +56,14 @@ CREATE TABLE exchange_user.api_keys (
 CREATE INDEX idx_api_keys_user_id ON exchange_user.api_keys(user_id);
 CREATE INDEX idx_api_keys_api_key ON exchange_user.api_keys(api_key);
 
+-- 用户 TOTP 密钥
+CREATE TABLE exchange_user.user_totp_secrets (
+    user_id BIGINT PRIMARY KEY REFERENCES exchange_user.users(user_id),
+    secret TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ========== exchange_order schema ==========
 
 -- 交易对配置
@@ -63,13 +71,13 @@ CREATE TABLE exchange_order.symbol_configs (
     symbol VARCHAR(32) PRIMARY KEY,
     base_asset VARCHAR(16) NOT NULL,
     quote_asset VARCHAR(16) NOT NULL,
-    price_tick NUMERIC(32, 16) NOT NULL,
-    qty_step NUMERIC(32, 16) NOT NULL,
+    price_tick BIGINT NOT NULL,
+    qty_step BIGINT NOT NULL,
     price_precision SMALLINT NOT NULL,
     qty_precision SMALLINT NOT NULL,
-    min_qty NUMERIC(32, 16) NOT NULL,
-    max_qty NUMERIC(32, 16) NOT NULL,
-    min_notional NUMERIC(32, 16) NOT NULL,
+    min_qty BIGINT NOT NULL,
+    max_qty BIGINT NOT NULL,
+    min_notional BIGINT NOT NULL,
     price_limit_rate NUMERIC(8, 4) NOT NULL DEFAULT 0.05,
     maker_fee_rate NUMERIC(8, 6) NOT NULL DEFAULT 0.001,
     taker_fee_rate NUMERIC(8, 6) NOT NULL DEFAULT 0.001,
@@ -77,6 +85,12 @@ CREATE TABLE exchange_order.symbol_configs (
     created_at_ms BIGINT NOT NULL,
     updated_at_ms BIGINT NOT NULL
 );
+
+COMMENT ON COLUMN exchange_order.symbol_configs.price_tick IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_order.symbol_configs.qty_step IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_order.symbol_configs.min_qty IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_order.symbol_configs.max_qty IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_order.symbol_configs.min_notional IS 'scaled by 10^price_precision';
 
 -- 订单表
 CREATE TABLE exchange_order.orders (
@@ -87,11 +101,11 @@ CREATE TABLE exchange_order.orders (
     side SMALLINT NOT NULL,  -- 1=BUY, 2=SELL
     type SMALLINT NOT NULL,  -- 1=LIMIT, 2=MARKET
     time_in_force SMALLINT NOT NULL DEFAULT 1,  -- 1=GTC, 2=IOC, 3=FOK, 4=POST_ONLY
-    price NUMERIC(32, 16),
-    stop_price NUMERIC(32, 16),
-    orig_qty NUMERIC(32, 16) NOT NULL,
-    executed_qty NUMERIC(32, 16) NOT NULL DEFAULT 0,
-    cumulative_quote_qty NUMERIC(32, 16) NOT NULL DEFAULT 0,
+    price BIGINT,
+    stop_price BIGINT,
+    orig_qty BIGINT NOT NULL,
+    executed_qty BIGINT NOT NULL DEFAULT 0,
+    cumulative_quote_qty BIGINT NOT NULL DEFAULT 0,
     status SMALLINT NOT NULL DEFAULT 1,  -- 1=NEW, 2=PARTIAL, 3=FILLED, 4=CANCELED, 5=REJECTED, 6=EXPIRED
     reject_reason VARCHAR(255),
     cancel_reason VARCHAR(255),
@@ -101,6 +115,12 @@ CREATE TABLE exchange_order.orders (
     transact_time_ms BIGINT,
     UNIQUE(user_id, client_order_id)
 );
+
+COMMENT ON COLUMN exchange_order.orders.price IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_order.orders.stop_price IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_order.orders.orig_qty IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_order.orders.executed_qty IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_order.orders.cumulative_quote_qty IS 'scaled by 10^price_precision';
 
 CREATE INDEX idx_orders_user_status ON exchange_order.orders(user_id, status, update_time_ms DESC);
 CREATE INDEX idx_orders_user_symbol ON exchange_order.orders(user_id, symbol, update_time_ms DESC);
@@ -114,15 +134,21 @@ CREATE TABLE exchange_order.trades (
     taker_order_id BIGINT NOT NULL,
     maker_user_id BIGINT NOT NULL,
     taker_user_id BIGINT NOT NULL,
-    price NUMERIC(32, 16) NOT NULL,
-    qty NUMERIC(32, 16) NOT NULL,
-    quote_qty NUMERIC(32, 16) NOT NULL,
-    maker_fee NUMERIC(32, 16) NOT NULL,
-    taker_fee NUMERIC(32, 16) NOT NULL,
+    price BIGINT NOT NULL,
+    qty BIGINT NOT NULL,
+    quote_qty BIGINT NOT NULL,
+    maker_fee BIGINT NOT NULL,
+    taker_fee BIGINT NOT NULL,
     fee_asset VARCHAR(16) NOT NULL,
     taker_side SMALLINT NOT NULL,
     timestamp_ms BIGINT NOT NULL
 );
+
+COMMENT ON COLUMN exchange_order.trades.price IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_order.trades.qty IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_order.trades.quote_qty IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_order.trades.maker_fee IS 'scaled by fee asset precision';
+COMMENT ON COLUMN exchange_order.trades.taker_fee IS 'scaled by fee asset precision';
 
 CREATE INDEX idx_trades_symbol ON exchange_order.trades(symbol, timestamp_ms DESC);
 CREATE INDEX idx_trades_maker_order ON exchange_order.trades(maker_order_id);
@@ -136,8 +162,8 @@ CREATE INDEX idx_trades_taker_user ON exchange_order.trades(taker_user_id, times
 CREATE TABLE exchange_clearing.account_balances (
     user_id BIGINT NOT NULL,
     asset VARCHAR(16) NOT NULL,
-    available NUMERIC(32, 16) NOT NULL DEFAULT 0,
-    frozen NUMERIC(32, 16) NOT NULL DEFAULT 0,
+    available BIGINT NOT NULL DEFAULT 0,
+    frozen BIGINT NOT NULL DEFAULT 0,
     version BIGINT NOT NULL DEFAULT 0,
     updated_at_ms BIGINT NOT NULL,
     PRIMARY KEY (user_id, asset),
@@ -145,22 +171,30 @@ CREATE TABLE exchange_clearing.account_balances (
     CONSTRAINT chk_frozen_non_negative CHECK (frozen >= 0)
 );
 
+COMMENT ON COLUMN exchange_clearing.account_balances.available IS 'scaled by asset precision';
+COMMENT ON COLUMN exchange_clearing.account_balances.frozen IS 'scaled by asset precision';
+
 -- 账本流水（资金 truth）
 CREATE TABLE exchange_clearing.ledger_entries (
     ledger_id BIGINT PRIMARY KEY,
     idempotency_key VARCHAR(255) UNIQUE NOT NULL,
     user_id BIGINT NOT NULL,
     asset VARCHAR(16) NOT NULL,
-    available_delta NUMERIC(32, 16) NOT NULL,
-    frozen_delta NUMERIC(32, 16) NOT NULL,
-    available_after NUMERIC(32, 16) NOT NULL,
-    frozen_after NUMERIC(32, 16) NOT NULL,
+    available_delta BIGINT NOT NULL,
+    frozen_delta BIGINT NOT NULL,
+    available_after BIGINT NOT NULL,
+    frozen_after BIGINT NOT NULL,
     reason SMALLINT NOT NULL,  -- 1=ORDER_FREEZE, 2=ORDER_UNFREEZE, 3=TRADE_SETTLE, 4=FEE, 5=DEPOSIT, 6=WITHDRAW...
     ref_type VARCHAR(32) NOT NULL,
     ref_id VARCHAR(64) NOT NULL,
     note TEXT,
     created_at_ms BIGINT NOT NULL
 );
+
+COMMENT ON COLUMN exchange_clearing.ledger_entries.available_delta IS 'scaled by asset precision';
+COMMENT ON COLUMN exchange_clearing.ledger_entries.frozen_delta IS 'scaled by asset precision';
+COMMENT ON COLUMN exchange_clearing.ledger_entries.available_after IS 'scaled by asset precision';
+COMMENT ON COLUMN exchange_clearing.ledger_entries.frozen_after IS 'scaled by asset precision';
 
 CREATE INDEX idx_ledger_user_asset ON exchange_clearing.ledger_entries(user_id, asset, created_at_ms DESC);
 CREATE INDEX idx_ledger_ref ON exchange_clearing.ledger_entries(ref_type, ref_id);
@@ -173,15 +207,22 @@ CREATE TABLE exchange_market.klines (
     interval SMALLINT NOT NULL,  -- 1=1m, 2=5m, 3=15m, 4=30m, 5=1h, 6=4h, 7=1d, 8=1w
     open_time_ms BIGINT NOT NULL,
     close_time_ms BIGINT NOT NULL,
-    open NUMERIC(32, 16) NOT NULL,
-    high NUMERIC(32, 16) NOT NULL,
-    low NUMERIC(32, 16) NOT NULL,
-    close NUMERIC(32, 16) NOT NULL,
-    volume NUMERIC(32, 16) NOT NULL,
-    quote_volume NUMERIC(32, 16) NOT NULL,
+    open BIGINT NOT NULL,
+    high BIGINT NOT NULL,
+    low BIGINT NOT NULL,
+    close BIGINT NOT NULL,
+    volume BIGINT NOT NULL,
+    quote_volume BIGINT NOT NULL,
     trade_count BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (symbol, interval, open_time_ms)
 );
+
+COMMENT ON COLUMN exchange_market.klines.open IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_market.klines.high IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_market.klines.low IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_market.klines.close IS 'scaled by 10^price_precision';
+COMMENT ON COLUMN exchange_market.klines.volume IS 'scaled by 10^qty_precision';
+COMMENT ON COLUMN exchange_market.klines.quote_volume IS 'scaled by 10^price_precision';
 
 -- ========== exchange_wallet schema ==========
 
@@ -201,8 +242,8 @@ CREATE TABLE exchange_wallet.networks (
     network VARCHAR(32) NOT NULL,
     deposit_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     withdraw_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    min_withdraw NUMERIC(32, 16) NOT NULL,
-    withdraw_fee NUMERIC(32, 16) NOT NULL,
+    min_withdraw BIGINT NOT NULL,
+    withdraw_fee BIGINT NOT NULL,
     confirmations_required INT NOT NULL DEFAULT 6,
     contract_address VARCHAR(128),
     status SMALLINT NOT NULL DEFAULT 1,
@@ -210,6 +251,9 @@ CREATE TABLE exchange_wallet.networks (
     updated_at_ms BIGINT NOT NULL,
     PRIMARY KEY (asset, network)
 );
+
+COMMENT ON COLUMN exchange_wallet.networks.min_withdraw IS 'scaled by asset precision';
+COMMENT ON COLUMN exchange_wallet.networks.withdraw_fee IS 'scaled by asset precision';
 
 -- 充值地址
 CREATE TABLE exchange_wallet.deposit_addresses (
@@ -228,7 +272,7 @@ CREATE TABLE exchange_wallet.deposits (
     user_id BIGINT NOT NULL,
     asset VARCHAR(16) NOT NULL,
     network VARCHAR(32) NOT NULL,
-    amount NUMERIC(32, 16) NOT NULL,
+    amount BIGINT NOT NULL,
     txid VARCHAR(128) NOT NULL,
     vout INT NOT NULL DEFAULT 0,
     confirmations INT NOT NULL DEFAULT 0,
@@ -239,6 +283,8 @@ CREATE TABLE exchange_wallet.deposits (
     UNIQUE (asset, network, txid, vout)
 );
 
+COMMENT ON COLUMN exchange_wallet.deposits.amount IS 'scaled by asset precision';
+
 CREATE INDEX idx_deposits_user ON exchange_wallet.deposits(user_id, created_at_ms DESC);
 
 -- 提现记录
@@ -248,8 +294,8 @@ CREATE TABLE exchange_wallet.withdrawals (
     user_id BIGINT NOT NULL,
     asset VARCHAR(16) NOT NULL,
     network VARCHAR(32) NOT NULL,
-    amount NUMERIC(32, 16) NOT NULL,
-    fee NUMERIC(32, 16) NOT NULL,
+    amount BIGINT NOT NULL,
+    fee BIGINT NOT NULL,
     address VARCHAR(128) NOT NULL,
     tag VARCHAR(64),
     status SMALLINT NOT NULL DEFAULT 1,  -- 1=PENDING, 2=APPROVED, 3=REJECTED, 4=PROCESSING, 5=COMPLETED, 6=FAILED
@@ -260,6 +306,9 @@ CREATE TABLE exchange_wallet.withdrawals (
     sent_at_ms BIGINT,
     completed_at_ms BIGINT
 );
+
+COMMENT ON COLUMN exchange_wallet.withdrawals.amount IS 'scaled by asset precision';
+COMMENT ON COLUMN exchange_wallet.withdrawals.fee IS 'scaled by asset precision';
 
 CREATE INDEX idx_withdrawals_user ON exchange_wallet.withdrawals(user_id, requested_at_ms DESC);
 CREATE INDEX idx_withdrawals_status ON exchange_wallet.withdrawals(status, requested_at_ms);
@@ -318,9 +367,9 @@ CREATE TABLE exchange_admin.user_roles (
 -- 插入默认交易对
 INSERT INTO exchange_order.symbol_configs (symbol, base_asset, quote_asset, price_tick, qty_step, price_precision, qty_precision, min_qty, max_qty, min_notional, maker_fee_rate, taker_fee_rate, status, created_at_ms, updated_at_ms)
 VALUES
-    ('BTCUSDT', 'BTC', 'USDT', 0.01, 0.0001, 2, 4, 0.0001, 1000, 10, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
-    ('ETHUSDT', 'ETH', 'USDT', 0.01, 0.001, 2, 3, 0.001, 10000, 10, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
-    ('SOLUSDT', 'SOL', 'USDT', 0.001, 0.01, 3, 2, 0.01, 100000, 5, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000);
+    ('BTCUSDT', 'BTC', 'USDT', 1, 1, 2, 4, 1, 10000000, 1000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
+    ('ETHUSDT', 'ETH', 'USDT', 1, 1, 2, 3, 1, 10000000, 1000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
+    ('SOLUSDT', 'SOL', 'USDT', 1, 1, 3, 2, 1, 10000000, 5000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000);
 
 -- 插入默认资产
 INSERT INTO exchange_wallet.assets (asset, name, precision, status, created_at_ms, updated_at_ms)

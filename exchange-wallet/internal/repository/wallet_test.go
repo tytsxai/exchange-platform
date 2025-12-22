@@ -27,15 +27,15 @@ func TestAssetStruct(t *testing.T) {
 
 func TestNetworkStruct(t *testing.T) {
 	network := &Network{
-		Asset:                  "USDT",
-		Network:                "TRC20",
-		DepositEnabled:         true,
-		WithdrawEnabled:        true,
-		MinWithdraw:            10.0,
-		WithdrawFee:            1.0,
-		ConfirmationsRequired:  20,
-		ContractAddress:        "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-		Status:                 1,
+		Asset:                 "USDT",
+		Network:               "TRC20",
+		DepositEnabled:        true,
+		WithdrawEnabled:       true,
+		MinWithdraw:           10000000,
+		WithdrawFee:           1000000,
+		ConfirmationsRequired: 20,
+		ContractAddress:       "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+		Status:                1,
 	}
 
 	if network.Asset != "USDT" {
@@ -50,8 +50,8 @@ func TestNetworkStruct(t *testing.T) {
 	if !network.WithdrawEnabled {
 		t.Fatal("expected WithdrawEnabled=true")
 	}
-	if network.MinWithdraw != 10.0 {
-		t.Fatalf("expected MinWithdraw=10.0, got %f", network.MinWithdraw)
+	if network.MinWithdraw != 10000000 {
+		t.Fatalf("expected MinWithdraw=10000000, got %d", network.MinWithdraw)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestDepositStruct(t *testing.T) {
 		UserID:        123,
 		Asset:         "BTC",
 		Network:       "BTC",
-		Amount:        1.5,
+		Amount:        150000000,
 		Txid:          "abc123",
 		Vout:          0,
 		Confirmations: 6,
@@ -95,8 +95,8 @@ func TestDepositStruct(t *testing.T) {
 	if deposit.DepositID != 1 {
 		t.Fatalf("expected DepositID=1, got %d", deposit.DepositID)
 	}
-	if deposit.Amount != 1.5 {
-		t.Fatalf("expected Amount=1.5, got %f", deposit.Amount)
+	if deposit.Amount != 150000000 {
+		t.Fatalf("expected Amount=150000000, got %d", deposit.Amount)
 	}
 	if deposit.Status != DepositStatusCredited {
 		t.Fatalf("expected Status=DepositStatusCredited, got %d", deposit.Status)
@@ -110,8 +110,8 @@ func TestWithdrawalStruct(t *testing.T) {
 		UserID:         123,
 		Asset:          "BTC",
 		Network:        "BTC",
-		Amount:         1.0,
-		Fee:            0.0001,
+		Amount:         100000000,
+		Fee:            10000,
 		Address:        "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
 		Tag:            "",
 		Status:         WithdrawStatusPending,
@@ -122,8 +122,8 @@ func TestWithdrawalStruct(t *testing.T) {
 	if withdrawal.WithdrawID != 1 {
 		t.Fatalf("expected WithdrawID=1, got %d", withdrawal.WithdrawID)
 	}
-	if withdrawal.Amount != 1.0 {
-		t.Fatalf("expected Amount=1.0, got %f", withdrawal.Amount)
+	if withdrawal.Amount != 100000000 {
+		t.Fatalf("expected Amount=100000000, got %d", withdrawal.Amount)
 	}
 	if withdrawal.Status != WithdrawStatusPending {
 		t.Fatalf("expected Status=WithdrawStatusPending, got %d", withdrawal.Status)
