@@ -59,15 +59,18 @@ func (rl *RateLimiter) Allow(key string) bool {
 func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for key, b := range rl.requests {
-			if now.After(b.resetAt) {
-				delete(rl.requests, key)
-			}
-		}
-		rl.mu.Unlock()
+		rl.cleanupOnce(time.Now())
 	}
+}
+
+func (rl *RateLimiter) cleanupOnce(now time.Time) {
+	rl.mu.Lock()
+	for key, b := range rl.requests {
+		if now.After(b.resetAt) {
+			delete(rl.requests, key)
+		}
+	}
+	rl.mu.Unlock()
 }
 
 // RateLimit 限流中间件

@@ -17,14 +17,47 @@ info:
 
     **Signature Calculation:**
     ```
-    canonical = timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + queryString
+    canonicalQuery = sorted query string (exclude `signature` if present)
+    canonical = timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + canonicalQuery
     signature = HMAC-SHA256(apiSecret, canonical)
     ```
+    Note: request body is not included in the signature.
 
     **Permissions:**
     - `1` = Read (query orders, balances)
     - `2` = Trade (place/cancel orders)
     - `4` = Withdraw (request withdrawals)
+
+    ## Rate Limits
+
+    - Public endpoints: 1200 requests per minute per IP
+    - Private endpoints: 600 requests per minute per API key
+    - Orders: 10 requests per second per API key
+
+    When rate limited, the API returns HTTP `429` with `RATE_LIMIT_EXCEEDED`.
+    Response headers include:
+    - `X-RateLimit-Limit`
+    - `X-RateLimit-Remaining`
+    - `X-RateLimit-Reset` (Unix timestamp in seconds)
+
+    ## Error Codes
+
+    Common error codes returned in `ErrorResponse.code`:
+    - `INVALID_SIGNATURE`: Signature mismatch
+    - `INVALID_TIMESTAMP`: Timestamp outside allowed window
+    - `INVALID_NONCE`: Nonce reused or invalid
+    - `INSUFFICIENT_BALANCE`: Not enough balance to place order
+    - `ORDER_NOT_FOUND`: Order does not exist
+    - `INVALID_SYMBOL`: Symbol is not supported
+    - `RATE_LIMIT_EXCEEDED`: Too many requests
+
+    ## WebSocket
+
+    Base URL: `wss://api.example.com/ws`
+
+    Authentication: public streams do not require auth; private streams require
+    the same signature headers in the initial connection query string:
+    `apiKey`, `timestamp`, `nonce`, `signature`.
 
   contact:
     name: API Support
@@ -48,6 +81,8 @@ tags:
     description: Real-time market data
   - name: API Keys
     description: API Key management
+  - name: WebSocket
+    description: Streaming market and account updates
 
 paths:
   # ==================== Public Endpoints ====================
@@ -110,6 +145,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RegisterRequest'
+            example:
+              email: user@example.com
+              password: "P@ssw0rd123"
       responses:
         '200':
           description: Registration successful
@@ -117,12 +155,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RegisterResponse'
+              example:
+                userId: 10001
+                email: user@example.com
         '400':
           description: Invalid request or email already exists
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: EMAIL_EXISTS
+                message: Email already registered
 
   /v1/auth/login:
     post:
@@ -135,6 +179,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: user@example.com
+              password: "P@ssw0rd123"
       responses:
         '200':
           description: Login successful
@@ -142,12 +189,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
+              example:
+                userId: 10001
+                email: user@example.com
+                token: token_10001
         '401':
           description: Invalid credentials
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_CREDENTIALS
+                message: Email or password incorrect
 
   # ==================== Market Data Endpoints ====================
   /v1/exchangeInfo:
@@ -192,6 +246,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderBook'
+              example:
+                lastUpdateId: 12001
+                bids: [["45000.00", "1.5"], ["44999.00", "2.0"]]
+                asks: [["45001.00", "0.8"], ["45002.00", "1.2"]]
         '400':
           description: Symbol required
 
@@ -264,6 +322,14 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              symbol: BTCUSDT
+              side: BUY
+              type: LIMIT
+              timeInForce: GTC
+              price: 4500000000000
+              quantity: 100000000
+              clientOrderId: "my-order-001"
       responses:
         '200':
           description: Order created
@@ -271,14 +337,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Order'
+              example:
+                orderId: 1735012345678001
+                clientOrderId: my-order-001
+                symbol: BTCUSDT
+                side: BUY
+                type: LIMIT
+                timeInForce: GTC
+                price: "45000.00000000"
+                origQty: "1.00000000"
+                executedQty: "0.00000000"
+                status: NEW
+                createdAt: 1703232000000
+                updatedAt: 1703232000000
         '400':
           description: Invalid order parameters
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_ORDER
+                message: Price is required for LIMIT orders
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_SIGNATURE
+                message: Signature mismatch
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: RATE_LIMIT_EXCEEDED
+                message: Too many requests
 
     get:
       tags: [Trading]
@@ -304,6 +402,13 @@ paths:
                 $ref: '#/components/schemas/Order'
         '404':
           description: Order not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: ORDER_NOT_FOUND
+                message: Order does not exist
 
     delete:
       tags: [Trading]
@@ -338,6 +443,13 @@ paths:
                 $ref: '#/components/schemas/Order'
         '400':
           description: Order cannot be cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: ORDER_NOT_CANCELABLE
+                message: Order already filled
 
   /v1/openOrders:
     get:
@@ -466,6 +578,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountInfo'
+              example:
+                userId: 10001
+                balances:
+                  - asset: BTC
+                    available: "1.50000000"
+                    frozen: "0.50000000"
 
   /v1/ledger:
     get:
@@ -515,6 +633,10 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateApiKeyRequest'
+            example:
+              label: Trading Bot
+              permissions: 3
+              ipWhitelist: ["192.168.1.1"]
       responses:
         '200':
           description: API Key created (secret shown only once)
@@ -522,6 +644,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateApiKeyResponse'
+              example:
+                apiKeyId: 20001
+                apiKey: ak_xxxxxxxxxxxxxxxx
+                secret: sk_xxxxxxxxxxxxxxxx
+                label: Trading Bot
+                permissions: 3
 
     get:
       tags: [API Keys]
@@ -566,6 +694,36 @@ paths:
                   success:
                     type: boolean
                     example: true
+
+  # ==================== WebSocket Endpoints ====================
+  /ws/stream:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket Streaming
+      description: |
+        WebSocket entrypoint for streaming data.
+
+        **Public streams (no auth):**
+        - `btcusdt@ticker`
+        - `btcusdt@depth`
+        - `btcusdt@trades`
+
+        **Private streams (auth required):**
+        - `account@balance`
+        - `account@orders`
+
+        **Example URL:**
+        `wss://api.example.com/ws?streams=btcusdt@ticker/btcusdt@depth`
+      parameters:
+        - name: streams
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Stream list separated by `/`
+      responses:
+        '101':
+          description: Switching Protocols
 
 components:
   securitySchemes:

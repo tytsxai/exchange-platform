@@ -168,7 +168,8 @@ Headers:
   X-API-NONCE: uuid-string
   X-API-SIGNATURE: hmac-sha256-signature
 
-Signature = HMAC-SHA256(secret, timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + query)
+Signature = HMAC-SHA256(secret, timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + canonicalQuery)
+canonicalQuery = sorted query string (exclude `signature` if present); request body is not signed.
 ```
 
 **管理接口 (Admin/Wallet)**: Bearer Token

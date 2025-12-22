@@ -16,53 +16,103 @@ import (
 
 // AuthConfig 鉴权配置
 type AuthConfig struct {
-	TimeWindow time.Duration // 时间窗口
-	GetSecret  func(apiKey string) (secret string, userID int64, permissions int, err error)
+	TimeWindow       time.Duration // 时间窗口（用于本地验签/WS 鉴权）
+	GetSecret        func(apiKey string) (secret string, userID int64, permissions int, err error)
+	VerifySignature  func(ctx context.Context, req *VerifySignatureRequest) (userID int64, permissions int, err error)
+	WhitelistPaths   map[string]struct{}
+}
+
+// VerifySignatureRequest 验签请求（供 user 服务 RPC 使用）
+type VerifySignatureRequest struct {
+	APIKey    string
+	Timestamp int64
+	Nonce     string
+	Signature string
+	Method    string
+	Path      string
+	Query     map[string][]string
+}
+
+var defaultWhitelist = map[string]struct{}{
+	"/health":       {},
+	"/ready":        {},
+	"/docs":         {},
+	"/openapi.yaml": {},
+	"/v1/ping":      {},
 }
 
 // Auth 鉴权中间件
 func Auth(cfg *AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isWhitelistedPath(r.URL.Path, cfg) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			apiKey := r.Header.Get("X-API-KEY")
 			timestampStr := r.Header.Get("X-API-TIMESTAMP")
 			nonce := r.Header.Get("X-API-NONCE")
 			signature := r.Header.Get("X-API-SIGNATURE")
 
-			if apiKey == "" || timestampStr == "" || signature == "" {
+			if apiKey == "" || timestampStr == "" || nonce == "" || signature == "" {
 				http.Error(w, `{"code":"UNAUTHENTICATED","message":"missing auth headers"}`, http.StatusUnauthorized)
 				return
 			}
 
-			// 验证时间戳
 			timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 			if err != nil {
 				http.Error(w, `{"code":"INVALID_TIMESTAMP","message":"invalid timestamp"}`, http.StatusUnauthorized)
 				return
 			}
 
-			now := time.Now().UnixMilli()
-			diff := now - timestamp
-			if diff < 0 {
-				diff = -diff
-			}
-			if diff > cfg.TimeWindow.Milliseconds() {
-				http.Error(w, `{"code":"INVALID_TIMESTAMP","message":"timestamp expired"}`, http.StatusUnauthorized)
-				return
-			}
+			var userID int64
+			var permissions int
 
-			// 获取 secret
-			secret, userID, permissions, err := cfg.GetSecret(apiKey)
-			if err != nil {
-				http.Error(w, `{"code":"INVALID_API_KEY","message":"invalid api key"}`, http.StatusUnauthorized)
-				return
-			}
+			switch {
+			case cfg != nil && cfg.VerifySignature != nil:
+				userID, permissions, err = cfg.VerifySignature(r.Context(), &VerifySignatureRequest{
+					APIKey:    apiKey,
+					Timestamp: timestamp,
+					Nonce:     nonce,
+					Signature: signature,
+					Method:    r.Method,
+					Path:      r.URL.Path,
+					Query:     r.URL.Query(),
+				})
+				if err != nil {
+					http.Error(w, `{"code":"INVALID_SIGNATURE","message":"invalid signature"}`, http.StatusUnauthorized)
+					return
+				}
+			case cfg != nil && cfg.GetSecret != nil:
+				window := cfg.TimeWindow
+				if window <= 0 {
+					window = 30 * time.Second
+				}
+				now := time.Now().UnixMilli()
+				diff := now - timestamp
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > window.Milliseconds() {
+					http.Error(w, `{"code":"INVALID_TIMESTAMP","message":"timestamp expired"}`, http.StatusUnauthorized)
+					return
+				}
 
-			// 验证签名
-			canonical := buildCanonicalString(timestamp, nonce, r.Method, r.URL.Path, r.URL.Query())
-			expectedSig := sign(secret, canonical)
-			if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
-				http.Error(w, `{"code":"INVALID_SIGNATURE","message":"invalid signature"}`, http.StatusUnauthorized)
+				secret, id, perms, err := cfg.GetSecret(apiKey)
+				if err != nil {
+					http.Error(w, `{"code":"INVALID_API_KEY","message":"invalid api key"}`, http.StatusUnauthorized)
+					return
+				}
+				canonical := buildCanonicalString(timestamp, nonce, r.Method, r.URL.Path, r.URL.Query())
+				expectedSig := sign(secret, canonical)
+				if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+					http.Error(w, `{"code":"INVALID_SIGNATURE","message":"invalid signature"}`, http.StatusUnauthorized)
+					return
+				}
+				userID, permissions = id, perms
+			default:
+				http.Error(w, `{"code":"UNAUTHENTICATED","message":"auth not configured"}`, http.StatusUnauthorized)
 				return
 			}
 
@@ -158,4 +208,13 @@ func sign(secret, data string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func isWhitelistedPath(path string, cfg *AuthConfig) bool {
+	if cfg != nil && cfg.WhitelistPaths != nil {
+		_, ok := cfg.WhitelistPaths[path]
+		return ok
+	}
+	_, ok := defaultWhitelist[path]
+	return ok
 }

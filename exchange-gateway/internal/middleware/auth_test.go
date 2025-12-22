@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -172,6 +173,12 @@ func TestAuthConfigStruct(t *testing.T) {
 		GetSecret: func(apiKey string) (string, int64, int, error) {
 			return "secret", 123, 7, nil
 		},
+		VerifySignature: func(ctx context.Context, req *VerifySignatureRequest) (int64, int, error) {
+			if req.APIKey != "test" {
+				return 0, 0, fmt.Errorf("invalid api key")
+			}
+			return 123, 7, nil
+		},
 	}
 
 	if cfg.TimeWindow != 5*time.Minute {
@@ -191,13 +198,30 @@ func TestAuthConfigStruct(t *testing.T) {
 	if perms != 7 {
 		t.Fatalf("expected perms=7, got %d", perms)
 	}
+
+	gotUserID, gotPerms, err := cfg.VerifySignature(context.Background(), &VerifySignatureRequest{
+		APIKey:    "test",
+		Timestamp: 12345,
+		Nonce:     "nonce",
+		Signature: "sig",
+		Method:    "GET",
+		Path:      "/v1/order",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotUserID != 123 {
+		t.Fatalf("expected userID=123, got %d", gotUserID)
+	}
+	if gotPerms != 7 {
+		t.Fatalf("expected perms=7, got %d", gotPerms)
+	}
 }
 
 func TestAuthMiddlewareMissingHeaders(t *testing.T) {
 	cfg := &AuthConfig{
-		TimeWindow: 5 * time.Minute,
-		GetSecret: func(apiKey string) (string, int64, int, error) {
-			return "secret", 123, 7, nil
+		VerifySignature: func(ctx context.Context, req *VerifySignatureRequest) (int64, int, error) {
+			return 123, 7, nil
 		},
 	}
 
@@ -217,9 +241,8 @@ func TestAuthMiddlewareMissingHeaders(t *testing.T) {
 
 func TestAuthMiddlewareInvalidTimestamp(t *testing.T) {
 	cfg := &AuthConfig{
-		TimeWindow: 5 * time.Minute,
-		GetSecret: func(apiKey string) (string, int64, int, error) {
-			return "secret", 123, 7, nil
+		VerifySignature: func(ctx context.Context, req *VerifySignatureRequest) (int64, int, error) {
+			return 123, 7, nil
 		},
 	}
 
@@ -230,7 +253,105 @@ func TestAuthMiddlewareInvalidTimestamp(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-API-KEY", "test-key")
 	req.Header.Set("X-API-TIMESTAMP", "invalid")
+	req.Header.Set("X-API-NONCE", "nonce")
 	req.Header.Set("X-API-SIGNATURE", "test-sig")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddlewareWhitelist(t *testing.T) {
+	called := false
+	cfg := &AuthConfig{
+		VerifySignature: func(ctx context.Context, req *VerifySignatureRequest) (int64, int, error) {
+			called = true
+			return 123, 7, nil
+		},
+	}
+
+	handler := Auth(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if called {
+		t.Fatal("expected verify not called for whitelisted path")
+	}
+}
+
+func TestAuthMiddlewareVerifySignatureCalled(t *testing.T) {
+	var gotReq *VerifySignatureRequest
+	cfg := &AuthConfig{
+		VerifySignature: func(ctx context.Context, req *VerifySignatureRequest) (int64, int, error) {
+			gotReq = req
+			return 99, 3, nil
+		},
+	}
+
+	handler := Auth(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := GetUserID(r.Context())
+		if userID != 99 {
+			t.Fatalf("expected userID=99, got %d", userID)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/order", nil)
+	req.Header.Set("X-API-KEY", "test-key")
+	req.Header.Set("X-API-TIMESTAMP", "1700000000000")
+	req.Header.Set("X-API-NONCE", "nonce")
+	req.Header.Set("X-API-SIGNATURE", "test-sig")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if gotReq == nil {
+		t.Fatal("expected VerifySignature to be called")
+	}
+	if gotReq.APIKey != "test-key" {
+		t.Fatalf("expected apiKey=test-key, got %s", gotReq.APIKey)
+	}
+	if gotReq.Method != "POST" {
+		t.Fatalf("expected method=POST, got %s", gotReq.Method)
+	}
+	if gotReq.Path != "/v1/order" {
+		t.Fatalf("expected path=/v1/order, got %s", gotReq.Path)
+	}
+	if gotReq.Nonce != "nonce" {
+		t.Fatalf("expected nonce=nonce, got %s", gotReq.Nonce)
+	}
+}
+
+func TestAuthMiddlewareInvalidSignature(t *testing.T) {
+	cfg := &AuthConfig{
+		VerifySignature: func(ctx context.Context, req *VerifySignatureRequest) (int64, int, error) {
+			return 0, 0, fmt.Errorf("invalid signature")
+		},
+	}
+
+	handler := Auth(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/v1/account", nil)
+	req.Header.Set("X-API-KEY", "test-key")
+	req.Header.Set("X-API-TIMESTAMP", "1700000000000")
+	req.Header.Set("X-API-NONCE", "nonce")
+	req.Header.Set("X-API-SIGNATURE", "bad-sig")
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)

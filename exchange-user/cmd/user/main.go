@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -14,10 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exchange/common/pkg/signature"
 	"github.com/exchange/user/internal/config"
+	"github.com/exchange/user/internal/middleware"
 	"github.com/exchange/user/internal/repository"
 	"github.com/exchange/user/internal/service"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
 // SimpleIDGen 简单 ID 生成器（并发安全）
@@ -52,13 +56,46 @@ func main() {
 	repo := repository.NewUserRepository(db)
 	svc := service.NewUserService(repo, idGen)
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPassword,
+		DB:       cfg.RedisDB,
+	})
+	defer rdb.Close()
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+
 	// HTTP 服务
 	mux := http.NewServeMux()
+	internalToken := os.Getenv("INTERNAL_TOKEN")
+	if internalToken == "" {
+		internalToken = "internal-secret"
+	}
+	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Internal-Token") != internalToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		deps := []dependencyStatus{
+			checkPostgres(r.Context(), db),
+			checkRedis(r.Context(), rdb),
+		}
+		writeHealth(w, deps)
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		deps := []dependencyStatus{
+			checkPostgres(r.Context(), db),
+			checkRedis(r.Context(), rdb),
+		}
+		writeHealth(w, deps)
 	})
 
 	// 注册
@@ -99,7 +136,7 @@ func main() {
 	})
 
 	// 登录
-	mux.HandleFunc("/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+	loginHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -135,6 +172,8 @@ func main() {
 			"token":  resp.Token,
 		})
 	})
+	loginLimiter := middleware.NewLoginRateLimiter(rdb)
+	mux.Handle("/v1/auth/login", loginLimiter.Middleware(loginHandler))
 
 	// 创建 API Key
 	mux.HandleFunc("/v1/apiKeys", func(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +197,7 @@ func main() {
 	})
 
 	// 内部接口：获取 API Key 信息（供网关调用）
-	mux.HandleFunc("/internal/apiKey", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/apiKey", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		apiKey := r.URL.Query().Get("apiKey")
 		if apiKey == "" {
 			http.Error(w, "apiKey required", http.StatusBadRequest)
@@ -177,7 +216,68 @@ func main() {
 			"userId":      userID,
 			"permissions": permissions,
 		})
-	})
+	}))
+
+	// 内部接口：验证 API Key 签名
+	mux.HandleFunc("/internal/verify-signature", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			APIKey    string `json:"apiKey"`
+			Timestamp int64  `json:"timestamp"`
+			Nonce     string `json:"nonce"`
+			Signature string `json:"signature"`
+			Method    string `json:"method"`
+			Path      string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"valid":  false,
+			"userId": int64(0),
+			"error":  "",
+		}
+		if req.APIKey == "" || req.Timestamp == 0 || req.Nonce == "" || req.Signature == "" || req.Method == "" || req.Path == "" {
+			resp["error"] = "missing required fields"
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		secret, userID, _, err := svc.GetApiKeyInfo(r.Context(), req.APIKey)
+		if err != nil {
+			resp["error"] = "invalid api key"
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		path := req.Path
+		query := url.Values{}
+		if parsed, err := url.ParseRequestURI(req.Path); err == nil {
+			path = parsed.Path
+			query = parsed.Query()
+		}
+
+		query.Del("signature")
+		canonical := signature.BuildCanonicalString(req.Timestamp, req.Nonce, req.Method, path, query, nil)
+		if signature.NewSigner(secret).Verify(canonical, req.Signature) {
+			resp["valid"] = true
+			resp["userId"] = userID
+		} else {
+			resp["error"] = "invalid signature"
+			resp["userId"] = userID
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -201,6 +301,69 @@ func main() {
 	defer cancel()
 	server.Shutdown(ctx)
 	log.Println("Shutdown complete")
+}
+
+type dependencyStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Latency int64  `json:"latency"`
+}
+
+type healthResponse struct {
+	Status       string             `json:"status"`
+	Dependencies []dependencyStatus `json:"dependencies"`
+}
+
+func checkPostgres(ctx context.Context, db *sql.DB) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := db.PingContext(timeoutCtx)
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "postgres",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkRedis(ctx context.Context, client *redis.Client) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := client.Ping(timeoutCtx).Err()
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "redis",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
+	status := "ok"
+	for _, dep := range deps {
+		if dep.Status != "ok" {
+			status = "degraded"
+			break
+		}
+	}
+	code := http.StatusOK
+	if status != "ok" {
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(healthResponse{
+		Status:       status,
+		Dependencies: deps,
+	})
 }
 
 func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService) {

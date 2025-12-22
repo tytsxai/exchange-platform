@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/exchange/gateway/internal/config"
 	"github.com/exchange/gateway/internal/middleware"
+	"github.com/exchange/gateway/internal/ws"
+	"github.com/redis/go-redis/v9"
 )
 
 // 全局 HTTP 客户端（复用连接）
@@ -30,17 +33,49 @@ func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// 创建限流器
 	ipLimiter := middleware.NewRateLimiter(cfg.IPRateLimit, time.Second)
 	userLimiter := middleware.NewRateLimiter(cfg.UserRateLimit, time.Second)
 
+	// Redis client (private events)
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPassword,
+	})
+	defer redisClient.Close()
+
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	log.Printf("Connected to Redis")
+
 	// 创建路由
 	mux := http.NewServeMux()
+	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
 
 	// 公共接口（无需鉴权）
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		deps := []dependencyStatus{
+			checkRedis(r.Context(), redisClient),
+			checkHTTP(r.Context(), "order", cfg.OrderServiceURL, healthHTTPClient),
+			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
+			checkHTTP(r.Context(), "user", cfg.UserServiceURL, healthHTTPClient),
+			checkHTTP(r.Context(), "clearing", cfg.ClearingServiceURL, healthHTTPClient),
+		}
+		writeHealth(w, deps)
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		deps := []dependencyStatus{
+			checkRedis(r.Context(), redisClient),
+			checkHTTP(r.Context(), "order", cfg.OrderServiceURL, healthHTTPClient),
+			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
+			checkHTTP(r.Context(), "user", cfg.UserServiceURL, healthHTTPClient),
+			checkHTTP(r.Context(), "clearing", cfg.ClearingServiceURL, healthHTTPClient),
+		}
+		writeHealth(w, deps)
 	})
 
 	mux.HandleFunc("/v1/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -129,14 +164,41 @@ func main() {
 	authCfg := &middleware.AuthConfig{
 		TimeWindow: 30 * time.Second,
 		GetSecret: func(apiKey string) (string, int64, int, error) {
-			// 简化实现：实际应该调用 user 服务
-			// 这里返回测试数据
 			if apiKey == "test-api-key" {
 				return "test-secret", 1, middleware.PermRead | middleware.PermTrade, nil
 			}
 			return "", 0, 0, fmt.Errorf("invalid api key")
 		},
+		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
+			// 简化实现：实际应该调用 user 服务 VerifySignature RPC
+			if req.APIKey == "test-api-key" {
+				return 1, middleware.PermRead | middleware.PermTrade, nil
+			}
+			return 0, 0, fmt.Errorf("invalid signature")
+		},
 	}
+
+	// Private WebSocket
+	hub := ws.NewHub()
+	consumer := ws.NewConsumer(redisClient, hub, cfg.PrivateUserEventChannel)
+	go func() {
+		if err := consumer.Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("private consumer stopped: %v", err)
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				log.Printf("private ws connections: %d", hub.ConnectionCount())
+			}
+		}
+	}()
+	mux.HandleFunc("/ws/private", ws.PrivateHandler(hub, authCfg))
 
 	// 私有接口（需要鉴权）
 	privateMux := http.NewServeMux()
@@ -186,10 +248,86 @@ func main() {
 	<-sigCh
 
 	log.Println("Shutting down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	server.Shutdown(ctx)
+	cancel()
+	hub.CloseAll()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	server.Shutdown(shutdownCtx)
 	log.Println("Shutdown complete")
+}
+
+type dependencyStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Latency int64  `json:"latency"`
+}
+
+type healthResponse struct {
+	Status       string             `json:"status"`
+	Dependencies []dependencyStatus `json:"dependencies"`
+}
+
+func checkRedis(ctx context.Context, client *redis.Client) dependencyStatus {
+	start := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := client.Ping(timeoutCtx).Err()
+	status := "ok"
+	if err != nil {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "redis",
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkHTTP(ctx context.Context, name, baseURL string, client *http.Client) dependencyStatus {
+	start := time.Now()
+	status := "ok"
+	if baseURL == "" {
+		status = "down"
+	} else {
+		healthURL := strings.TrimRight(baseURL, "/") + "/health"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			status = "down"
+		} else {
+			resp, err := client.Do(req)
+			if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				status = "down"
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+	return dependencyStatus{
+		Name:    name,
+		Status:  status,
+		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
+	status := "ok"
+	for _, dep := range deps {
+		if dep.Status != "ok" {
+			status = "degraded"
+			break
+		}
+	}
+	code := http.StatusOK
+	if status != "ok" {
+		code = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(healthResponse{
+		Status:       status,
+		Dependencies: deps,
+	})
 }
 
 // proxyHandler 创建代理处理器

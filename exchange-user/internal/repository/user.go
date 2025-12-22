@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -129,12 +130,8 @@ func (r *UserRepository) CreateApiKey(ctx context.Context, apiKey *ApiKey) (secr
 		return "", fmt.Errorf("generate secret: %w", err)
 	}
 
-	// 哈希 secret
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("hash secret: %w", err)
-	}
-	apiKey.SecretHash = string(hash)
+	// 存储原始 secret（用于签名验证）
+	apiKey.SecretHash = secret
 
 	query := `
 		INSERT INTO exchange_user.api_keys
@@ -208,8 +205,7 @@ func (r *UserRepository) DeleteApiKey(ctx context.Context, userID, apiKeyID int6
 
 // VerifyApiKeySecret 验证 API Key Secret
 func (r *UserRepository) VerifyApiKeySecret(apiKey *ApiKey, secret string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(apiKey.SecretHash), []byte(secret))
-	return err == nil
+	return hmac.Equal([]byte(apiKey.SecretHash), []byte(secret))
 }
 
 func (r *UserRepository) scanUser(row *sql.Row) (*User, error) {

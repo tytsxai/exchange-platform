@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -147,6 +148,13 @@ func TestUserKeyFunc(t *testing.T) {
 	if key != "192.168.1.1:12345" {
 		t.Fatalf("expected fallback to IP, got %s", key)
 	}
+
+	ctx := context.WithValue(req.Context(), userIDKey, int64(9))
+	req = req.WithContext(ctx)
+	key = UserKeyFunc(req)
+	if key != string(rune(9)) {
+		t.Fatalf("expected user ID key, got %s", key)
+	}
 }
 
 func TestRateLimitMiddlewareWithUserKey(t *testing.T) {
@@ -164,5 +172,20 @@ func TestRateLimitMiddlewareWithUserKey(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestRateLimiterCleanupOnce(t *testing.T) {
+	rl := NewRateLimiter(1, time.Minute)
+	rl.requests["expired"] = &bucket{count: 1, resetAt: time.Now().Add(-time.Second)}
+	rl.requests["active"] = &bucket{count: 1, resetAt: time.Now().Add(time.Minute)}
+
+	rl.cleanupOnce(time.Now())
+
+	if _, ok := rl.requests["expired"]; ok {
+		t.Fatal("expected expired bucket to be removed")
+	}
+	if _, ok := rl.requests["active"]; !ok {
+		t.Fatal("expected active bucket to remain")
 	}
 }

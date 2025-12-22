@@ -8,9 +8,21 @@ import (
 	"github.com/exchange/user/internal/repository"
 )
 
+// UserRepository 用户仓储接口
+type UserRepository interface {
+	CreateUser(ctx context.Context, user *repository.User, password string) error
+	GetUserByEmail(ctx context.Context, email string) (*repository.User, error)
+	VerifyPassword(user *repository.User, password string) bool
+	CreateApiKey(ctx context.Context, apiKey *repository.ApiKey) (secret string, err error)
+	ListApiKeys(ctx context.Context, userID int64) ([]*repository.ApiKey, error)
+	DeleteApiKey(ctx context.Context, userID, apiKeyID int64) error
+	GetApiKeyByKey(ctx context.Context, key string) (*repository.ApiKey, error)
+	GetUserByID(ctx context.Context, userID int64) (*repository.User, error)
+}
+
 // UserService 用户服务
 type UserService struct {
-	repo  *repository.UserRepository
+	repo  UserRepository
 	idGen IDGenerator
 }
 
@@ -20,7 +32,7 @@ type IDGenerator interface {
 }
 
 // NewUserService 创建用户服务
-func NewUserService(repo *repository.UserRepository, idGen IDGenerator) *UserService {
+func NewUserService(repo UserRepository, idGen IDGenerator) *UserService {
 	return &UserService{
 		repo:  repo,
 		idGen: idGen,

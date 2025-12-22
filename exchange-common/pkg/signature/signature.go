@@ -41,7 +41,8 @@ func (s *Signer) Verify(canonicalString, signature string) bool {
 }
 
 // BuildCanonicalString 构建规范字符串
-// 格式：timestampMs\nnonce\nmethod\npath\ncanonicalQuery\nsha256(body)
+// 格式：timestampMs\nnonce\nmethod\npath\ncanonicalQuery
+// body 参数预留（当前签名不包含 body）
 func BuildCanonicalString(timestampMs int64, nonce, method, path string, query url.Values, body []byte) string {
 	parts := []string{
 		fmt.Sprintf("%d", timestampMs),
@@ -49,7 +50,6 @@ func BuildCanonicalString(timestampMs int64, nonce, method, path string, query u
 		strings.ToUpper(method),
 		path,
 		canonicalQuery(query),
-		hashBody(body),
 	}
 	return strings.Join(parts, "\n")
 }
@@ -76,15 +76,6 @@ func canonicalQuery(query url.Values) string {
 	}
 
 	return strings.Join(pairs, "&")
-}
-
-// hashBody 计算 body 的 SHA256
-func hashBody(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	h := sha256.Sum256(body)
-	return hex.EncodeToString(h[:])
 }
 
 // Verifier 签名验证器

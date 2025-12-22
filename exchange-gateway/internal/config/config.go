@@ -22,6 +22,9 @@ type Config struct {
 	RedisAddr     string
 	RedisPassword string
 
+	// Private events (pub/sub)
+	PrivateUserEventChannel string
+
 	// 限流
 	IPRateLimit   int // 每秒请求数
 	UserRateLimit int
@@ -39,8 +42,10 @@ func Load() *Config {
 		UserServiceURL:     getEnv("USER_SERVICE_URL", "http://localhost:8085"),
 		MatchingServiceURL: getEnv("MATCHING_SERVICE_URL", "http://localhost:8082"),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"),  // 默认使用6380避免与本地Redis冲突
+		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+
+		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
 		IPRateLimit:   getEnvInt("IP_RATE_LIMIT", 100),
 		UserRateLimit: getEnvInt("USER_RATE_LIMIT", 50),
