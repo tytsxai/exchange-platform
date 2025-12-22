@@ -169,18 +169,29 @@ func main() {
 		GetSecret:  nil, // 使用 VerifySignature
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			// 构造请求
-			payload := map[string]interface{}{
-				"apiKey":    req.APIKey,
-				"timestamp": req.Timestamp,
-				"nonce":     req.Nonce,
-				"signature": req.Signature,
-				"method":    req.Method,
-				"path":      req.Path,
-				"query":     req.Query,
+			payload := struct {
+				APIKey    string              `json:"apiKey"`
+				Timestamp int64               `json:"timestamp"`
+				Nonce     string              `json:"nonce"`
+				Signature string              `json:"signature"`
+				Method    string              `json:"method"`
+				Path      string              `json:"path"`
+				Query     map[string][]string `json:"query,omitempty"`
+			}{
+				APIKey:    req.APIKey,
+				Timestamp: req.Timestamp,
+				Nonce:     req.Nonce,
+				Signature: req.Signature,
+				Method:    req.Method,
+				Path:      req.Path,
+				Query:     req.Query,
 			}
-			body, _ := json.Marshal(payload)
+			body, err := json.Marshal(payload)
+			if err != nil {
+				return 0, 0, fmt.Errorf("marshal payload: %w", err)
+			}
 
-			verifyURL := cfg.UserServiceURL + "/internal/verify-signature"
+			verifyURL := strings.TrimRight(cfg.UserServiceURL, "/") + "/internal/verify-signature"
 			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, verifyURL, bytes.NewReader(body))
 			if err != nil {
 				return 0, 0, fmt.Errorf("create validation request: %w", err)
