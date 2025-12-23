@@ -164,7 +164,7 @@
             "command": "bash exchange-common/scripts/generate-sdk.sh --help",
             "expected": "Usage"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
