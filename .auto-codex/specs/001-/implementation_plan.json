@@ -132,7 +132,7 @@
             "command": "bash exchange-common/scripts/build-contract-docs.sh --dry-run",
             "expected": "OK"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
