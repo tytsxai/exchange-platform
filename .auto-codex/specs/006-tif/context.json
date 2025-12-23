@@ -1,0 +1,62 @@
+{
+  "task_description": "# 高级订单类型与 TIF\n\n支持 IOC/FOK/止损止盈等高级订单类型与更多 TIF 策略，扩展撮合引擎与订单生命周期管理。\n\n## Rationale\n高级订单提升交易灵活性，满足更复杂的交易策略需求。\n\n## User Stories\n- 作为高频交易者，我希望使用高级订单类型，以便更好地控制风险与执行。\n\n## Acceptance Criteria\n- [ ] 当用户提交 IOC/FOK 订单时，系统按规则立即成交或撤销并返回结果。\n- [ ] 止损/止盈订单可在触发条件满足时自动生成市价或限价订单。\n- [ ] 新增订单类型在 API 文档与错误码中有清晰说明。\n",
+  "scoped_services": [
+    "exchange-matching",
+    "exchange-order",
+    "exchange-common",
+    "exchange-gateway"
+  ],
+  "files_to_modify": {
+    "exchange-matching": [
+      "exchange-matching/internal/engine/engine.go",
+      "exchange-matching/internal/orderbook/orderbook.go",
+      "exchange-matching/internal/handler/handler.go",
+      "exchange-matching/internal/engine/engine_test.go"
+    ],
+    "exchange-order": [
+      "exchange-order/internal/service/order.go",
+      "exchange-order/internal/service/validator.go",
+      "exchange-order/internal/service/updater.go",
+      "exchange-order/internal/service/order_test.go",
+      "exchange-order/internal/service/updater_test.go",
+      "exchange-order/internal/repository/order.go"
+    ],
+    "exchange-common": [
+      "exchange-common/proto/order.proto",
+      "exchange-common/pkg/errors/errors.go"
+    ],
+    "exchange-gateway": [
+      "exchange-gateway/api/openapi.yaml"
+    ]
+  },
+  "files_to_reference": [
+    "exchange-matching/internal/engine/engine.go",
+    "exchange-matching/internal/orderbook/orderbook.go",
+    "exchange-matching/internal/handler/handler.go",
+    "exchange-order/internal/service/order.go",
+    "exchange-order/internal/service/validator.go",
+    "exchange-order/internal/service/updater.go",
+    "exchange-order/internal/repository/order.go",
+    "exchange-common/proto/order.proto",
+    "exchange-gateway/api/openapi.yaml"
+  ],
+  "patterns": {
+    "matching_engine": "Engine converts Command to orderbook.Order, calls OrderBook.Match, emits ORDER_* events; TimeInForce uses ints (1=GTC, 2=IOC, 3=FOK, 4=POST_ONLY).",
+    "matching_handler": "Handler reads Redis Stream order messages, maps JSON fields to engine.Command, and forwards events to Redis Stream.",
+    "order_service": "OrderService validates request, freezes balance via clearing client, persists order, then sends a JSON message to matching stream.",
+    "order_updates": "OrderUpdater consumes matching events from Redis Stream and updates order status, trades, and unfreeze logic.",
+    "repository": "OrderRepository stores stop_price/time_in_force/type/status fields and supports status transitions with specific reason fields."
+  },
+  "existing_implementations": {
+    "description": "IOC/FOK and POST_ONLY enums exist across order.proto, matching engine, and order service; stop_price field exists in orders table/schema, but trigger logic is not implemented.",
+    "relevant_files": [
+      "exchange-matching/internal/engine/engine.go",
+      "exchange-matching/internal/orderbook/orderbook.go",
+      "exchange-order/internal/service/order.go",
+      "exchange-order/internal/service/updater.go",
+      "exchange-common/proto/order.proto",
+      "exchange-common/scripts/init-db.sql"
+    ]
+  },
+  "updated_at": "2025-12-24T05:07:59"
+}
