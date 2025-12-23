@@ -1,0 +1,347 @@
+{
+  "feature": "Versioned API contracts, docs, SDK, and CI compatibility gate",
+  "workflow_type": "feature",
+  "workflow_rationale": "Requires new contract publishing, versioned documentation, breaking-change detection, and SDK generation across services.",
+  "phases": [
+    {
+      "id": "phase-1-contract-baseline",
+      "name": "Contract Sources and Versioning",
+      "type": "implementation",
+      "description": "Declare the contract source-of-truth and version manifest for REST/WS contracts.",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Create a version manifest and release notes template for contract publishing.",
+          "service": "contracts",
+          "files_to_modify": [],
+          "files_to_create": [
+            "contracts/versions.json",
+            "contracts/README.md"
+          ],
+          "patterns_from": [
+            "exchange-common/README.md"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python3 - <<'PY'\nimport json\nwith open('contracts/versions.json', 'r', encoding='utf-8') as f:\n    data = json.load(f)\nprint('OK' if 'current' in data else 'MISSING')\nPY",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-1-2",
+          "description": "Add a contract packaging script to bundle OpenAPI and Proto sources by version.",
+          "service": "exchange-common",
+          "files_to_modify": [],
+          "files_to_create": [
+            "exchange-common/scripts/publish-contracts.sh"
+          ],
+          "patterns_from": [
+            "exchange-common/scripts/gen-proto.sh"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash exchange-common/scripts/publish-contracts.sh --help",
+            "expected": "Usage"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-1-3",
+          "description": "Align Gateway OpenAPI metadata with version manifest and contract identifiers.",
+          "service": "exchange-gateway",
+          "files_to_modify": [
+            "exchange-gateway/api/openapi.yaml"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "exchange-gateway/api/openapi.yaml"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "rg -n \"^  version:\" exchange-gateway/api/openapi.yaml",
+            "expected": "version:"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-1-4",
+          "description": "Align Admin OpenAPI metadata with version manifest and contract identifiers.",
+          "service": "exchange-admin",
+          "files_to_modify": [
+            "exchange-admin/api/openapi.yaml"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "exchange-admin/api/openapi.yaml"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "rg -n \"^  version:\" exchange-admin/api/openapi.yaml",
+            "expected": "version:"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-1-5",
+          "description": "Align Wallet OpenAPI metadata with version manifest and contract identifiers.",
+          "service": "exchange-wallet",
+          "files_to_modify": [
+            "exchange-wallet/api/openapi.yaml"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "exchange-wallet/api/openapi.yaml"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "rg -n \"^  version:\" exchange-wallet/api/openapi.yaml",
+            "expected": "version:"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-docs",
+      "name": "Versioned Contract Docs",
+      "type": "implementation",
+      "description": "Generate a docs site that exposes current and historical contract versions with error codes.",
+      "depends_on": [
+        "phase-1-contract-baseline"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Create docs generation tooling and a static contract documentation landing page.",
+          "service": "docs",
+          "files_to_modify": [],
+          "files_to_create": [
+            "exchange-common/scripts/build-contract-docs.sh",
+            "docs/contracts/index.html",
+            "docs/contracts/styles.css"
+          ],
+          "patterns_from": [
+            "exchange-common/scripts/gen-proto.sh"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash exchange-common/scripts/build-contract-docs.sh --dry-run",
+            "expected": "OK"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-sdk",
+      "name": "SDK Generation",
+      "type": "implementation",
+      "description": "Generate a language SDK with basic examples from the contract source.",
+      "depends_on": [
+        "phase-1-contract-baseline"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add SDK generation script and a TypeScript SDK example.",
+          "service": "sdk",
+          "files_to_modify": [],
+          "files_to_create": [
+            "exchange-common/scripts/generate-sdk.sh",
+            "sdk/typescript/README.md",
+            "sdk/typescript/example.ts"
+          ],
+          "patterns_from": [
+            "exchange-common/scripts/gen-proto.sh"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash exchange-common/scripts/generate-sdk.sh --help",
+            "expected": "Usage"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-ci",
+      "name": "Breaking-Change Gate",
+      "type": "implementation",
+      "description": "Add CI automation that fails on breaking contract changes and reports diffs.",
+      "depends_on": [
+        "phase-1-contract-baseline"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Add contract compatibility check script and CI workflow wiring.",
+          "service": "ci",
+          "files_to_modify": [],
+          "files_to_create": [
+            "exchange-common/scripts/check-contract-compat.sh",
+            ".github/workflows/contract-compat.yml"
+          ],
+          "patterns_from": [
+            "exchange-common/scripts/gen-proto.sh"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash exchange-common/scripts/check-contract-compat.sh --help",
+            "expected": "Usage"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-integration",
+      "name": "Integration",
+      "type": "integration",
+      "description": "Verify end-to-end contract publishing, docs generation, SDK output, and compatibility gate.",
+      "depends_on": [
+        "phase-2-docs",
+        "phase-3-sdk",
+        "phase-4-ci"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Run the full contract release pipeline and confirm outputs.",
+          "all_services": true,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "e2e",
+            "steps": [
+              "Run contract packaging script to publish current version",
+              "Run docs generation and confirm current + historical versions are listed",
+              "Generate SDK and confirm example compiles",
+              "Run compatibility check and confirm no breaking changes"
+            ]
+          },
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 5,
+    "total_subtasks": 8,
+    "services_involved": [
+      "contracts",
+      "exchange-common",
+      "exchange-gateway",
+      "exchange-admin",
+      "exchange-wallet",
+      "docs",
+      "sdk",
+      "ci"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 3,
+      "parallel_groups": [
+        {
+          "phases": [
+            "phase-2-docs",
+            "phase-3-sdk",
+            "phase-4-ci"
+          ],
+          "reason": "All depend only on phase-1 and touch separate files/directories"
+        }
+      ],
+      "recommended_workers": 3,
+      "speedup_estimate": "~2x faster than sequential"
+    },
+    "startup_command": "source auto-codex/.venv/bin/activate && python3 auto-codex/run.py --spec 001 --parallel 3"
+  },
+  "verification_strategy": {
+    "risk_level": "medium",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "Contract compatibility checks fail on breaking changes and report diffs",
+      "Docs site exposes current and historical contract versions plus error codes",
+      "SDK generation produces a usable client with a basic example"
+    ],
+    "verification_steps": [
+      {
+        "name": "Unit Tests",
+        "command": "go test ./...",
+        "expected_outcome": "All tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Contract Compatibility Check",
+        "command": "bash exchange-common/scripts/check-contract-compat.sh --check",
+        "expected_outcome": "No breaking changes detected",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Medium risk change requires unit coverage plus an integration-level contract compatibility check."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "go test ./..."
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": true,
+      "commands": [
+        "bash exchange-common/scripts/check-contract-compat.sh --check",
+        "bash exchange-common/scripts/build-contract-docs.sh"
+      ],
+      "services_to_test": [
+        "exchange-common",
+        "docs"
+      ]
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": []
+    },
+    "browser_verification": {
+      "required": true,
+      "pages": [
+        {
+          "url": "docs/contracts/index.html",
+          "checks": [
+            "renders",
+            "lists current version",
+            "lists at least one historical version",
+            "links to error code documentation"
+          ]
+        }
+      ]
+    },
+    "database_verification": {
+      "required": false,
+      "checks": []
+    }
+  },
+  "qa_signoff": null,
+  "status": "human_review",
+  "planStatus": "review",
+  "updated_at": "2025-12-23T20:35:07.054Z"
+}
