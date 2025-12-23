@@ -1,0 +1,1120 @@
+openapi: 3.0.3
+info:
+  title: Exchange API
+  version: v1.0.0
+  x-contract-id: exchange-gateway
+  description: |
+    Cryptocurrency Exchange Platform API
+
+    ## Authentication
+
+    Private endpoints require HMAC-SHA256 signature authentication:
+
+    **Required Headers:**
+    - `X-API-KEY`: Your API Key
+    - `X-API-TIMESTAMP`: Unix timestamp in milliseconds
+    - `X-API-NONCE`: Random string (UUID recommended)
+    - `X-API-SIGNATURE`: HMAC-SHA256 signature
+
+    **Signature Calculation:**
+    ```
+    canonicalQuery = sorted query string (exclude `signature` if present)
+    canonical = timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + canonicalQuery
+    signature = HMAC-SHA256(apiSecret, canonical)
+    ```
+    Note: request body is not included in the signature.
+
+    **Permissions:**
+    - `1` = Read (query orders, balances)
+    - `2` = Trade (place/cancel orders)
+    - `4` = Withdraw (request withdrawals)
+
+    ## Rate Limits
+
+    - Public endpoints: 1200 requests per minute per IP
+    - Private endpoints: 600 requests per minute per API key
+    - Orders: 10 requests per second per API key
+
+    When rate limited, the API returns HTTP `429` with `RATE_LIMIT_EXCEEDED`.
+    Response headers include:
+    - `X-RateLimit-Limit`
+    - `X-RateLimit-Remaining`
+    - `X-RateLimit-Reset` (Unix timestamp in seconds)
+
+    ## Error Codes
+
+    Common error codes returned in `ErrorResponse.code`:
+    - `INVALID_SIGNATURE`: Signature mismatch
+    - `INVALID_TIMESTAMP`: Timestamp outside allowed window
+    - `INVALID_NONCE`: Nonce reused or invalid
+    - `INSUFFICIENT_BALANCE`: Not enough balance to place order
+    - `ORDER_NOT_FOUND`: Order does not exist
+    - `INVALID_SYMBOL`: Symbol is not supported
+    - `RATE_LIMIT_EXCEEDED`: Too many requests
+
+    ## WebSocket
+
+    Base URL: `wss://api.example.com/ws`
+
+    Authentication: public streams do not require auth; private streams require
+    the same signature headers in the initial connection query string:
+    `apiKey`, `timestamp`, `nonce`, `signature`.
+
+  contact:
+    name: API Support
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local Gateway
+
+tags:
+  - name: Public
+    description: Public endpoints (no authentication required)
+  - name: Auth
+    description: User authentication
+  - name: Trading
+    description: Order management (requires Trade permission)
+  - name: Account
+    description: Account and balance queries (requires Read permission)
+  - name: Market Data
+    description: Real-time market data
+  - name: API Keys
+    description: API Key management
+  - name: WebSocket
+    description: Streaming market and account updates
+
+paths:
+  # ==================== Public Endpoints ====================
+  /health:
+    get:
+      tags: [Public]
+      summary: Health Check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  /v1/ping:
+    get:
+      tags: [Public]
+      summary: Test Connectivity
+      operationId: ping
+      responses:
+        '200':
+          description: Pong
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {}
+
+  /v1/time:
+    get:
+      tags: [Public]
+      summary: Server Time
+      operationId: getServerTime
+      responses:
+        '200':
+          description: Current server time
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverTime:
+                    type: integer
+                    format: int64
+                    description: Unix timestamp in milliseconds
+                    example: 1703232000000
+
+  # ==================== Auth Endpoints ====================
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: User Registration
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              email: user@example.com
+              password: "P@ssw0rd123"
+      responses:
+        '200':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              example:
+                userId: 10001
+                email: user@example.com
+        '400':
+          description: Invalid request or email already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: EMAIL_EXISTS
+                message: Email already registered
+
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: User Login
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: user@example.com
+              password: "P@ssw0rd123"
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                userId: 10001
+                email: user@example.com
+                token: v1.payload.signature
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_CREDENTIALS
+                message: Email or password incorrect
+
+  # ==================== Market Data Endpoints ====================
+  /v1/exchangeInfo:
+    get:
+      tags: [Market Data]
+      summary: Exchange Information
+      description: Get trading rules and symbol information
+      operationId: getExchangeInfo
+      responses:
+        '200':
+          description: Exchange configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeInfo'
+
+  /v1/depth:
+    get:
+      tags: [Market Data]
+      summary: Order Book
+      description: Get current order book depth
+      operationId: getDepth
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            example: BTCUSDT
+          description: Trading pair symbol
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            enum: [5, 10, 20, 50, 100]
+          description: Number of price levels
+      responses:
+        '200':
+          description: Order book data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderBook'
+              example:
+                lastUpdateId: 12001
+                bids: [["45000.00", "1.5"], ["44999.00", "2.0"]]
+                asks: [["45001.00", "0.8"], ["45002.00", "1.2"]]
+        '400':
+          description: Symbol required
+
+  /v1/trades:
+    get:
+      tags: [Market Data]
+      summary: Recent Trades
+      description: Get recent trades for a symbol
+      operationId: getRecentTrades
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            example: BTCUSDT
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: Recent trades
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Trade'
+
+  /v1/ticker:
+    get:
+      tags: [Market Data]
+      summary: 24hr Ticker
+      description: Get 24hr price change statistics
+      operationId: getTicker
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+            example: BTCUSDT
+          description: If not provided, returns all tickers
+      responses:
+        '200':
+          description: Ticker data
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Ticker'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/Ticker'
+
+  # ==================== Trading Endpoints ====================
+  /v1/order:
+    post:
+      tags: [Trading]
+      summary: Place Order
+      description: Create a new order (requires Trade permission)
+      operationId: createOrder
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              symbol: BTCUSDT
+              side: BUY
+              type: LIMIT
+              timeInForce: GTC
+              price: 4500000000000
+              quantity: 100000000
+              clientOrderId: "my-order-001"
+      responses:
+        '200':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+              example:
+                orderId: 1735012345678001
+                clientOrderId: my-order-001
+                symbol: BTCUSDT
+                side: BUY
+                type: LIMIT
+                timeInForce: GTC
+                price: "45000.00000000"
+                origQty: "1.00000000"
+                executedQty: "0.00000000"
+                status: NEW
+                createdAt: 1703232000000
+                updatedAt: 1703232000000
+        '400':
+          description: Invalid order parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_ORDER
+                message: Price is required for LIMIT orders
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_SIGNATURE
+                message: Signature mismatch
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: RATE_LIMIT_EXCEEDED
+                message: Too many requests
+
+    get:
+      tags: [Trading]
+      summary: Query Order
+      description: Get order details by orderId
+      operationId: getOrder
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orderId
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: Order ID
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: Order not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: ORDER_NOT_FOUND
+                message: Order does not exist
+
+    delete:
+      tags: [Trading]
+      summary: Cancel Order
+      description: Cancel an active order
+      operationId: cancelOrder
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: orderId
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Order ID (either orderId or clientOrderId required)
+        - name: clientOrderId
+          in: query
+          schema:
+            type: string
+          description: Client order ID
+      responses:
+        '200':
+          description: Order cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: Order cannot be cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: ORDER_NOT_CANCELABLE
+                message: Order already filled
+
+  /v1/openOrders:
+    get:
+      tags: [Trading]
+      summary: Current Open Orders
+      description: Get all open orders for a symbol or all symbols
+      operationId: getOpenOrders
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+          description: Filter by symbol (optional)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+      responses:
+        '200':
+          description: List of open orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+
+  /v1/allOrders:
+    get:
+      tags: [Trading]
+      summary: All Orders
+      description: Get all orders (active, canceled, filled)
+      operationId: getAllOrders
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: startTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Start time (Unix ms)
+        - name: endTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: End time (Unix ms)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: List of orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+
+  /v1/myTrades:
+    get:
+      tags: [Trading]
+      summary: Account Trade List
+      description: Get trades for a specific account and symbol
+      operationId: getMyTrades
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: startTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: endTime
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: List of trades
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AccountTrade'
+
+  # ==================== Account Endpoints ====================
+  /v1/account:
+    get:
+      tags: [Account]
+      summary: Account Information
+      description: Get current account balances
+      operationId: getAccount
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Account balances
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountInfo'
+              example:
+                userId: 10001
+                balances:
+                  - asset: BTC
+                    available: "1.50000000"
+                    frozen: "0.50000000"
+
+  /v1/ledger:
+    get:
+      tags: [Account]
+      summary: Account Ledger
+      description: Get account transaction history
+      operationId: getLedger
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: asset
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [TRADE, DEPOSIT, WITHDRAW, FEE]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Ledger entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LedgerEntry'
+
+  # ==================== API Key Management ====================
+  /v1/apiKeys:
+    post:
+      tags: [API Keys]
+      summary: Create API Key
+      description: Create a new API key pair
+      operationId: createApiKey
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+            example:
+              label: Trading Bot
+              permissions: 3
+              ipWhitelist: ["192.168.1.1"]
+      responses:
+        '200':
+          description: API Key created (secret shown only once)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateApiKeyResponse'
+              example:
+                apiKeyId: 20001
+                apiKey: ak_xxxxxxxxxxxxxxxx
+                secret: sk_xxxxxxxxxxxxxxxx
+                label: Trading Bot
+                permissions: 3
+
+    get:
+      tags: [API Keys]
+      summary: List API Keys
+      description: Get all API keys for the account
+      operationId: listApiKeys
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiKey'
+
+  /v1/apiKeys/{apiKeyId}:
+    delete:
+      tags: [API Keys]
+      summary: Delete API Key
+      description: Delete an API key
+      operationId: deleteApiKey
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: apiKeyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: API Key deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+
+  # ==================== WebSocket Endpoints ====================
+  /ws/stream:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket Streaming
+      description: |
+        WebSocket entrypoint for streaming data.
+
+        **Public streams (no auth):**
+        - `btcusdt@ticker`
+        - `btcusdt@depth`
+        - `btcusdt@trades`
+
+        **Private streams (auth required):**
+        - `account@balance`
+        - `account@orders`
+
+        **Example URL:**
+        `wss://api.example.com/ws?streams=btcusdt@ticker/btcusdt@depth`
+      parameters:
+        - name: streams
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Stream list separated by `/`
+      responses:
+        '101':
+          description: Switching Protocols
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+      description: |
+        HMAC-SHA256 authentication. Required headers:
+        - X-API-KEY: Your API key
+        - X-API-TIMESTAMP: Unix timestamp (ms)
+        - X-API-NONCE: Random UUID
+        - X-API-SIGNATURE: HMAC-SHA256 signature
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token from login (format: v1.<payload>.<signature>)
+
+  schemas:
+    # ==================== Request Schemas ====================
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: "********"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    CreateOrderRequest:
+      type: object
+      required: [symbol, side, type, quantity]
+      properties:
+        symbol:
+          type: string
+          example: BTCUSDT
+        side:
+          type: string
+          enum: [BUY, SELL]
+        type:
+          type: string
+          enum: [LIMIT, MARKET]
+        timeInForce:
+          type: string
+          enum: [GTC, IOC, FOK]
+          default: GTC
+          description: Good-Til-Canceled, Immediate-Or-Cancel, Fill-Or-Kill
+        price:
+          type: integer
+          format: int64
+          description: Price in smallest unit (required for LIMIT orders)
+          example: 4500000000000
+        quantity:
+          type: integer
+          format: int64
+          description: Quantity in smallest unit
+          example: 100000000
+        quoteOrderQty:
+          type: integer
+          format: int64
+          description: Quote quantity for MARKET orders
+        clientOrderId:
+          type: string
+          maxLength: 36
+          description: Client-defined order ID
+          example: "my-order-001"
+
+    CreateApiKeyRequest:
+      type: object
+      required: [label, permissions]
+      properties:
+        label:
+          type: string
+          maxLength: 64
+          example: "Trading Bot"
+        permissions:
+          type: integer
+          description: "Bitmask: 1=Read, 2=Trade, 4=Withdraw"
+          example: 3
+        ipWhitelist:
+          type: array
+          items:
+            type: string
+          example: ["192.168.1.1", "10.0.0.0/8"]
+
+    # ==================== Response Schemas ====================
+    RegisterResponse:
+      type: object
+      properties:
+        userId:
+          type: integer
+          format: int64
+        email:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        userId:
+          type: integer
+          format: int64
+        email:
+          type: string
+        token:
+          type: string
+          description: Bearer token for authentication
+          example: "v1.payload.signature"
+
+    ExchangeInfo:
+      type: object
+      properties:
+        serverTime:
+          type: integer
+          format: int64
+        symbols:
+          type: array
+          items:
+            $ref: '#/components/schemas/SymbolInfo'
+
+    SymbolInfo:
+      type: object
+      properties:
+        symbol:
+          type: string
+          example: BTCUSDT
+        baseAsset:
+          type: string
+          example: BTC
+        quoteAsset:
+          type: string
+          example: USDT
+        status:
+          type: integer
+          description: "1=Trading, 2=Halt"
+        basePrecision:
+          type: integer
+          example: 8
+        quotePrecision:
+          type: integer
+          example: 8
+        minQty:
+          type: string
+          example: "0.00001"
+        maxQty:
+          type: string
+          example: "1000"
+        minNotional:
+          type: string
+          example: "10"
+
+    OrderBook:
+      type: object
+      properties:
+        lastUpdateId:
+          type: integer
+          format: int64
+        bids:
+          type: array
+          description: "[price, quantity]"
+          items:
+            type: array
+            items:
+              type: string
+          example: [["45000.00", "1.5"], ["44999.00", "2.0"]]
+        asks:
+          type: array
+          description: "[price, quantity]"
+          items:
+            type: array
+            items:
+              type: string
+          example: [["45001.00", "0.8"], ["45002.00", "1.2"]]
+
+    Trade:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        price:
+          type: string
+          example: "45000.00"
+        qty:
+          type: string
+          example: "0.5"
+        time:
+          type: integer
+          format: int64
+        isBuyerMaker:
+          type: boolean
+
+    Ticker:
+      type: object
+      properties:
+        symbol:
+          type: string
+        priceChange:
+          type: string
+        priceChangePercent:
+          type: string
+        lastPrice:
+          type: string
+        highPrice:
+          type: string
+        lowPrice:
+          type: string
+        volume:
+          type: string
+        quoteVolume:
+          type: string
+        openTime:
+          type: integer
+          format: int64
+        closeTime:
+          type: integer
+          format: int64
+
+    Order:
+      type: object
+      properties:
+        orderId:
+          type: integer
+          format: int64
+          example: 1735012345678001
+        clientOrderId:
+          type: string
+        symbol:
+          type: string
+          example: BTCUSDT
+        side:
+          type: string
+          enum: [BUY, SELL]
+        type:
+          type: string
+          enum: [LIMIT, MARKET]
+        timeInForce:
+          type: string
+          enum: [GTC, IOC, FOK]
+        price:
+          type: string
+          example: "45000.00000000"
+        origQty:
+          type: string
+          example: "1.00000000"
+        executedQty:
+          type: string
+          example: "0.50000000"
+        status:
+          type: string
+          enum: [NEW, PARTIALLY_FILLED, FILLED, CANCELED, REJECTED]
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+
+    AccountTrade:
+      type: object
+      properties:
+        tradeId:
+          type: integer
+          format: int64
+        orderId:
+          type: integer
+          format: int64
+        symbol:
+          type: string
+        price:
+          type: string
+        qty:
+          type: string
+        commission:
+          type: string
+        commissionAsset:
+          type: string
+        time:
+          type: integer
+          format: int64
+        isBuyer:
+          type: boolean
+        isMaker:
+          type: boolean
+
+    AccountInfo:
+      type: object
+      properties:
+        userId:
+          type: integer
+          format: int64
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+
+    Balance:
+      type: object
+      properties:
+        asset:
+          type: string
+          example: BTC
+        available:
+          type: string
+          example: "1.50000000"
+        frozen:
+          type: string
+          example: "0.50000000"
+
+    LedgerEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        asset:
+          type: string
+        type:
+          type: string
+          enum: [TRADE, DEPOSIT, WITHDRAW, FEE]
+        amount:
+          type: string
+        balance:
+          type: string
+        refId:
+          type: string
+          description: Reference ID (order/trade/tx ID)
+        createdAt:
+          type: integer
+          format: int64
+
+    ApiKey:
+      type: object
+      properties:
+        apiKeyId:
+          type: integer
+          format: int64
+        apiKey:
+          type: string
+          example: "ak_xxxxxxxxxxxxxxxx"
+        label:
+          type: string
+        permissions:
+          type: integer
+        ipWhitelist:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: integer
+          format: int64
+
+    CreateApiKeyResponse:
+      type: object
+      properties:
+        apiKeyId:
+          type: integer
+          format: int64
+        apiKey:
+          type: string
+          description: API Key (store safely)
+        secret:
+          type: string
+          description: API Secret (shown only once, store safely!)
+        label:
+          type: string
+        permissions:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: INVALID_SYMBOL
+        message:
+          type: string
+          example: "Symbol XXXUSDT is not valid"

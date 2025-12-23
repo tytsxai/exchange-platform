@@ -1,0 +1,552 @@
+openapi: 3.0.3
+info:
+  title: Exchange Wallet API
+  version: v1.0.0
+  x-contract-id: exchange-wallet
+  x-contract-version: v1.0.0
+  description: |
+    Wallet Service API for deposits, withdrawals, and asset management.
+
+    ## Authentication
+    All endpoints (except /health) require Bearer token authentication.
+    Token format: `Bearer <signed-token>` (HMAC, versioned).
+
+    ## Withdrawal Flow
+    1. User requests withdrawal via `POST /wallet/withdraw`
+    2. Admin reviews pending withdrawals via `GET /wallet/admin/withdrawals/pending`
+    3. Admin approves/rejects via `POST /wallet/admin/withdraw/approve` or `reject`
+    4. After blockchain confirmation, mark complete via `POST /wallet/admin/withdraw/complete`
+    All amount/fee fields are scaled by the asset precision (int64).
+
+tags:
+  - name: Assets
+    description: Asset and network information
+  - name: Deposits
+    description: Deposit addresses and history
+  - name: Withdrawals
+    description: Withdrawal requests and history
+  - name: Admin
+    description: Admin operations for withdrawal management
+
+servers:
+  - url: http://localhost:8086
+    description: Wallet Service
+
+paths:
+  # ==================== Health ====================
+  /health:
+    get:
+      tags: [Assets]
+      summary: Health Check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  # ==================== Assets & Networks ====================
+  /wallet/assets:
+    get:
+      tags: [Assets]
+      summary: List Assets
+      description: Get all supported assets (cryptocurrencies)
+      operationId: listAssets
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of assets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Asset'
+
+  /wallet/networks:
+    get:
+      tags: [Assets]
+      summary: List Networks
+      description: Get supported networks for an asset
+      operationId: listNetworks
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: asset
+          in: query
+          schema:
+            type: string
+          description: Filter by asset (optional)
+          example: USDT
+      responses:
+        '200':
+          description: List of networks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Network'
+
+  # ==================== Deposits ====================
+  /wallet/deposit/address:
+    get:
+      tags: [Deposits]
+      summary: Get Deposit Address
+      description: Get or generate deposit address for an asset on a specific network
+      operationId: getDepositAddress
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: asset
+          in: query
+          required: true
+          schema:
+            type: string
+          example: BTC
+        - name: network
+          in: query
+          required: true
+          schema:
+            type: string
+          example: BTC
+      responses:
+        '200':
+          description: Deposit address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositAddress'
+        '400':
+          description: Asset and network required
+
+  /wallet/deposits:
+    get:
+      tags: [Deposits]
+      summary: Deposit History
+      description: Get user's deposit history
+      operationId: listDeposits
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: asset
+          in: query
+          schema:
+            type: string
+          description: Filter by asset
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: List of deposits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Deposit'
+
+  # ==================== Withdrawals ====================
+  /wallet/withdraw:
+    post:
+      tags: [Withdrawals]
+      summary: Request Withdrawal
+      description: Submit a withdrawal request (requires Withdraw permission)
+      operationId: requestWithdraw
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawRequest'
+      responses:
+        '200':
+          description: Withdrawal request submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawResponse'
+        '400':
+          description: Invalid request or insufficient balance
+
+  /wallet/withdrawals:
+    get:
+      tags: [Withdrawals]
+      summary: Withdrawal History
+      description: Get user's withdrawal history
+      operationId: listWithdrawals
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: asset
+          in: query
+          schema:
+            type: string
+          description: Filter by asset
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED, PROCESSING, COMPLETED, FAILED]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: List of withdrawals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Withdrawal'
+
+  # ==================== Admin ====================
+  /wallet/admin/withdrawals/pending:
+    get:
+      tags: [Admin]
+      summary: List Pending Withdrawals
+      description: Get all pending withdrawal requests awaiting approval
+      operationId: listPendingWithdrawals
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: List of pending withdrawals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Withdrawal'
+
+  /wallet/admin/withdraw/approve:
+    post:
+      tags: [Admin]
+      summary: Approve Withdrawal
+      description: Approve a pending withdrawal request
+      operationId: approveWithdraw
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawActionRequest'
+      responses:
+        '200':
+          description: Withdrawal approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid withdrawal ID or already processed
+
+  /wallet/admin/withdraw/reject:
+    post:
+      tags: [Admin]
+      summary: Reject Withdrawal
+      description: Reject a pending withdrawal request (funds will be unfrozen)
+      operationId: rejectWithdraw
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawActionRequest'
+      responses:
+        '200':
+          description: Withdrawal rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /wallet/admin/withdraw/complete:
+    post:
+      tags: [Admin]
+      summary: Complete Withdrawal
+      description: Mark withdrawal as completed after blockchain confirmation
+      operationId: completeWithdraw
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteWithdrawRequest'
+      responses:
+        '200':
+          description: Withdrawal completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token from login (format: v1.<payload>.<signature>)
+
+  schemas:
+    # ==================== Request Schemas ====================
+    WithdrawRequest:
+      type: object
+      required: [asset, network, amount, address]
+      properties:
+        idempotencyKey:
+          type: string
+          description: Unique key to prevent duplicate requests
+          example: "withdraw-001"
+        asset:
+          type: string
+          example: USDT
+        network:
+          type: string
+          example: TRC20
+        amount:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 100000000
+        address:
+          type: string
+          description: Destination wallet address
+          example: "TXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        tag:
+          type: string
+          description: Memo/Tag for networks that require it (e.g., XRP, EOS)
+
+    WithdrawActionRequest:
+      type: object
+      required: [withdrawId]
+      properties:
+        withdrawId:
+          type: integer
+          format: int64
+          example: 12345
+
+    CompleteWithdrawRequest:
+      type: object
+      required: [withdrawId, txid]
+      properties:
+        withdrawId:
+          type: integer
+          format: int64
+          example: 12345
+        txid:
+          type: string
+          description: Blockchain transaction ID
+          example: "0x1234567890abcdef..."
+
+    # ==================== Response Schemas ====================
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+
+    Asset:
+      type: object
+      properties:
+        asset:
+          type: string
+          example: BTC
+        name:
+          type: string
+          example: Bitcoin
+        precision:
+          type: integer
+          example: 8
+        status:
+          type: integer
+          example: 1
+        createdAtMs:
+          type: integer
+          format: int64
+        updatedAtMs:
+          type: integer
+          format: int64
+
+    Network:
+      type: object
+      properties:
+        asset:
+          type: string
+          example: USDT
+        network:
+          type: string
+          example: TRC20
+        depositEnabled:
+          type: boolean
+        withdrawEnabled:
+          type: boolean
+        minWithdraw:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 1000000
+        withdrawFee:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 10000
+        confirmationsRequired:
+          type: integer
+          example: 20
+        contractAddress:
+          type: string
+        status:
+          type: integer
+          example: 1
+
+    DepositAddress:
+      type: object
+      properties:
+        userId:
+          type: integer
+          format: int64
+        asset:
+          type: string
+          example: USDT
+        network:
+          type: string
+          example: TRC20
+        address:
+          type: string
+          example: "TXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        tag:
+          type: string
+          description: Memo/Tag if required by network
+        createdAtMs:
+          type: integer
+          format: int64
+
+    Deposit:
+      type: object
+      properties:
+        depositId:
+          type: integer
+          format: int64
+        userId:
+          type: integer
+          format: int64
+        asset:
+          type: string
+          example: BTC
+        network:
+          type: string
+          example: BTC
+        amount:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 50000000
+        txid:
+          type: string
+          description: Blockchain transaction ID
+        vout:
+          type: integer
+        confirmations:
+          type: integer
+        status:
+          type: integer
+          description: 1=PENDING, 2=CONFIRMED, 3=CREDITED
+        creditedAtMs:
+          type: integer
+          format: int64
+        createdAtMs:
+          type: integer
+          format: int64
+        updatedAtMs:
+          type: integer
+          format: int64
+
+    WithdrawResponse:
+      type: object
+      properties:
+        withdrawal:
+          $ref: '#/components/schemas/Withdrawal'
+        errorCode:
+          type: string
+
+    Withdrawal:
+      type: object
+      properties:
+        withdrawId:
+          type: integer
+          format: int64
+        idempotencyKey:
+          type: string
+        userId:
+          type: integer
+          format: int64
+        asset:
+          type: string
+          example: USDT
+        network:
+          type: string
+          example: TRC20
+        amount:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 100000000
+        fee:
+          type: integer
+          format: int64
+          description: Scaled by asset precision
+          example: 10000
+        address:
+          type: string
+        tag:
+          type: string
+        txid:
+          type: string
+          description: Blockchain transaction ID (after completion)
+        status:
+          type: integer
+          description: 1=PENDING, 2=APPROVED, 3=REJECTED, 4=PROCESSING, 5=COMPLETED, 6=FAILED
+        approvedBy:
+          type: integer
+          format: int64
+          description: Admin user ID who approved
+        requestedAtMs:
+          type: integer
+          format: int64
+        approvedAtMs:
+          type: integer
+          format: int64
+        sentAtMs:
+          type: integer
+          format: int64
+        completedAtMs:
+          type: integer
+          format: int64

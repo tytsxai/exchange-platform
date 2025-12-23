@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package exchange.market.v1;
+
+option go_package = "github.com/exchange/common/gen/market/v1;marketv1";
+
+// 交易对状态
+enum SymbolStatus {
+  SYMBOL_STATUS_UNSPECIFIED = 0;
+  SYMBOL_STATUS_TRADING = 1;      // 正常交易
+  SYMBOL_STATUS_HALT = 2;         // 暂停交易
+  SYMBOL_STATUS_CANCEL_ONLY = 3;  // 只允许撤单
+  SYMBOL_STATUS_PRE_TRADING = 4;  // 预上线
+}
+
+// 交易对配置
+message SymbolConfig {
+  string symbol = 1;
+  string base_asset = 2;
+  string quote_asset = 3;
+
+  // 精度配置
+  string price_tick = 4;      // 最小价格变动
+  string qty_step = 5;        // 最小数量步长
+  int32 price_precision = 6;  // 价格小数位
+  int32 qty_precision = 7;    // 数量小数位
+
+  // 下单约束
+  string min_qty = 8;         // 最小下单量
+  string max_qty = 9;         // 最大下单量
+  string min_notional = 10;   // 最小成交额
+
+  // 价格保护
+  string price_limit_rate = 11;  // 价格偏离阈值（如 0.05 = 5%）
+
+  // 费率
+  string maker_fee_rate = 12;
+  string taker_fee_rate = 13;
+
+  SymbolStatus status = 14;
+  int64 updated_at_ms = 15;
+}
+
+// 24h Ticker
+message Ticker {
+  string symbol = 1;
+  string price_change = 2;
+  string price_change_percent = 3;
+  string last_price = 4;
+  string high_price = 5;
+  string low_price = 6;
+  string volume = 7;        // base 成交量
+  string quote_volume = 8;  // quote 成交额
+  string open_price = 9;
+  int64 open_time_ms = 10;
+  int64 close_time_ms = 11;
+  int64 trade_count = 12;
+}
+
+// 盘口档位
+message PriceLevel {
+  string price = 1;
+  string qty = 2;
+}
+
+// 订单簿深度
+message Depth {
+  string symbol = 1;
+  repeated PriceLevel bids = 2;  // 买盘（价格降序）
+  repeated PriceLevel asks = 3;  // 卖盘（价格升序）
+  int64 last_update_id = 4;      // seq
+  int64 timestamp_ms = 5;
+}
+
+// K 线周期
+enum KlineInterval {
+  KLINE_INTERVAL_UNSPECIFIED = 0;
+  KLINE_INTERVAL_1M = 1;
+  KLINE_INTERVAL_5M = 2;
+  KLINE_INTERVAL_15M = 3;
+  KLINE_INTERVAL_30M = 4;
+  KLINE_INTERVAL_1H = 5;
+  KLINE_INTERVAL_4H = 6;
+  KLINE_INTERVAL_1D = 7;
+  KLINE_INTERVAL_1W = 8;
+}
+
+// K 线
+message Kline {
+  string symbol = 1;
+  KlineInterval interval = 2;
+  int64 open_time_ms = 3;
+  int64 close_time_ms = 4;
+  string open = 5;
+  string high = 6;
+  string low = 7;
+  string close = 8;
+  string volume = 9;
+  string quote_volume = 10;
+  int64 trade_count = 11;
+  bool is_closed = 12;
+}
+
+// ========== REST API ==========
+
+// GET /v1/exchangeInfo
+message GetExchangeInfoRequest {}
+
+message GetExchangeInfoResponse {
+  int64 server_time_ms = 1;
+  repeated SymbolConfig symbols = 2;
+}
+
+// GET /v1/ticker
+message GetTickerRequest {
+  string symbol = 1;  // 可选，不传返回所有
+}
+
+message GetTickerResponse {
+  repeated Ticker tickers = 1;
+}
+
+// GET /v1/depth
+message GetDepthRequest {
+  string symbol = 1;
+  int32 limit = 2;  // 5, 10, 20, 50, 100
+}
+
+message GetDepthResponse {
+  Depth depth = 1;
+}
+
+// GET /v1/klines
+message GetKlinesRequest {
+  string symbol = 1;
+  KlineInterval interval = 2;
+  int64 start_time_ms = 3;
+  int64 end_time_ms = 4;
+  int32 limit = 5;
+}
+
+message GetKlinesResponse {
+  repeated Kline klines = 1;
+}

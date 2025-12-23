@@ -122,7 +122,16 @@ main() {
         exit 1
     fi
 
-    read -r current_version computed_baseline < <(get_versions)
+    current_version=""
+    computed_baseline=""
+    while IFS= read -r line; do
+        if [ -z "$current_version" ]; then
+            current_version="$line"
+        else
+            computed_baseline="$line"
+            break
+        fi
+    done < <(get_versions)
 
     if [ -z "$current_version" ]; then
         echo "Error: current version is empty; update $VERSIONS_FILE" >&2
