@@ -11,34 +11,38 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync/atomic"
 	"syscall"
 	"time"
 
+	commonauth "github.com/exchange/common/pkg/auth"
 	commonredis "github.com/exchange/common/pkg/redis"
 	"github.com/exchange/common/pkg/signature"
+	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/user/internal/config"
 	"github.com/exchange/user/internal/middleware"
 	"github.com/exchange/user/internal/repository"
 	"github.com/exchange/user/internal/service"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
-
-// SimpleIDGen 简单 ID 生成器（并发安全）
-type SimpleIDGen struct {
-	workerID int64
-	seq      int64
-}
-
-func (g *SimpleIDGen) NextID() int64 {
-	seq := atomic.AddInt64(&g.seq, 1)
-	return time.Now().UnixNano()/1e6*1000 + g.workerID*100 + seq%100
-}
 
 func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
+
+	if cfg.InternalToken == "" {
+		log.Fatal("INTERNAL_TOKEN is required")
+	}
+
+	tokenManager, err := commonauth.NewTokenManager(cfg.AuthTokenSecret, cfg.AuthTokenTTL)
+	if err != nil {
+		log.Fatalf("Invalid auth token config: %v", err)
+	}
+
+	if err := snowflake.Init(cfg.WorkerID); err != nil {
+		log.Fatalf("Failed to init snowflake: %v", err)
+	}
 
 	// 连接数据库
 	db, err := sql.Open("postgres", cfg.DSN())
@@ -46,6 +50,10 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
@@ -53,9 +61,9 @@ func main() {
 	log.Printf("Connected to PostgreSQL")
 
 	// 创建服务
-	idGen := &SimpleIDGen{workerID: cfg.WorkerID}
+	idGen := snowflakeIDGen{}
 	repo := repository.NewUserRepository(db)
-	svc := service.NewUserService(repo, idGen)
+	svc := service.NewUserService(repo, idGen, tokenManager)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,
@@ -70,10 +78,7 @@ func main() {
 
 	// HTTP 服务
 	mux := http.NewServeMux()
-	internalToken := os.Getenv("INTERNAL_TOKEN")
-	if internalToken == "" {
-		internalToken = "internal-secret"
-	}
+	internalToken := cfg.InternalToken
 	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Internal-Token") != internalToken {
@@ -92,6 +97,7 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -305,8 +311,13 @@ func main() {
 	}))
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -326,6 +337,12 @@ func main() {
 	defer cancel()
 	server.Shutdown(ctx)
 	log.Println("Shutdown complete")
+}
+
+type snowflakeIDGen struct{}
+
+func (g snowflakeIDGen) NextID() int64 {
+	return snowflake.MustNextID()
 }
 
 type dependencyStatus struct {

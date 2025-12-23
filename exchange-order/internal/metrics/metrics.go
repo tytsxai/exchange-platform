@@ -21,6 +21,11 @@ type Metrics struct {
 func New() *Metrics {
 	registry := prometheus.NewRegistry()
 
+	registry.MustRegister(
+		prometheus.NewGoCollector(),
+		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
+	)
+
 	orderCreated := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "order_created_total",
 		Help: "Total number of created orders.",

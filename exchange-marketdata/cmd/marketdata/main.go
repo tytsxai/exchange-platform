@@ -15,6 +15,7 @@ import (
 	"github.com/exchange/marketdata/internal/config"
 	"github.com/exchange/marketdata/internal/service"
 	"github.com/exchange/marketdata/internal/ws"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -70,6 +71,7 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
@@ -134,8 +136,13 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -152,7 +159,9 @@ func main() {
 
 	log.Println("Shutting down...")
 	cancel()
-	server.Shutdown(context.Background())
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	server.Shutdown(shutdownCtx)
 	log.Println("Shutdown complete")
 }
 

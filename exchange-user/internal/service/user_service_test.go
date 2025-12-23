@@ -31,7 +31,8 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 
 	repo := repository.NewUserRepository(db)
 	idGen := &stubIDGen{next: 100}
-	svc := NewUserService(repo, idGen)
+	tokenIssuer := &stubTokenIssuer{token: "token_test"}
+	svc := NewUserService(repo, idGen, tokenIssuer)
 
 	mock.ExpectExec("INSERT INTO exchange_user.users").
 		WithArgs(int64(101), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), repository.UserStatusActive, 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
@@ -111,8 +112,8 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 		WillReturnRows(rows)
 
 	loginResp, err = svc.Login(ctx, &LoginRequest{Email: "user@b.com", Password: "good-pass"})
-	if err != nil || loginResp.Token != "token_A" {
-		t.Fatalf("expected token_A, got resp=%+v err=%v", loginResp, err)
+	if err != nil || loginResp.Token != "token_test" {
+		t.Fatalf("expected token_test, got resp=%+v err=%v", loginResp, err)
 	}
 
 	mock.ExpectExec("INSERT INTO exchange_user.api_keys").

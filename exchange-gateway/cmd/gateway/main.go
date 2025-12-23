@@ -17,6 +17,7 @@ import (
 	"github.com/exchange/gateway/internal/config"
 	"github.com/exchange/gateway/internal/middleware"
 	"github.com/exchange/gateway/internal/ws"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -34,6 +35,11 @@ func main() {
 	cfg := config.Load()
 	l := logger.New(cfg.ServiceName, os.Stdout)
 	l.Info(fmt.Sprintf("Starting %s...", cfg.ServiceName))
+
+	if cfg.InternalToken == "" {
+		l.Error("INTERNAL_TOKEN is required")
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -70,6 +76,7 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
@@ -279,10 +286,13 @@ func main() {
 	handler = loggingMiddleware(l, handler)
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:           handler,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {

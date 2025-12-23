@@ -215,10 +215,22 @@ func (s *MarketDataService) Unsubscribe(channel string, ch chan *Event) {
 func (s *MarketDataService) consumeEvents(ctx context.Context) {
 	log.Printf("Consuming events from %s", s.eventStream)
 
+	pendingTicker := time.NewTicker(30 * time.Second)
+	defer pendingTicker.Stop()
+
+	if err := s.processPending(ctx); err != nil {
+		log.Printf("Process pending error: %v", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-pendingTicker.C:
+			if err := s.processPending(ctx); err != nil {
+				log.Printf("Process pending error: %v", err)
+			}
+			continue
 		default:
 		}
 
@@ -244,6 +256,45 @@ func (s *MarketDataService) consumeEvents(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *MarketDataService) processPending(ctx context.Context) error {
+	pending, err := s.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: s.eventStream,
+		Group:  s.group,
+		Start:  "-",
+		End:    "+",
+		Count:  100,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	var ids []string
+	for _, entry := range pending {
+		if entry.Idle >= 30*time.Second {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	claimed, err := s.redis.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   s.eventStream,
+		Group:    s.group,
+		Consumer: s.consumer,
+		MinIdle:  30 * time.Second,
+		Messages: ids,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range claimed {
+		s.processEvent(ctx, msg)
+	}
+	return nil
 }
 
 // MatchingEvent 撮合事件

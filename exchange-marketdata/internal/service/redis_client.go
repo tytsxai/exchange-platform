@@ -11,6 +11,8 @@ import (
 type RedisClient interface {
 	XGroupCreateMkStream(ctx context.Context, stream, group, start string) *redis.StatusCmd
 	XReadGroup(ctx context.Context, args *redis.XReadGroupArgs) *redis.XStreamSliceCmd
+	XPendingExt(ctx context.Context, args *redis.XPendingExtArgs) *redis.XPendingExtCmd
+	XClaim(ctx context.Context, args *redis.XClaimArgs) *redis.XMessageSliceCmd
 	XAck(ctx context.Context, stream, group string, ids ...string) *redis.IntCmd
 }
 
@@ -30,6 +32,14 @@ func (a *RedisClientAdapter) XGroupCreateMkStream(ctx context.Context, stream, g
 
 func (a *RedisClientAdapter) XReadGroup(ctx context.Context, args *redis.XReadGroupArgs) *redis.XStreamSliceCmd {
 	return a.client.XReadGroup(ctx, args)
+}
+
+func (a *RedisClientAdapter) XPendingExt(ctx context.Context, args *redis.XPendingExtArgs) *redis.XPendingExtCmd {
+	return a.client.XPendingExt(ctx, args)
+}
+
+func (a *RedisClientAdapter) XClaim(ctx context.Context, args *redis.XClaimArgs) *redis.XMessageSliceCmd {
+	return a.client.XClaim(ctx, args)
 }
 
 func (a *RedisClientAdapter) XAck(ctx context.Context, stream, group string, ids ...string) *redis.IntCmd {

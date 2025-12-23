@@ -11,31 +11,28 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/exchange/clearing/internal/config"
 	"github.com/exchange/clearing/internal/metrics"
 	"github.com/exchange/clearing/internal/service"
+	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
 
-// SimpleIDGen 简单 ID 生成器（并发安全）
-type SimpleIDGen struct {
-	workerID int64
-	seq      int64
-}
-
-func (g *SimpleIDGen) NextID() int64 {
-	seq := atomic.AddInt64(&g.seq, 1)
-	return time.Now().UnixNano()/1e6*1000 + g.workerID*100 + seq%100
-}
-
 func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
+
+	if cfg.InternalToken == "" {
+		log.Fatal("INTERNAL_TOKEN is required")
+	}
+
+	if err := snowflake.Init(cfg.WorkerID); err != nil {
+		log.Fatalf("Failed to init snowflake: %v", err)
+	}
 
 	// 连接数据库
 	db, err := sql.Open("postgres", cfg.DSN())
@@ -43,6 +40,10 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
@@ -65,7 +66,7 @@ func main() {
 	log.Printf("Connected to Redis")
 
 	// 创建服务
-	idGen := &SimpleIDGen{workerID: cfg.WorkerID}
+	idGen := snowflakeIDGen{}
 	svc := service.NewClearingService(db, idGen)
 
 	// 启动事件消费
@@ -75,6 +76,15 @@ func main() {
 	metricsCollector := metrics.NewDefault()
 	mux := http.NewServeMux()
 	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
+	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
 	mux.Handle("/metrics", metricsCollector.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
@@ -115,7 +125,7 @@ func main() {
 	})
 
 	// 冻结资金
-	mux.HandleFunc("/internal/freeze", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/freeze", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -135,10 +145,10 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
-	})
+	}))
 
 	// 解冻资金
-	mux.HandleFunc("/internal/unfreeze", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/unfreeze", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -158,10 +168,10 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
-	})
+	}))
 
 	// 扣除冻结资金（提现完成）
-	mux.HandleFunc("/internal/deduct", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/deduct", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -181,10 +191,10 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
-	})
+	}))
 
 	// 入账（充值确认）
-	mux.HandleFunc("/internal/credit", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/credit", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -204,11 +214,16 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
-	})
+	}))
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -225,8 +240,16 @@ func main() {
 
 	log.Println("Shutting down...")
 	cancel()
-	server.Shutdown(context.Background())
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	server.Shutdown(shutdownCtx)
 	log.Println("Shutdown complete")
+}
+
+type snowflakeIDGen struct{}
+
+func (g snowflakeIDGen) NextID() int64 {
+	return snowflake.MustNextID()
 }
 
 type dependencyStatus struct {
@@ -349,10 +372,22 @@ func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.
 
 	log.Printf("Consuming events from %s", cfg.EventStream)
 
+	pendingTicker := time.NewTicker(30 * time.Second)
+	defer pendingTicker.Stop()
+
+	if err := processPendingEvents(ctx, redisClient, svc, cfg); err != nil {
+		log.Printf("Process pending error: %v", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-pendingTicker.C:
+			if err := processPendingEvents(ctx, redisClient, svc, cfg); err != nil {
+				log.Printf("Process pending error: %v", err)
+			}
+			continue
 		default:
 		}
 
@@ -378,6 +413,45 @@ func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.
 			}
 		}
 	}
+}
+
+func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config) error {
+	pending, err := redisClient.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: cfg.EventStream,
+		Group:  cfg.ConsumerGroup,
+		Start:  "-",
+		End:    "+",
+		Count:  100,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	var ids []string
+	for _, entry := range pending {
+		if entry.Idle >= 30*time.Second {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	claimed, err := redisClient.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   cfg.EventStream,
+		Group:    cfg.ConsumerGroup,
+		Consumer: cfg.ConsumerName,
+		MinIdle:  30 * time.Second,
+		Messages: ids,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range claimed {
+		processEvent(ctx, redisClient, svc, cfg, msg)
+	}
+	return nil
 }
 
 func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, msg redis.XMessage) {

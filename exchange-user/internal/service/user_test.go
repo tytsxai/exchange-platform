@@ -129,7 +129,7 @@ func (m *mockIDGen) NextID() int64 {
 
 func TestNewUserService(t *testing.T) {
 	gen := &mockIDGen{}
-	svc := NewUserService(nil, gen)
+	svc := NewUserService(nil, gen, &stubTokenIssuer{token: "token_test"})
 	if svc == nil {
 		t.Fatal("expected non-nil service")
 	}

@@ -11,31 +11,35 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
+	commonauth "github.com/exchange/common/pkg/auth"
+	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/wallet/internal/client"
 	"github.com/exchange/wallet/internal/config"
 	"github.com/exchange/wallet/internal/repository"
 	"github.com/exchange/wallet/internal/service"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-// SimpleIDGen 简单 ID 生成器（并发安全）
-type SimpleIDGen struct {
-	workerID int64
-	seq      int64
-}
-
-func (g *SimpleIDGen) NextID() int64 {
-	seq := atomic.AddInt64(&g.seq, 1)
-	return time.Now().UnixNano()/1e6*1000 + g.workerID*100 + seq%100
-}
 
 func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
+
+	if cfg.InternalToken == "" {
+		log.Fatal("INTERNAL_TOKEN is required")
+	}
+
+	tokenManager, err := commonauth.NewTokenManager(cfg.AuthTokenSecret, cfg.AuthTokenTTL)
+	if err != nil {
+		log.Fatalf("Invalid auth token config: %v", err)
+	}
+
+	if err := snowflake.Init(cfg.WorkerID); err != nil {
+		log.Fatalf("Failed to init snowflake: %v", err)
+	}
 
 	// 连接数据库
 	db, err := sql.Open("postgres", cfg.DSN())
@@ -43,6 +47,10 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
@@ -50,10 +58,10 @@ func main() {
 	log.Printf("Connected to PostgreSQL")
 
 	// 创建服务
-	idGen := &SimpleIDGen{workerID: cfg.WorkerID}
+	idGen := snowflakeIDGen{}
 	repo := repository.NewWalletRepository(db)
 	clearingBaseURL := cfg.ClearingServiceURL
-	clearingCli := client.NewClearingClient(clearingBaseURL)
+	clearingCli := client.NewClearingClient(clearingBaseURL, cfg.InternalToken)
 	tronCli := client.NewTronClient(cfg.TronNodeURL, cfg.TronGridAPIKey)
 	svc := service.NewWalletService(repo, idGen, clearingCli, tronCli)
 
@@ -77,6 +85,7 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -355,11 +364,16 @@ func main() {
 	})
 
 	// 中间件
-	handler := authMiddleware(mux)
+	handler := authMiddleware(tokenManager, mux)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler: handler,
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:           handler,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -380,6 +394,12 @@ func main() {
 	defer cancel()
 	server.Shutdown(ctx)
 	log.Println("Shutdown complete")
+}
+
+type snowflakeIDGen struct{}
+
+func (g snowflakeIDGen) NextID() int64 {
+	return snowflake.MustNextID()
 }
 
 func getUserID(r *http.Request) int64 {
@@ -466,10 +486,10 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 	})
 }
 
-func authMiddleware(next http.Handler) http.Handler {
+func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. 跳过健康检查和文档
-		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/docs" || r.URL.Path == "/openapi.yaml" {
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/docs" || r.URL.Path == "/openapi.yaml" || r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -489,16 +509,9 @@ func authMiddleware(next http.Handler) http.Handler {
 
 		token := parts[1]
 
-		// 3. 解析 Token (格式: token_{uid})
-		if !strings.HasPrefix(token, "token_") {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
-
-		userIDStr := strings.TrimPrefix(token, "token_")
-		userID, err := strconv.ParseInt(userIDStr, 10, 64)
+		userID, err := tokenManager.Verify(token)
 		if err != nil {
-			http.Error(w, "invalid token payload", http.StatusUnauthorized)
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 

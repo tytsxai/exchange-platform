@@ -11,10 +11,10 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/order/internal/client"
 	"github.com/exchange/order/internal/config"
 	"github.com/exchange/order/internal/metrics"
@@ -24,20 +24,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// SimpleIDGen 简单 ID 生成器（并发安全）
-type SimpleIDGen struct {
-	workerID int64
-	seq      int64
-}
-
-func (g *SimpleIDGen) NextID() int64 {
-	seq := atomic.AddInt64(&g.seq, 1)
-	return time.Now().UnixNano()/1e6*1000 + g.workerID*100 + seq%100
-}
-
 func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
+
+	if cfg.InternalToken == "" {
+		log.Fatal("INTERNAL_TOKEN is required")
+	}
+
+	if err := snowflake.Init(cfg.WorkerID); err != nil {
+		log.Fatalf("Failed to init snowflake: %v", err)
+	}
 
 	// 连接数据库
 	db, err := sql.Open("postgres", cfg.DSN())
@@ -45,6 +42,10 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
@@ -69,10 +70,10 @@ func main() {
 	metricsClient := metrics.New()
 
 	// 创建服务
-	idGen := &SimpleIDGen{workerID: cfg.WorkerID}
+	idGen := snowflakeIDGen{}
 	repo := repository.NewOrderRepository(db)
 	matchingClient := client.NewMatchingClient(cfg.MatchingServiceURL)
-	clearingClient := client.NewClearingClient(cfg.ClearingBaseURL)
+	clearingClient := client.NewClearingClient(cfg.ClearingBaseURL, cfg.InternalToken)
 	validator := service.NewPriceValidator(repo, matchingClient, service.PriceValidatorConfig{
 		Enabled:          cfg.PriceProtection.Enabled,
 		DefaultLimitRate: cfg.PriceProtection.DefaultLimitRate,
@@ -182,8 +183,13 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -200,8 +206,16 @@ func main() {
 
 	log.Println("Shutting down...")
 	cancel()
-	server.Shutdown(context.Background())
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	server.Shutdown(shutdownCtx)
 	log.Println("Shutdown complete")
+}
+
+type snowflakeIDGen struct{}
+
+func (g snowflakeIDGen) NextID() int64 {
+	return snowflake.MustNextID()
 }
 
 type dependencyStatus struct {

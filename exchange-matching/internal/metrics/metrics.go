@@ -42,6 +42,8 @@ var (
 func Init() {
 	once.Do(func() {
 		registry.MustRegister(
+			prometheus.NewGoCollector(),
+			prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 			matchingLatency,
 			tradesCreated,
 			orderbookDepth,

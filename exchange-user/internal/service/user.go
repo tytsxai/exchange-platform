@@ -3,10 +3,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/exchange/user/internal/repository"
 )
+
+var ErrTokenIssuerNotConfigured = errors.New("token issuer not configured")
 
 // UserRepository 用户仓储接口
 type UserRepository interface {
@@ -24,6 +27,7 @@ type UserRepository interface {
 type UserService struct {
 	repo  UserRepository
 	idGen IDGenerator
+	token TokenIssuer
 }
 
 // IDGenerator ID 生成器接口
@@ -31,11 +35,17 @@ type IDGenerator interface {
 	NextID() int64
 }
 
+// TokenIssuer token issuer interface.
+type TokenIssuer interface {
+	Issue(userID int64) (string, error)
+}
+
 // NewUserService 创建用户服务
-func NewUserService(repo UserRepository, idGen IDGenerator) *UserService {
+func NewUserService(repo UserRepository, idGen IDGenerator, tokenIssuer TokenIssuer) *UserService {
 	return &UserService{
 		repo:  repo,
 		idGen: idGen,
+		token: tokenIssuer,
 	}
 }
 
@@ -105,8 +115,14 @@ func (s *UserService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 		return &LoginResponse{ErrorCode: "USER_FROZEN"}, nil
 	}
 
-	// 生成 token（简化实现）
-	token := "token_" + string(rune(user.UserID))
+	if s.token == nil {
+		return nil, ErrTokenIssuerNotConfigured
+	}
+
+	token, err := s.token.Issue(user.UserID)
+	if err != nil {
+		return nil, err
+	}
 
 	return &LoginResponse{User: user, Token: token}, nil
 }

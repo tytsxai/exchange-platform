@@ -86,8 +86,9 @@ func TestConfigDSN(t *testing.T) {
 		DBUser:     "user",
 		DBPassword: "pass",
 		DBName:     "db",
+		DBSSLMode:  "require",
 	}
-	expected := "host=localhost port=5432 user=user password=pass dbname=db sslmode=disable"
+	expected := "host=localhost port=5432 user=user password=pass dbname=db sslmode=require"
 	if cfg.DSN() != expected {
 		t.Fatalf("expected DSN %s, got %s", expected, cfg.DSN())
 	}

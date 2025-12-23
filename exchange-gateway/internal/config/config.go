@@ -49,7 +49,7 @@ func Load() *Config {
 
 		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
-		InternalToken: envconfig.GetEnv("INTERNAL_TOKEN", "internal-secret"),
+		InternalToken: envconfig.GetEnv("INTERNAL_TOKEN", ""),
 
 		IPRateLimit:   envconfig.GetEnvInt("IP_RATE_LIMIT", 100),
 		UserRateLimit: envconfig.GetEnvInt("USER_RATE_LIMIT", 50),

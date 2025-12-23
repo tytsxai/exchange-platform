@@ -511,7 +511,7 @@ func TestCreateOrder_FreezeError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	clearingClient := client.NewClearingClient(server.URL)
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
 	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, clearingClient, nil)
 
 	if _, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
@@ -549,7 +549,7 @@ func TestCreateOrder_FreezeRejected(t *testing.T) {
 	}))
 	defer server.Close()
 
-	clearingClient := client.NewClearingClient(server.URL)
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
 	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, clearingClient, nil)
 
 	resp, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
@@ -604,7 +604,7 @@ func TestCreateOrder_SendToMatchingError(t *testing.T) {
 	redisClient := redis.NewClient(&redis.Options{Addr: addr})
 	defer redisClient.Close()
 
-	clearingClient := client.NewClearingClient(server.URL)
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
 	svc := NewOrderService(store, redisClient, &mockIDGen{}, "orders", nil, clearingClient, nil)
 
 	if _, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
@@ -651,7 +651,7 @@ func TestCreateOrder_CreateOrderFailsDoesNotSend(t *testing.T) {
 	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer redisClient.Close()
 
-	clearingClient := client.NewClearingClient(server.URL)
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
 	svc := NewOrderService(store, redisClient, &mockIDGen{}, "orders", nil, clearingClient, nil)
 
 	if _, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
@@ -1081,7 +1081,7 @@ func setupOrderDependencies(t *testing.T) (*redis.Client, *client.ClearingClient
 		}
 	}))
 
-	clearingClient := client.NewClearingClient(server.URL)
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
 	cleanup := func() {
 		redisClient.Close()
 		mr.Close()

@@ -82,10 +82,22 @@ func (u *OrderUpdater) Start(ctx context.Context) error {
 func (u *OrderUpdater) consumeLoop(ctx context.Context) {
 	log.Printf("Order updater consuming %s", u.eventStream)
 
+	pendingTicker := time.NewTicker(30 * time.Second)
+	defer pendingTicker.Stop()
+
+	if err := u.processPending(ctx); err != nil {
+		log.Printf("process pending error: %v", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-pendingTicker.C:
+			if err := u.processPending(ctx); err != nil {
+				log.Printf("process pending error: %v", err)
+			}
+			continue
 		default:
 		}
 
@@ -118,6 +130,49 @@ func (u *OrderUpdater) consumeOnce(ctx context.Context) error {
 			}
 			u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
 		}
+	}
+	return nil
+}
+
+func (u *OrderUpdater) processPending(ctx context.Context) error {
+	pending, err := u.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: u.eventStream,
+		Group:  u.group,
+		Start:  "-",
+		End:    "+",
+		Count:  100,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	var ids []string
+	for _, entry := range pending {
+		if entry.Idle >= 30*time.Second {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	claimed, err := u.redis.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   u.eventStream,
+		Group:    u.group,
+		Consumer: u.consumer,
+		MinIdle:  30 * time.Second,
+		Messages: ids,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range claimed {
+		if err := u.processMessage(ctx, msg); err != nil {
+			log.Printf("process pending event error: %v", err)
+			continue
+		}
+		u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
 	}
 	return nil
 }

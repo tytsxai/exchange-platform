@@ -14,6 +14,9 @@ func TestClearingClient_FreezeBalance(t *testing.T) {
 		if r.URL.Path != "/internal/freeze" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		if token := r.Header.Get("X-Internal-Token"); token != "internal-token" {
+			t.Fatalf("unexpected internal token: %s", token)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -25,7 +28,7 @@ func TestClearingClient_FreezeBalance(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClearingClient(server.URL)
+	c := NewClearingClient(server.URL, "internal-token")
 	resp, err := c.FreezeBalance(context.Background(), 10, "USDT", 100, "freeze:order:1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -58,7 +61,7 @@ func TestClearingClient_UnfreezeBalance(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClearingClient(server.URL)
+	c := NewClearingClient(server.URL, "internal-token")
 	resp, err := c.UnfreezeBalance(context.Background(), 22, "BTC", 5, "unfreeze:order:9")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -80,7 +83,7 @@ func TestClearingClient_FreezeBalance_StatusError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClearingClient(server.URL)
+	c := NewClearingClient(server.URL, "internal-token")
 	if _, err := c.FreezeBalance(context.Background(), 10, "USDT", 100, "freeze:order:1"); err == nil {
 		t.Fatal("expected status error")
 	}
@@ -93,14 +96,14 @@ func TestClearingClient_FreezeBalance_DecodeError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClearingClient(server.URL)
+	c := NewClearingClient(server.URL, "internal-token")
 	if _, err := c.FreezeBalance(context.Background(), 10, "USDT", 100, "freeze:order:1"); err == nil {
 		t.Fatal("expected decode error")
 	}
 }
 
 func TestClearingClient_Post_MarshalError(t *testing.T) {
-	c := NewClearingClient("http://127.0.0.1")
+	c := NewClearingClient("http://127.0.0.1", "internal-token")
 	if _, err := c.post(context.Background(), "/internal/freeze", make(chan int)); err == nil {
 		t.Fatal("expected marshal error")
 	}

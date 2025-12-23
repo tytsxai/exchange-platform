@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/exchange/matching/internal/engine"
 	"github.com/exchange/matching/internal/orderbook"
@@ -83,10 +84,22 @@ func (h *Handler) Start(ctx context.Context) error {
 }
 
 func (h *Handler) consumeLoop(ctx context.Context) {
+	pendingTicker := time.NewTicker(30 * time.Second)
+	defer pendingTicker.Stop()
+
+	if err := h.processPending(ctx); err != nil {
+		log.Printf("process pending error: %v", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-pendingTicker.C:
+			if err := h.processPending(ctx); err != nil {
+				log.Printf("process pending error: %v", err)
+			}
+			continue
 		default:
 		}
 
@@ -138,9 +151,49 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 	// 提交命令
 	if err := eng.Submit(cmd); err != nil {
 		log.Printf("submit command error: %v", err)
+		return
 	}
 
 	h.ack(ctx, msg.ID)
+}
+
+func (h *Handler) processPending(ctx context.Context) error {
+	pending, err := h.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: h.orderStream,
+		Group:  h.group,
+		Start:  "-",
+		End:    "+",
+		Count:  100,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	var ids []string
+	for _, entry := range pending {
+		if entry.Idle >= 30*time.Second {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	claimed, err := h.redis.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   h.orderStream,
+		Group:    h.group,
+		Consumer: h.consumer,
+		MinIdle:  30 * time.Second,
+		Messages: ids,
+	}).Result()
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range claimed {
+		h.processMessage(ctx, msg)
+	}
+	return nil
 }
 
 func (h *Handler) getOrCreateEngine(symbol string) *engine.Engine {

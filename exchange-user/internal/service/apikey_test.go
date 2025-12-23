@@ -181,7 +181,7 @@ func TestTOTPAPIKeyVerifySignatureInvalidSignature(t *testing.T) {
 func TestTOTPUserServiceRegisterSuccess(t *testing.T) {
 	repo := &mockRepo{}
 	gen := &mockIDGen{}
-	svc := NewUserService(repo, gen)
+	svc := NewUserService(repo, gen, &stubTokenIssuer{token: "token_test"})
 
 	resp, err := svc.Register(context.Background(), &RegisterRequest{
 		Email:    "user@example.com",
@@ -201,7 +201,7 @@ func TestTOTPUserServiceRegisterEmailExists(t *testing.T) {
 			return repository.ErrEmailExists
 		},
 	}
-	svc := NewUserService(repo, &mockIDGen{})
+	svc := NewUserService(repo, &mockIDGen{}, &stubTokenIssuer{token: "token_test"})
 
 	resp, err := svc.Register(context.Background(), &RegisterRequest{
 		Email:    "user@example.com",
@@ -221,7 +221,7 @@ func TestTOTPUserServiceRegisterError(t *testing.T) {
 			return errors.New("boom")
 		},
 	}
-	svc := NewUserService(repo, &mockIDGen{})
+	svc := NewUserService(repo, &mockIDGen{}, &stubTokenIssuer{token: "token_test"})
 
 	_, err := svc.Register(context.Background(), &RegisterRequest{
 		Email:    "user@example.com",
@@ -248,7 +248,7 @@ func TestTOTPUserServiceLoginScenarios(t *testing.T) {
 			return password == "ok"
 		},
 	}
-	svc := NewUserService(repo, &mockIDGen{})
+	svc := NewUserService(repo, &mockIDGen{}, &stubTokenIssuer{token: "token_test"})
 
 	resp, err := svc.Login(context.Background(), &LoginRequest{Email: "missing@example.com", Password: "ok"})
 	if err != nil || resp.ErrorCode != "INVALID_CREDENTIALS" {
@@ -299,7 +299,7 @@ func TestTOTPUserServiceApiKeyOps(t *testing.T) {
 			return &repository.User{UserID: userID}, nil
 		},
 	}
-	svc := NewUserService(repo, &mockIDGen{})
+	svc := NewUserService(repo, &mockIDGen{}, &stubTokenIssuer{token: "token_test"})
 
 	resp, err := svc.CreateApiKey(context.Background(), &CreateApiKeyRequest{
 		UserID:      1,
@@ -348,7 +348,7 @@ func TestTOTPUserServiceApiKeyErrors(t *testing.T) {
 			return nil, errors.New("bad")
 		},
 	}
-	svc := NewUserService(repo, &mockIDGen{})
+	svc := NewUserService(repo, &mockIDGen{}, &stubTokenIssuer{token: "token_test"})
 
 	if _, err := svc.CreateApiKey(context.Background(), &CreateApiKeyRequest{UserID: 1}); err == nil {
 		t.Fatal("expected create api key error")

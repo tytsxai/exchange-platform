@@ -9,14 +9,16 @@ import (
 )
 
 type ClearingClient struct {
-	baseURL string
-	client  *http.Client
+	baseURL       string
+	internalToken string
+	client        *http.Client
 }
 
-func NewClearingClient(baseURL string) *ClearingClient {
+func NewClearingClient(baseURL, internalToken string) *ClearingClient {
 	return &ClearingClient{
-		baseURL: baseURL,
-		client:  &http.Client{},
+		baseURL:       baseURL,
+		internalToken: internalToken,
+		client:        &http.Client{},
 	}
 }
 
@@ -88,6 +90,9 @@ func (c *ClearingClient) post(ctx context.Context, path string, body interface{}
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.internalToken != "" {
+		req.Header.Set("X-Internal-Token", c.internalToken)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
