@@ -1,0 +1,311 @@
+{
+  "project_root": "/Users/jiesen/Desktop/交易所开发",
+  "project_type": "monorepo",
+  "services": {
+    "exchange-gateway": {
+      "name": "exchange-gateway",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-gateway",
+      "language": "Go",
+      "framework": null,
+      "type": "proxy",
+      "package_manager": "go mod",
+      "key_directories": {
+        "api": {
+          "path": "api",
+          "purpose": "API endpoints"
+        }
+      },
+      "api": {
+        "routes": [
+          {
+            "path": "X-Request-ID",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/gateway/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-API-KEY",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/auth.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-API-TIMESTAMP",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/auth.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-API-NONCE",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/auth.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-API-SIGNATURE",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/auth.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-Forwarded-For",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/ratelimit.go",
+            "framework": "Go",
+            "requires_auth": false
+          }
+        ],
+        "total_routes": 6,
+        "methods": [
+          "GET"
+        ],
+        "protected_routes": []
+      }
+    },
+    "exchange-clearing": {
+      "name": "exchange-clearing",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-clearing",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod",
+      "api": {
+        "routes": [
+          {
+            "path": "X-Internal-Token",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/clearing/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          }
+        ],
+        "total_routes": 1,
+        "methods": [
+          "GET"
+        ],
+        "protected_routes": []
+      },
+      "key_directories": {},
+      "port": 8083,
+      "dev_command": "go run ./cmd/clearing",
+      "test_command": "go test ./..."
+    },
+    "exchange-wallet": {
+      "name": "exchange-wallet",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-wallet",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod",
+      "key_directories": {
+        "api": {
+          "path": "api",
+          "purpose": "API endpoints"
+        }
+      },
+      "api": {
+        "routes": [
+          {
+            "path": "X-User-ID",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/wallet/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-Approver-ID",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/wallet/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "Authorization",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/wallet/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          }
+        ],
+        "total_routes": 3,
+        "methods": [
+          "GET"
+        ],
+        "protected_routes": []
+      },
+      "port": 8086,
+      "dev_command": "go run ./cmd/wallet",
+      "test_command": "go test ./..."
+    },
+    "exchange-common": {
+      "name": "exchange-common",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-common",
+      "language": "Go",
+      "framework": null,
+      "type": "library",
+      "package_manager": "go mod"
+    },
+    "exchange-matching": {
+      "name": "exchange-matching",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-matching",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod"
+    },
+    "exchange-order": {
+      "name": "exchange-order",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-order",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod",
+      "api": {
+        "routes": [
+          {
+            "path": "X-Internal-Token",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/client/clearing_client_test.go",
+            "framework": "Go",
+            "requires_auth": false
+          }
+        ],
+        "total_routes": 1,
+        "methods": [
+          "GET"
+        ],
+        "protected_routes": []
+      }
+    },
+    "exchange-admin": {
+      "name": "exchange-admin",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-admin",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod",
+      "key_directories": {
+        "api": {
+          "path": "api",
+          "purpose": "API endpoints"
+        }
+      },
+      "api": {
+        "routes": [
+          {
+            "path": "X-Actor-ID",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/admin/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "Authorization",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/admin/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          }
+        ],
+        "total_routes": 2,
+        "methods": [
+          "GET"
+        ],
+        "protected_routes": []
+      }
+    },
+    "exchange-marketdata": {
+      "name": "exchange-marketdata",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-marketdata",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod"
+    },
+    "exchange-user": {
+      "name": "exchange-user",
+      "path": "/Users/jiesen/Desktop/交易所开发/exchange-user",
+      "language": "Go",
+      "framework": null,
+      "type": "unknown",
+      "package_manager": "go mod",
+      "api": {
+        "routes": [
+          {
+            "path": "X-Internal-Token",
+            "methods": [
+              "GET"
+            ],
+            "file": "cmd/user/main.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-Forwarded-For",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/ratelimit.go",
+            "framework": "Go",
+            "requires_auth": false
+          },
+          {
+            "path": "X-Real-IP",
+            "methods": [
+              "GET"
+            ],
+            "file": "internal/middleware/ratelimit.go",
+            "framework": "Go",
+            "requires_auth": false
+          }
+        ],
+        "total_routes": 3,
+        "methods": [
+          "GET"
+        ],
+        "protected_routes": []
+      }
+    }
+  },
+  "infrastructure": {
+    "docker": true,
+    "database": "postgresql",
+    "cache": "redis",
+    "docker_compose": "exchange-common/docker-compose.yml"
+  },
+  "conventions": {
+    "formatter": "gofmt",
+    "testing": "go test ./..."
+  }
+}
