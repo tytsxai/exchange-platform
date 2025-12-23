@@ -46,7 +46,7 @@
             "command": "bash exchange-common/scripts/publish-contracts.sh --help",
             "expected": "Usage"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-1-3",
@@ -64,7 +64,7 @@
             "command": "rg -n \"^  version:\" exchange-gateway/api/openapi.yaml",
             "expected": "version:"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-1-4",

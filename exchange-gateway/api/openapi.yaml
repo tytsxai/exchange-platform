@@ -1,7 +1,8 @@
 openapi: 3.0.3
 info:
   title: Exchange API
-  version: 1.0.0
+  version: v1.0.0
+  x-contract-id: exchange-gateway
   description: |
     Cryptocurrency Exchange Platform API
 
