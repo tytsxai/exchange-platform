@@ -3,13 +3,13 @@
   "spec": "001-",
   "state": "building",
   "subtasks": {
-    "completed": 5,
+    "completed": 7,
     "total": 9,
     "in_progress": 1,
     "failed": 0
   },
   "phase": {
-    "current": "Versioned Contract Docs",
+    "current": "Breaking-Change Gate",
     "id": null,
     "total": 1
   },
@@ -18,8 +18,8 @@
     "max": 1
   },
   "session": {
-    "number": 3,
+    "number": 5,
     "started_at": "2025-12-24T04:35:23.067833"
   },
-  "last_update": "2025-12-24T04:44:43.847919"
+  "last_update": "2025-12-24T04:54:54.407870"
 }

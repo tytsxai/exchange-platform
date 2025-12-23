@@ -195,7 +195,7 @@
             "command": "bash exchange-common/scripts/check-contract-compat.sh --help",
             "expected": "Usage"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
