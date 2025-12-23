@@ -741,7 +741,7 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      description: Bearer token from login (format: v1.<payload>.<signature>)
+      description: "Bearer token from login (format: v1.<payload>.<signature>)"
 
   schemas:
     # ==================== Request Schemas ====================

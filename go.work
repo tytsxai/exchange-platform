@@ -1,0 +1,14 @@
+go 1.25.5
+
+use (
+	./
+	./exchange-admin
+	./exchange-clearing
+	./exchange-common
+	./exchange-gateway
+	./exchange-marketdata
+	./exchange-matching
+	./exchange-order
+	./exchange-user
+	./exchange-wallet
+)

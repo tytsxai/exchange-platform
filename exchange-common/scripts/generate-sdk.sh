@@ -8,6 +8,9 @@ COMMON_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$COMMON_DIR")"
 SDK_DIR="$REPO_ROOT/sdk/typescript"
 OUTPUT_DIR="$SDK_DIR/generated"
+OPENAPI_GENERATOR_CMD=()
+OPENAPI_GENERATOR_MODE=""
+COLLECTED_SOURCES=()
 
 usage() {
     cat <<USAGE
@@ -23,15 +26,58 @@ USAGE
 }
 
 check_deps() {
-    if ! command -v openapi-generator-cli &> /dev/null; then
-        echo "Error: openapi-generator-cli not found. Install with: brew install openapi-generator" >&2
-        exit 1
+    if command -v openapi-generator-cli &> /dev/null && command -v java &> /dev/null; then
+        OPENAPI_GENERATOR_CMD=("openapi-generator-cli")
+        OPENAPI_GENERATOR_MODE="local"
+        return
     fi
+
+    if command -v docker &> /dev/null; then
+        if docker info >/dev/null 2>&1; then
+            local uid gid
+            uid="$(id -u)"
+            gid="$(id -g)"
+            OPENAPI_GENERATOR_CMD=("docker" "run" "--rm" "-u" "${uid}:${gid}" "-v" "$REPO_ROOT:/local" "-w" "/local" "openapitools/openapi-generator-cli")
+            OPENAPI_GENERATOR_MODE="docker"
+            return
+        fi
+    fi
+
+    if command -v npx &> /dev/null && command -v java &> /dev/null; then
+        OPENAPI_GENERATOR_CMD=("npx" "--yes" "@openapitools/openapi-generator-cli")
+        OPENAPI_GENERATOR_MODE="npx"
+        return
+    fi
+
+    local jar_path="$REPO_ROOT/.cache/openapi-generator-cli/openapi-generator-cli.jar"
+    if [ -f "$jar_path" ]; then
+        if ! command -v java &> /dev/null; then
+            echo "Error: java not found for $jar_path" >&2
+            exit 1
+        fi
+        OPENAPI_GENERATOR_CMD=("java" "-jar" "$jar_path")
+        OPENAPI_GENERATOR_MODE="jar"
+        return
+    fi
+
+    if command -v java &> /dev/null && command -v curl &> /dev/null; then
+        local version="7.6.0"
+        local jar_url="https://repo1.maven.org/maven2/org/openapitools/openapi-generator-cli/${version}/openapi-generator-cli-${version}.jar"
+        mkdir -p "$(dirname "$jar_path")"
+        echo "Downloading openapi-generator-cli ${version}..."
+        curl -fsSL "$jar_url" -o "$jar_path"
+        OPENAPI_GENERATOR_CMD=("java" "-jar" "$jar_path")
+        OPENAPI_GENERATOR_MODE="jar"
+        return
+    fi
+
+    echo "Error: openapi-generator-cli not found. Install with: brew install openapi-generator, or ensure Docker is running or java+curl are available." >&2
+    exit 1
 }
 
 collect_sources() {
     local input_dir="$1"
-    local -n files_ref=$2
+    COLLECTED_SOURCES=()
 
     if [ -n "$input_dir" ]; then
         if [ ! -d "$input_dir" ]; then
@@ -42,7 +88,7 @@ collect_sources() {
         local found=0
         for openapi_file in "$input_dir"/*.yaml; do
             if [ -f "$openapi_file" ]; then
-                files_ref+=("$openapi_file")
+                COLLECTED_SOURCES+=("$openapi_file")
                 found=1
             fi
         done
@@ -62,7 +108,7 @@ collect_sources() {
 
     for openapi_file in "${default_sources[@]}"; do
         if [ -f "$openapi_file" ]; then
-            files_ref+=("$openapi_file")
+            COLLECTED_SOURCES+=("$openapi_file")
         else
             echo "Error: OpenAPI file not found: $openapi_file" >&2
             exit 1
@@ -74,13 +120,20 @@ generate_sdk() {
     local openapi_file="$1"
     local service_name="$2"
     local out_dir="$OUTPUT_DIR/$service_name"
+    local generator_input="$openapi_file"
+    local generator_output="$out_dir"
 
     echo "Generating TypeScript SDK for $service_name"
 
-    openapi-generator-cli generate \
-        -i "$openapi_file" \
+    if [ "$OPENAPI_GENERATOR_MODE" = "docker" ]; then
+        generator_input="${generator_input#$REPO_ROOT/}"
+        generator_output="${generator_output#$REPO_ROOT/}"
+    fi
+
+    "${OPENAPI_GENERATOR_CMD[@]}" generate \
+        -i "$generator_input" \
         -g typescript-fetch \
-        -o "$out_dir" \
+        -o "$generator_output" \
         --additional-properties=typescriptThreePlus=true
 }
 
@@ -133,11 +186,10 @@ main() {
 
     mkdir -p "$OUTPUT_DIR"
 
-    local sources=()
-    collect_sources "$input_dir" sources
+    collect_sources "$input_dir"
 
     local generated=0
-    for openapi_file in "${sources[@]}"; do
+    for openapi_file in "${COLLECTED_SOURCES[@]}"; do
         local service_name=""
         if [ -n "$input_dir" ]; then
             service_name="$(basename "$openapi_file" .yaml)"

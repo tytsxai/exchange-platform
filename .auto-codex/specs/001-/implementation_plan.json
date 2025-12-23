@@ -340,8 +340,54 @@
       "checks": []
     }
   },
-  "qa_signoff": null,
+  "qa_signoff": {
+    "status": "rejected",
+    "timestamp": "2025-12-23T22:07:58Z",
+    "qa_session": 2,
+    "issues_found": [
+      {
+        "type": "critical",
+        "title": "Unit tests cannot run from repo root",
+        "location": "repo root",
+        "fix_required": "Provide a go.work or adjust test commands so `go test ./...` passes from repo root."
+      },
+      {
+        "type": "critical",
+        "title": "SDK generation blocked by missing openapi-generator-cli",
+        "location": "exchange-common/scripts/generate-sdk.sh",
+        "fix_required": "Ensure openapi-generator-cli is available or add installation wrapper."
+      },
+      {
+        "type": "critical",
+        "title": "Browser verification blocked (bun missing)",
+        "location": "QA environment / dev-browser",
+        "fix_required": "Install bun or provide alternate Playwright runner."
+      }
+    ],
+    "fix_request_file": "QA_FIX_REQUEST.md"
+  },
   "status": "in_progress",
   "planStatus": "in_progress",
-  "updated_at": "2025-12-23T21:35:22.795Z"
+  "updated_at": "2025-12-23T21:35:22.795Z",
+  "qa_iteration_history": [
+    {
+      "iteration": 1,
+      "status": "error",
+      "timestamp": "2025-12-23T22:04:27.004354+00:00",
+      "issues": [
+        {
+          "title": "QA error",
+          "description": "QA agent did not update implementation_plan.json (No tools were used by agent)"
+        }
+      ]
+    }
+  ],
+  "qa_stats": {
+    "total_iterations": 1,
+    "last_iteration": 1,
+    "last_status": "error",
+    "issues_by_type": {
+      "unknown": 1
+    }
+  }
 }
