@@ -2,8 +2,9 @@
 package config
 
 import (
-	"os"
 	"strconv"
+
+	envconfig "github.com/exchange/common/pkg/config"
 )
 
 // Config 服务配置
@@ -41,29 +42,29 @@ type Config struct {
 // Load 加载配置
 func Load() *Config {
 	return &Config{
-		ServiceName: getEnv("SERVICE_NAME", "exchange-wallet"),
-		HTTPPort:    getEnvInt("HTTP_PORT", 8086),
+		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-wallet"),
+		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8086),
 
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
-		DBUser:     getEnv("DB_USER", "exchange"),
-		DBPassword: getEnv("DB_PASSWORD", "exchange123"),
-		DBName:     getEnv("DB_NAME", "exchange"),
+		DBHost:     envconfig.GetEnv("DB_HOST", "localhost"),
+		DBPort:     envconfig.GetEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
+		DBUser:     envconfig.GetEnv("DB_USER", "exchange"),
+		DBPassword: envconfig.GetEnv("DB_PASSWORD", "exchange123"),
+		DBName:     envconfig.GetEnv("DB_NAME", "exchange"),
 
-		OrderStream:             getEnv("ORDER_STREAM", "exchange:orders"),
-		EventStream:             getEnv("EVENT_STREAM", "exchange:events"),
-		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+		OrderStream:             envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
+		EventStream:             envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
+		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
-		TronNodeURL:    getEnv("TRON_NODE_URL", "https://api.trongrid.io"),
-		TronGridAPIKey: getEnv("TRON_GRID_API_KEY", ""),
+		TronNodeURL:    envconfig.GetEnv("TRON_NODE_URL", "https://api.trongrid.io"),
+		TronGridAPIKey: envconfig.GetEnv("TRON_GRID_API_KEY", ""),
 
-		ClearingServiceURL: getEnv("CLEARING_SERVICE_URL", "http://localhost:8083"),
+		ClearingServiceURL: envconfig.GetEnv("CLEARING_SERVICE_URL", "http://localhost:8083"),
 
-		DepositScannerEnabled:      getEnvBool("DEPOSIT_SCANNER_ENABLED", false),
-		DepositScannerIntervalSecs: getEnvInt("DEPOSIT_SCANNER_INTERVAL_SECS", 15),
-		DepositScannerMaxAddresses: getEnvInt("DEPOSIT_SCANNER_MAX_ADDRESSES", 200),
+		DepositScannerEnabled:      envconfig.GetEnvBool("DEPOSIT_SCANNER_ENABLED", false),
+		DepositScannerIntervalSecs: envconfig.GetEnvInt("DEPOSIT_SCANNER_INTERVAL_SECS", 15),
+		DepositScannerMaxAddresses: envconfig.GetEnvInt("DEPOSIT_SCANNER_MAX_ADDRESSES", 200),
 
-		WorkerID: int64(getEnvInt("WORKER_ID", 7)),
+		WorkerID: envconfig.GetEnvInt64("WORKER_ID", 7),
 	}
 }
 
@@ -75,30 +76,4 @@ func (c *Config) DSN() string {
 		" password=" + c.DBPassword +
 		" dbname=" + c.DBName +
 		" sslmode=disable"
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if i, err := strconv.Atoi(value); err == nil {
-			return i
-		}
-	}
-	return defaultValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		b, err := strconv.ParseBool(value)
-		if err == nil {
-			return b
-		}
-	}
-	return defaultValue
 }

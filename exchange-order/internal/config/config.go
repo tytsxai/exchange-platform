@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	envconfig "github.com/exchange/common/pkg/config"
 	commondecimal "github.com/exchange/common/pkg/decimal"
 )
 
@@ -57,34 +58,34 @@ type PriceProtectionConfig struct {
 func Load() *Config {
 	defaultLimitRate := *commondecimal.MustNew("0.05")
 	return &Config{
-		ServiceName: getEnv("SERVICE_NAME", "exchange-order"),
-		HTTPPort:    getEnvInt("HTTP_PORT", 8081),
+		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-order"),
+		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8081),
 
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
-		DBUser:     getEnv("DB_USER", "exchange"),
-		DBPassword: getEnv("DB_PASSWORD", "exchange123"),
-		DBName:     getEnv("DB_NAME", "exchange"),
+		DBHost:     envconfig.GetEnv("DB_HOST", "localhost"),
+		DBPort:     envconfig.GetEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
+		DBUser:     envconfig.GetEnv("DB_USER", "exchange"),
+		DBPassword: envconfig.GetEnv("DB_PASSWORD", "exchange123"),
+		DBName:     envconfig.GetEnv("DB_NAME", "exchange"),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		RedisAddr:     envconfig.GetEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
+		RedisPassword: envconfig.GetEnv("REDIS_PASSWORD", ""),
 
-		OrderStream: getEnv("ORDER_STREAM", "exchange:orders"),
+		OrderStream: envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
 
-		EventStream:           getEnv("EVENT_STREAM", "exchange:events"),
-		MatchingConsumerGroup: getEnv("MATCHING_CONSUMER_GROUP", "order-updater-group"),
-		MatchingConsumerName:  getEnv("MATCHING_CONSUMER_NAME", "order-updater-1"),
+		EventStream:           envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
+		MatchingConsumerGroup: envconfig.GetEnv("MATCHING_CONSUMER_GROUP", "order-updater-group"),
+		MatchingConsumerName:  envconfig.GetEnv("MATCHING_CONSUMER_NAME", "order-updater-1"),
 
-		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
-		WorkerID: int64(getEnvInt("WORKER_ID", 3)),
+		WorkerID: envconfig.GetEnvInt64("WORKER_ID", 3),
 
-		MatchingServiceURL: getEnv("MATCHING_SERVICE_URL", "http://localhost:8082"),
+		MatchingServiceURL: envconfig.GetEnv("MATCHING_SERVICE_URL", "http://localhost:8082"),
 
-		ClearingBaseURL: getEnv("CLEARING_BASE_URL", "http://localhost:8083"),
+		ClearingBaseURL: envconfig.GetEnv("CLEARING_BASE_URL", "http://localhost:8083"),
 
 		PriceProtection: PriceProtectionConfig{
-			Enabled:          getEnvBool("PRICE_PROTECTION_ENABLED", true),
+			Enabled:          envconfig.GetEnvBool("PRICE_PROTECTION_ENABLED", true),
 			DefaultLimitRate: getEnvDecimal("PRICE_PROTECTION_DEFAULT_LIMIT_RATE", defaultLimitRate),
 		},
 	}
@@ -98,34 +99,6 @@ func (c *Config) DSN() string {
 		" password=" + c.DBPassword +
 		" dbname=" + c.DBName +
 		" sslmode=disable"
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if i, err := strconv.Atoi(value); err == nil {
-			return i
-		}
-	}
-	return defaultValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if value == "true" || value == "1" || value == "TRUE" {
-			return true
-		}
-		if value == "false" || value == "0" || value == "FALSE" {
-			return false
-		}
-	}
-	return defaultValue
 }
 
 func getEnvDecimal(key string, defaultValue commondecimal.Decimal) commondecimal.Decimal {

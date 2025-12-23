@@ -2,8 +2,7 @@
 package config
 
 import (
-	"os"
-	"strconv"
+	envconfig "github.com/exchange/common/pkg/config"
 )
 
 // Config 服务配置
@@ -36,39 +35,23 @@ type Config struct {
 // Load 加载配置
 func Load() *Config {
 	return &Config{
-		ServiceName: getEnv("SERVICE_NAME", "exchange-gateway"),
-		HTTPPort:    getEnvInt("HTTP_PORT", 8080),
-		WSPort:      getEnvInt("WS_PORT", 8090),
+		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-gateway"),
+		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8080),
+		WSPort:      envconfig.GetEnvInt("WS_PORT", 8090),
 
-		OrderServiceURL:    getEnv("ORDER_SERVICE_URL", "http://localhost:8081"),
-		ClearingServiceURL: getEnv("CLEARING_SERVICE_URL", "http://localhost:8083"),
-		UserServiceURL:     getEnv("USER_SERVICE_URL", "http://localhost:8085"),
-		MatchingServiceURL: getEnv("MATCHING_SERVICE_URL", "http://localhost:8082"),
+		OrderServiceURL:    envconfig.GetEnv("ORDER_SERVICE_URL", "http://localhost:8081"),
+		ClearingServiceURL: envconfig.GetEnv("CLEARING_SERVICE_URL", "http://localhost:8083"),
+		UserServiceURL:     envconfig.GetEnv("USER_SERVICE_URL", "http://localhost:8085"),
+		MatchingServiceURL: envconfig.GetEnv("MATCHING_SERVICE_URL", "http://localhost:8082"),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		RedisAddr:     envconfig.GetEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
+		RedisPassword: envconfig.GetEnv("REDIS_PASSWORD", ""),
 
-		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
-		InternalToken: getEnv("INTERNAL_TOKEN", "internal-secret"),
+		InternalToken: envconfig.GetEnv("INTERNAL_TOKEN", "internal-secret"),
 
-		IPRateLimit:   getEnvInt("IP_RATE_LIMIT", 100),
-		UserRateLimit: getEnvInt("USER_RATE_LIMIT", 50),
+		IPRateLimit:   envconfig.GetEnvInt("IP_RATE_LIMIT", 100),
+		UserRateLimit: envconfig.GetEnvInt("USER_RATE_LIMIT", 50),
 	}
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if i, err := strconv.Atoi(value); err == nil {
-			return i
-		}
-	}
-	return defaultValue
 }
