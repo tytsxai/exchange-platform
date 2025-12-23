@@ -7,21 +7,21 @@
       "id": "phase-1-schema",
       "name": "Schema and Shared Data",
       "type": "implementation",
-      "description": "Add database structures for audit trace linkage and reconciliation anomaly tracking.",
+      "description": "Add database structures for audit trace linkage and reconciliation anomaly tracking while reusing existing ledger/audit schemas.",
       "depends_on": [],
       "parallel_safe": true,
       "subtasks": [
         {
           "id": "subtask-1-1",
-          "description": "Extend database schema with audit linkage and reconciliation anomaly tables",
+          "description": "Extend database schema with reconciliation anomaly records and ledger-to-event audit linkage metadata",
           "service": "exchange-common",
           "files_to_modify": ["exchange-common/scripts/init-db.sql"],
           "files_to_create": [],
           "patterns_from": ["exchange-common/scripts/init-db.sql"],
           "verification": {
             "type": "command",
-            "command": "rg \"reconciliation\|audit\|anomaly\" exchange-common/scripts/init-db.sql",
-            "expected": "reconciliation"
+            "command": "rg \"reconciliation\|audit\|anomaly\|ledger\" exchange-common/scripts/init-db.sql",
+            "expected": "ledger"
           },
           "status": "pending"
         }
@@ -41,7 +41,7 @@
           "service": "exchange-clearing",
           "files_to_modify": ["exchange-clearing/internal/repository/balance.go"],
           "files_to_create": ["exchange-clearing/internal/repository/audit.go"],
-          "patterns_from": ["exchange-clearing/internal/repository/balance.go", "exchange-admin/internal/repository/admin.go"],
+          "patterns_from": ["exchange-clearing/internal/repository/balance.go", "exchange-admin/internal/repository/admin.go", "exchange-common/scripts/init-db.sql"],
           "verification": {
             "type": "command",
             "command": "rg \"audit\|anomaly\" exchange-clearing/internal/repository",
@@ -58,8 +58,8 @@
           "patterns_from": ["exchange-clearing/internal/service/clearing.go", "exchange-common/pkg/logger/logger.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"audit\|idempot\|trace\" exchange-clearing/internal/service/clearing.go",
-            "expected": "audit"
+            "command": "rg \"audit\|idempot\|trace\|anomaly\" exchange-clearing/internal/service/clearing.go",
+            "expected": "idempot"
           },
           "status": "pending"
         },
@@ -69,7 +69,7 @@
           "service": "exchange-clearing",
           "files_to_modify": ["exchange-clearing/cmd/reconciliation/main.go"],
           "files_to_create": [],
-          "patterns_from": ["exchange-clearing/cmd/reconciliation/main.go"],
+          "patterns_from": ["exchange-clearing/cmd/reconciliation/main.go", "exchange-clearing/scripts/reconciliation.sql"],
           "verification": {
             "type": "command",
             "command": "go test ./exchange-clearing/cmd/reconciliation -run TestRunWithDB",
@@ -93,10 +93,10 @@
           "service": "exchange-wallet",
           "files_to_modify": ["exchange-wallet/internal/service/wallet.go", "exchange-wallet/internal/client/clearing.go"],
           "files_to_create": [],
-          "patterns_from": ["exchange-wallet/internal/service/wallet.go", "exchange-wallet/internal/client/clearing.go"],
+          "patterns_from": ["exchange-wallet/internal/service/wallet.go", "exchange-wallet/internal/client/clearing.go", "exchange-common/pkg/logger/logger.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"IdempotencyKey\" exchange-wallet/internal/service/wallet.go",
+            "command": "rg \"IdempotencyKey\|trace\" exchange-wallet/internal/service/wallet.go exchange-wallet/internal/client/clearing.go",
             "expected": "IdempotencyKey"
           },
           "status": "pending"
