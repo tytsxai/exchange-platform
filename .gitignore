@@ -1,8 +1,10 @@
 # AI tooling
 .auto-claude/
 .auto-codex/
+.auto-codex-security.json
 .claude/
 .claude_settings.json
+.worktrees/
 
 # Build/run artifacts
 **/bin/
