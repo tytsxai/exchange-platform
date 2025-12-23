@@ -7,7 +7,7 @@ info:
 
     ## Authentication
     All endpoints (except /health) require Bearer token authentication.
-    Token format: `Bearer token_{userId}`
+    Token format: `Bearer <signed-token>` (HMAC, versioned).
 
     ## Withdrawal Flow
     1. User requests withdrawal via `POST /wallet/withdraw`
@@ -310,7 +310,7 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      description: Bearer token from login (format: token_{userId})
+      description: Bearer token from login (format: v1.<payload>.<signature>)
 
   schemas:
     # ==================== Request Schemas ====================

@@ -7,7 +7,7 @@ info:
 
     ## Authentication
     All endpoints (except /health, /docs) require Bearer token authentication.
-    Token format: `Bearer token_{userId}`
+    Token format: `Bearer <signed-token>` (HMAC, versioned).
 
     ## Permissions
     Admin operations are logged in audit trail. Different roles have different permissions:
@@ -322,7 +322,7 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      description: Bearer token from login (format: token_{userId})
+      description: Bearer token from login (format: v1.<payload>.<signature>)
 
   schemas:
     # ==================== Request Schemas ====================

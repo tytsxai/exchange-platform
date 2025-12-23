@@ -25,8 +25,14 @@ source: ""
 - [[#3 降级与紧急开关]]
 - [[#4 事故处理流程]]
 - [[#5 回滚与数据修复]]
+- [[#0.1 上线前配置校验]]
 
 ---
+
+## 0.1 上线前配置校验
+- `INTERNAL_TOKEN` 必须配置且非默认值（所有内部调用需一致）
+- `AUTH_TOKEN_SECRET` 必须配置（长度不少于 32 字符），`AUTH_TOKEN_TTL` 设置合理过期
+- `DB_SSL_MODE=require`（生产）+ 合理的连接池参数（`DB_MAX_OPEN_CONNS` 等）
 
 ## 1 SLO 与告警目标
 - 可用性：`99.9%`
@@ -121,3 +127,10 @@ source: ""
 ### 5.2 常见修复类型（示例）
 - 重复记账：追加一笔“冲正”账本流水（带 refId 指向原错误流水）
 - 少记账：追加一笔“补记”账本流水（带 refId 指向原成交/订单）
+
+### 5.3 备份与恢复（最小流程）
+- PostgreSQL 备份：`exchange-common/scripts/backup-db.sh`（依赖 `DB_URL`，产出 `.dump` 文件）
+- PostgreSQL 恢复：`exchange-common/scripts/restore-db.sh <backup-file>`（恢复后需全量对账）
+- Redis 备份：`exchange-common/scripts/backup-redis.sh`（依赖 `REDIS_ADDR`，产出 `.rdb` 文件）
+- 数据库迁移：`exchange-common/scripts/migrate.sh`（执行 `init-db.sql` 并记录 `schema_migrations`）
+- 频率建议：数据库每日全量 + 关键变更前手动备份；恢复后必须跑健康检查与资金对账

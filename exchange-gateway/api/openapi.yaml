@@ -192,7 +192,7 @@ paths:
               example:
                 userId: 10001
                 email: user@example.com
-                token: token_10001
+                token: v1.payload.signature
         '401':
           description: Invalid credentials
           content:
@@ -740,7 +740,7 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      description: Bearer token from login (format: token_{userId})
+      description: Bearer token from login (format: v1.<payload>.<signature>)
 
   schemas:
     # ==================== Request Schemas ====================
@@ -846,7 +846,7 @@ components:
         token:
           type: string
           description: Bearer token for authentication
-          example: "token_12345"
+          example: "v1.payload.signature"
 
     ExchangeInfo:
       type: object

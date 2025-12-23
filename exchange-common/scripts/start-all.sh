@@ -16,6 +16,13 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Dev defaults (override in shell for production)
+INTERNAL_TOKEN=${INTERNAL_TOKEN:-"dev-internal-token-change-me"}
+AUTH_TOKEN_SECRET=${AUTH_TOKEN_SECRET:-"dev-auth-token-secret-32-bytes-minimum"}
+AUTH_TOKEN_TTL=${AUTH_TOKEN_TTL:-"24h"}
+
+export INTERNAL_TOKEN AUTH_TOKEN_SECRET AUTH_TOKEN_TTL
+
 # 服务列表
 SERVICES=(
     "exchange-user:8085"
@@ -23,8 +30,8 @@ SERVICES=(
     "exchange-matching:8082"
     "exchange-clearing:8083"
     "exchange-marketdata:8084"
-    "exchange-admin:8086"
-    "exchange-wallet:8087"
+    "exchange-admin:8087"
+    "exchange-wallet:8086"
     "exchange-gateway:8080"
 )
 
@@ -36,10 +43,11 @@ start_infra() {
     log_info "Waiting for PostgreSQL to be ready..."
     sleep 5
 
-    # 初始化数据库
-    if [ -f "scripts/init-db.sql" ]; then
-        log_info "Initializing database schema..."
-        docker-compose exec -T postgres psql -U exchange -d exchange < scripts/init-db.sql 2>/dev/null || true
+    # 初始化数据库/迁移
+    if [ -f "scripts/migrate.sh" ]; then
+        log_info "Applying database migrations..."
+        DB_URL=${DB_URL:-"postgres://exchange:exchange123@localhost:5436/exchange?sslmode=disable"} \
+            bash scripts/migrate.sh 2>/dev/null || true
     fi
 }
 

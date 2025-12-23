@@ -23,6 +23,10 @@ exchange-common/
 ├── scripts/
 │   ├── gen-proto.sh        # Proto 编译脚本
 │   ├── init-db.sql         # 数据库初始化
+│   ├── migrate.sh          # 数据库迁移脚本
+│   ├── backup-db.sh        # PostgreSQL 备份脚本
+│   ├── restore-db.sh       # PostgreSQL 恢复脚本
+│   ├── backup-redis.sh     # Redis 备份脚本
 │   └── prometheus.yml      # Prometheus 配置
 └── docker-compose.yml      # 开发环境
 ```
@@ -177,11 +181,20 @@ canonicalQuery = sorted query string (exclude `signature` if present); request b
 **管理接口 (Admin/Wallet)**: Bearer Token
 ```
 Headers:
-  Authorization: Bearer token_{userId}
+  Authorization: Bearer v1.<payload>.<signature>
 ```
+Token 由 `AUTH_TOKEN_SECRET` 签名，包含过期时间（`AUTH_TOKEN_TTL`）。
+
+**内部接口**: 服务间调用需要 `X-Internal-Token`（与 `INTERNAL_TOKEN` 环境变量一致）。
 
 ### OpenAPI 规范文件
 
 - Gateway: `exchange-gateway/api/openapi.yaml`
 - Admin: `exchange-admin/api/openapi.yaml`
 - Wallet: `exchange-wallet/api/openapi.yaml`
+
+## 生产配置要点
+- `INTERNAL_TOKEN`：服务间调用鉴权必配
+- `AUTH_TOKEN_SECRET` + `AUTH_TOKEN_TTL`：管理端 Bearer Token 签名与过期
+- `DB_SSL_MODE=require`：生产数据库强制 TLS
+- `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME`：连接池基线
