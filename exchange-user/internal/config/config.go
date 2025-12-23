@@ -2,8 +2,9 @@
 package config
 
 import (
-	"os"
 	"strconv"
+
+	envconfig "github.com/exchange/common/pkg/config"
 )
 
 // Config 服务配置
@@ -35,25 +36,25 @@ type Config struct {
 // Load 加载配置
 func Load() *Config {
 	return &Config{
-		ServiceName: getEnv("SERVICE_NAME", "exchange-user"),
-		HTTPPort:    getEnvInt("HTTP_PORT", 8085),
+		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-user"),
+		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8085),
 
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
-		DBUser:     getEnv("DB_USER", "exchange"),
-		DBPassword: getEnv("DB_PASSWORD", "exchange123"),
-		DBName:     getEnv("DB_NAME", "exchange"),
+		DBHost:     envconfig.GetEnv("DB_HOST", "localhost"),
+		DBPort:     envconfig.GetEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
+		DBUser:     envconfig.GetEnv("DB_USER", "exchange"),
+		DBPassword: envconfig.GetEnv("DB_PASSWORD", "exchange123"),
+		DBName:     envconfig.GetEnv("DB_NAME", "exchange"),
 
-		RedisAddr:      getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
-		RedisPassword:  getEnv("REDIS_PASSWORD", ""),
-		RedisDB:        getEnvInt("REDIS_DB", 0),
-		NonceKeyPrefix: getEnv("NONCE_KEY_PREFIX", "nonce:user:"),
+		RedisAddr:      envconfig.GetEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
+		RedisPassword:  envconfig.GetEnv("REDIS_PASSWORD", ""),
+		RedisDB:        envconfig.GetEnvInt("REDIS_DB", 0),
+		NonceKeyPrefix: envconfig.GetEnv("NONCE_KEY_PREFIX", "nonce:user:"),
 
-		OrderStream:             getEnv("ORDER_STREAM", "exchange:orders"),
-		EventStream:             getEnv("EVENT_STREAM", "exchange:events"),
-		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+		OrderStream:             envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
+		EventStream:             envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
+		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
-		WorkerID: int64(getEnvInt("WORKER_ID", 5)),
+		WorkerID: envconfig.GetEnvInt64("WORKER_ID", 5),
 	}
 }
 
@@ -65,20 +66,4 @@ func (c *Config) DSN() string {
 		" password=" + c.DBPassword +
 		" dbname=" + c.DBName +
 		" sslmode=disable"
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if i, err := strconv.Atoi(value); err == nil {
-			return i
-		}
-	}
-	return defaultValue
 }
