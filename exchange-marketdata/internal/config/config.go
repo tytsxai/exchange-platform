@@ -2,8 +2,7 @@
 package config
 
 import (
-	"os"
-	"strconv"
+	envconfig "github.com/exchange/common/pkg/config"
 )
 
 // Config 服务配置
@@ -29,34 +28,18 @@ type Config struct {
 // Load 加载配置
 func Load() *Config {
 	return &Config{
-		ServiceName: getEnv("SERVICE_NAME", "exchange-marketdata"),
-		HTTPPort:    getEnvInt("HTTP_PORT", 8084),
-		WSPort:      getEnvInt("WS_PORT", 8094),
+		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-marketdata"),
+		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8084),
+		WSPort:      envconfig.GetEnvInt("WS_PORT", 8094),
 
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		RedisAddr:     envconfig.GetEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
+		RedisPassword: envconfig.GetEnv("REDIS_PASSWORD", ""),
 
-		OrderStream:   getEnv("ORDER_STREAM", "exchange:orders"),
-		EventStream:   getEnv("EVENT_STREAM", "exchange:events"),
-		ConsumerGroup: getEnv("CONSUMER_GROUP", "marketdata-group"),
-		ConsumerName:  getEnv("CONSUMER_NAME", "marketdata-1"),
+		OrderStream:   envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
+		EventStream:   envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
+		ConsumerGroup: envconfig.GetEnv("CONSUMER_GROUP", "marketdata-group"),
+		ConsumerName:  envconfig.GetEnv("CONSUMER_NAME", "marketdata-1"),
 
-		PrivateUserEventChannel: getEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 	}
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if i, err := strconv.Atoi(value); err == nil {
-			return i
-		}
-	}
-	return defaultValue
 }
