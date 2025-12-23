@@ -1,0 +1,40 @@
+=== AUTO-BUILD PROGRESS ===
+
+Project: 钱包出入金与链上对账
+Workspace: managed by orchestrator
+Started: 2025-12-23T22:05:41Z
+
+Workflow Type: feature
+Rationale: New end-to-end wallet flow and reconciliation capabilities are being added.
+
+Session 1 (Planner):
+- Created implementation_plan.json
+- Phases: 4
+- Total subtasks: 7
+- Created init.sh
+
+Phase Summary:
+- Wallet Storage: 2 subtasks, depends on []
+- Wallet Workflows: 3 subtasks, depends on [phase-1-wallet-storage]
+- Reconciliation Reporting: 1 subtask, depends on [phase-1-wallet-storage]
+- Integration Verification: 1 subtask, depends on [phase-2-wallet-workflows, phase-3-clearing-reconciliation]
+
+Services Involved:
+- exchange-wallet: deposit/withdraw workflows and address management
+- exchange-clearing: reconciliation reporting and ledger alignment
+
+Parallelism Analysis:
+- Max parallel phases: 2
+- Recommended workers: 2
+- Parallel groups: phase-2-wallet-workflows + phase-3-clearing-reconciliation
+
+=== STARTUP COMMAND ===
+
+To continue building this spec, run:
+
+  source auto-codex/.venv/bin/activate && python3 auto-codex/run.py --spec 005 --parallel 2
+
+Example:
+  source auto-codex/.venv/bin/activate && python3 auto-codex/run.py --spec 001 --parallel 2
+
+=== END SESSION 1 ===
