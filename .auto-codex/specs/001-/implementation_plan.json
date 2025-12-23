@@ -100,7 +100,7 @@
             "command": "rg -n \"^  version:\" exchange-wallet/api/openapi.yaml",
             "expected": "version:"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },

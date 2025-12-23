@@ -1,7 +1,9 @@
 openapi: 3.0.3
 info:
   title: Exchange Wallet API
-  version: 1.0.0
+  version: v1.0.0
+  x-contract-id: exchange-wallet
+  x-contract-version: v1.0.0
   description: |
     Wallet Service API for deposits, withdrawals, and asset management.
 
