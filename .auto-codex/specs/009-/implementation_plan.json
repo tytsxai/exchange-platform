@@ -1,0 +1,372 @@
+{
+  "feature": "Cross-Region Active-Active + DR Automation",
+  "workflow_type": "feature",
+  "workflow_rationale": "New disaster recovery automation, routing failover, and drill reporting are being added across core services and operational tooling.",
+  "phases": [
+    {
+      "id": "phase-1-discovery",
+      "name": "DR Requirements & Inventory",
+      "type": "investigation",
+      "description": "Document target platform choices, RTO/RPO targets, and the core service inventory required for DR automation.",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Document target platform, routing stack, RTO/RPO targets, and service inventory in a DR decision record.",
+          "service": "documentation",
+          "files_to_modify": [],
+          "files_to_create": [
+            "交易所项目文档/DR/DR-PLATFORM.md"
+          ],
+          "patterns_from": [
+            "交易所项目文档/交易所开发-通用总纲.md",
+            "交易所项目文档/交易所项目-测试与验收.md"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Review DR-PLATFORM.md for documented platform, routing stack, RTO/RPO targets, and core service inventory."
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-routing",
+      "name": "Routing State + Gateway Failover",
+      "type": "implementation",
+      "description": "Add routing state definitions and make the gateway resolve target services dynamically for failover.",
+      "depends_on": [
+        "phase-1-discovery"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Add a routing state package to exchange-common for storing active-region targets and defaults.",
+          "service": "exchange-common",
+          "files_to_modify": [],
+          "files_to_create": [
+            "exchange-common/pkg/routing/state.go",
+            "exchange-common/pkg/routing/state_test.go"
+          ],
+          "patterns_from": [
+            "exchange-common/pkg/logger/logger.go"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "go test ./exchange-common/...",
+            "expected": "ok"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Update gateway proxy routing to resolve per-service targets from routing state with safe defaults.",
+          "service": "exchange-gateway",
+          "files_to_modify": [
+            "exchange-gateway/cmd/gateway/main.go"
+          ],
+          "files_to_create": [
+            "exchange-gateway/internal/routing/resolver.go"
+          ],
+          "patterns_from": [
+            "exchange-gateway/cmd/gateway/main.go",
+            "exchange-order/cmd/order/main.go"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "go test ./exchange-gateway/...",
+            "expected": "ok"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-2-3",
+          "description": "Create a routing switch script that updates routing state in Redis and validates health endpoints.",
+          "service": "scripts",
+          "files_to_modify": [],
+          "files_to_create": [
+            "scripts/dr/routing-switch.sh"
+          ],
+          "patterns_from": [
+            "scripts/test-helpers.sh",
+            "scripts/e2e-test.sh"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash scripts/dr/routing-switch.sh --help",
+            "expected": "Usage"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-health-monitor",
+      "name": "Automated Health Monitoring",
+      "type": "implementation",
+      "description": "Automate per-region health checks and trigger routing updates based on service availability.",
+      "depends_on": [
+        "phase-2-routing"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add a health monitor script that polls /health endpoints and applies routing failover rules.",
+          "service": "scripts",
+          "files_to_modify": [],
+          "files_to_create": [
+            "scripts/dr/health-monitor.sh"
+          ],
+          "patterns_from": [
+            "scripts/test-helpers.sh",
+            "exchange-gateway/cmd/gateway/main.go"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash scripts/dr/health-monitor.sh --dry-run",
+            "expected": "dry-run"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-consistency",
+      "name": "Data Consistency Validation",
+      "type": "implementation",
+      "description": "Provide validation scripts to compare primary/secondary data and enforce promotion gates.",
+      "depends_on": [
+        "phase-2-routing"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Add a consistency check script for primary/secondary databases with configurable queries.",
+          "service": "scripts",
+          "files_to_modify": [],
+          "files_to_create": [
+            "scripts/dr/consistency-check.sh",
+            "scripts/dr/consistency.sql"
+          ],
+          "patterns_from": [
+            "scripts/test-helpers.sh",
+            "scripts/cleanup-test-data.sql"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash scripts/dr/consistency-check.sh --help",
+            "expected": "Usage"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-drill",
+      "name": "DR Drill Orchestration & Reporting",
+      "type": "implementation",
+      "description": "Orchestrate failover drills, measure RTO/RPO, and output reports.",
+      "depends_on": [
+        "phase-3-health-monitor",
+        "phase-4-consistency"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Add a drill orchestration script that switches routing, validates data, and writes an RTO/RPO report.",
+          "service": "scripts",
+          "files_to_modify": [],
+          "files_to_create": [
+            "scripts/dr/drill.sh",
+            "scripts/dr/report-template.json"
+          ],
+          "patterns_from": [
+            "scripts/e2e-test.sh",
+            "scripts/test-helpers.sh"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "bash scripts/dr/drill.sh --plan",
+            "expected": "plan"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-6-integration",
+      "name": "Integration",
+      "type": "integration",
+      "description": "Run end-to-end DR drill in staging and capture results.",
+      "depends_on": [
+        "phase-5-drill"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-6-1",
+          "description": "Execute a staged DR drill and verify routing failover and data consistency gates.",
+          "service": "ops",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [
+            "交易所项目文档/交易所项目-测试与验收.md"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Run scripts/dr/drill.sh in staging, capture report output, and verify RTO/RPO targets and consistency gates."
+          },
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 6,
+    "total_subtasks": 8,
+    "services_involved": [
+      "exchange-common",
+      "exchange-gateway",
+      "scripts",
+      "documentation",
+      "ops"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 2,
+      "parallel_groups": [
+        {
+          "phases": [
+            "phase-3-health-monitor",
+            "phase-4-consistency"
+          ],
+          "reason": "Both depend on phase-2-routing, touch different script files, and do not overlap service code."
+        }
+      ],
+      "recommended_workers": 2,
+      "speedup_estimate": "1.3x faster than sequential"
+    },
+    "startup_command": "source auto-codex/.venv/bin/activate && python3 auto-codex/run.py --spec 009 --parallel 2"
+  },
+  "verification_strategy": {
+    "risk_level": "high",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration",
+      "e2e"
+    ],
+    "security_scanning_required": true,
+    "staging_deployment_required": true,
+    "acceptance_criteria": [
+      "All existing tests pass",
+      "New routing and drill scripts execute without errors",
+      "Failover drills meet documented RTO/RPO targets",
+      "Data consistency checks gate promotion"
+    ],
+    "verification_steps": [
+      {
+        "name": "Unit Tests",
+        "command": "go test ./...",
+        "expected_outcome": "All tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Integration Tests",
+        "command": "go test -tags=integration ./...",
+        "expected_outcome": "All integration tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "E2E Tests",
+        "command": "bash scripts/e2e-test.sh",
+        "expected_outcome": "All E2E checks pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Secrets Scan",
+        "command": "python3 auto-codex/scan_secrets.py --all-files --json",
+        "expected_outcome": "No secrets detected",
+        "type": "security",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "SAST Scan (Go)",
+        "command": "gosec ./...",
+        "expected_outcome": "No high severity issues",
+        "type": "security",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Staging Drill",
+        "command": "bash scripts/dr/drill.sh --run --env staging",
+        "expected_outcome": "RTO/RPO targets met and consistency gates pass",
+        "type": "manual",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "High-risk changes to DR and failover require unit, integration, and E2E validation plus security scanning and staging drills."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "go test ./..."
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": true,
+      "commands": [
+        "go test -tags=integration ./..."
+      ],
+      "services_to_test": [
+        "exchange-gateway",
+        "exchange-order",
+        "exchange-matching",
+        "exchange-clearing",
+        "exchange-user",
+        "exchange-wallet",
+        "exchange-marketdata"
+      ]
+    },
+    "e2e_tests": {
+      "required": true,
+      "commands": [
+        "bash scripts/e2e-test.sh"
+      ],
+      "flows": [
+        "dr-drill",
+        "routing-failover",
+        "consistency-validation"
+      ]
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": []
+    },
+    "database_verification": {
+      "required": true,
+      "checks": [
+        "primary-secondary consistency checks run",
+        "promotion gates enforced",
+        "drill report captures data validation status"
+      ]
+    }
+  },
+  "qa_signoff": null
+}
