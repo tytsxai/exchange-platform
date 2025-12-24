@@ -13,6 +13,3 @@
 **/coverage*.out
 **/*.log
 **/*.pid
-
-# Auto Codex data directory
-.auto-codex/
