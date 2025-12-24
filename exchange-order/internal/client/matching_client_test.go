@@ -27,7 +27,7 @@ func TestPriceMatchingClient_GetLastPrice(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewMatchingClient(server.URL)
+	client := NewMatchingClient(server.URL, "")
 
 	price, err := client.GetLastPrice("BTCUSDT")
 	if err != nil {
@@ -59,7 +59,7 @@ func TestPriceMatchingClient_GetLastPrice_NoDepth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewMatchingClient(server.URL)
+	client := NewMatchingClient(server.URL, "")
 	if _, err := client.GetLastPrice("BTCUSDT"); err == nil {
 		t.Fatal("expected error for empty orderbook")
 	}
@@ -71,7 +71,7 @@ func TestPriceMatchingClient_GetLastPrice_HTTPStatusError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewMatchingClient(server.URL)
+	client := NewMatchingClient(server.URL, "")
 	if _, err := client.GetLastPrice("BTCUSDT"); err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
@@ -95,7 +95,7 @@ func TestPriceMatchingClient_GetLastPrice_CacheExpiry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewMatchingClient(server.URL)
+	client := NewMatchingClient(server.URL, "")
 	if _, err := client.GetLastPrice("BTCUSDT"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestPriceMatchingClient_GetLastPrice_ConcurrentCache(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewMatchingClient(server.URL)
+	client := NewMatchingClient(server.URL, "")
 	if _, err := client.GetLastPrice("BTCUSDT"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,14 +156,14 @@ func TestPriceMatchingClient_GetLastPrice_ConcurrentCache(t *testing.T) {
 }
 
 func TestPriceMatchingClient_GetLastPrice_HTTPError(t *testing.T) {
-	client := NewMatchingClient("http://127.0.0.1:0")
+	client := NewMatchingClient("http://127.0.0.1:0", "")
 	if _, err := client.GetLastPrice("BTCUSDT"); err == nil {
 		t.Fatal("expected http error")
 	}
 }
 
 func TestPriceMatchingClient_GetLastPrice_SymbolRequired(t *testing.T) {
-	client := NewMatchingClient("http://127.0.0.1")
+	client := NewMatchingClient("http://127.0.0.1", "")
 	if _, err := client.GetLastPrice(""); err == nil || err.Error() != "symbol required" {
 		t.Fatalf("expected symbol required error, got %v", err)
 	}

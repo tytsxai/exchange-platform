@@ -36,6 +36,28 @@ var (
 		Name: "matching_throughput",
 		Help: "Total number of orders processed by matching.",
 	})
+
+	streamPending = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "redis_stream_pending",
+			Help: "Number of pending messages in Redis Streams consumer groups.",
+		},
+		[]string{"stream", "group"},
+	)
+	streamDLQ = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "redis_stream_dlq_total",
+			Help: "Total number of messages moved to Redis Stream DLQ.",
+		},
+		[]string{"stream", "group"},
+	)
+	streamErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "redis_stream_handler_errors_total",
+			Help: "Total number of stream handler errors.",
+		},
+		[]string{"stream", "group"},
+	)
 )
 
 // Init registers metrics with the registry once.
@@ -48,6 +70,9 @@ func Init() {
 			tradesCreated,
 			orderbookDepth,
 			matchingThroughput,
+			streamPending,
+			streamDLQ,
+			streamErrors,
 		)
 	})
 }
@@ -83,4 +108,19 @@ func AddMatchingThroughput(n int) {
 		return
 	}
 	matchingThroughput.Add(float64(n))
+}
+
+func SetStreamPending(stream, group string, pending int64) {
+	Init()
+	streamPending.WithLabelValues(stream, group).Set(float64(pending))
+}
+
+func IncStreamDLQ(stream, group string) {
+	Init()
+	streamDLQ.WithLabelValues(stream, group).Inc()
+}
+
+func IncStreamError(stream, group string) {
+	Init()
+	streamErrors.WithLabelValues(stream, group).Inc()
 }

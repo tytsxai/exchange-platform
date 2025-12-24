@@ -16,10 +16,13 @@ const (
 	defaultTimeout = 2 * time.Second
 )
 
+var ErrNoReferencePrice = errors.New("no reference price")
+
 // MatchingClient 调用撮合引擎接口
 type MatchingClient struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL       string
+	internalToken string
+	httpClient    *http.Client
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -31,9 +34,10 @@ type cacheEntry struct {
 }
 
 // NewMatchingClient 创建撮合客户端
-func NewMatchingClient(baseURL string) *MatchingClient {
+func NewMatchingClient(baseURL, internalToken string) *MatchingClient {
 	return &MatchingClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		internalToken: internalToken,
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
@@ -53,7 +57,14 @@ func (c *MatchingClient) GetLastPrice(symbol string) (int64, error) {
 	}
 
 	url := fmt.Sprintf("%s/depth?symbol=%s", c.baseURL, symbol)
-	resp, err := c.httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("create request: %w", err)
+	}
+	if c.internalToken != "" {
+		req.Header.Set("X-Internal-Token", c.internalToken)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("get depth: %w", err)
 	}
@@ -70,7 +81,7 @@ func (c *MatchingClient) GetLastPrice(symbol string) (int64, error) {
 
 	// 允许单边报价作为参考价格
 	if len(payload.Bids) == 0 && len(payload.Asks) == 0 {
-		return 0, errors.New("no reference price")
+		return 0, ErrNoReferencePrice
 	}
 
 	var ref int64

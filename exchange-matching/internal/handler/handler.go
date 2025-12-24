@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/exchange/matching/internal/engine"
+	"github.com/exchange/matching/internal/metrics"
 	"github.com/exchange/matching/internal/orderbook"
 	"github.com/redis/go-redis/v9"
 )
@@ -50,6 +51,11 @@ type Handler struct {
 
 	ctx context.Context
 }
+
+const (
+	defaultMaxStreamRetries = 10
+	defaultClaimMinIdle     = 30 * time.Second
+)
 
 // Config 配置
 type Config struct {
@@ -154,6 +160,7 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 
 	// 提交命令
 	if err := eng.Submit(cmd); err != nil {
+		metrics.IncStreamError(h.orderStream, h.group)
 		log.Printf("submit command error: %v", err)
 		return
 	}
@@ -162,6 +169,10 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 }
 
 func (h *Handler) processPending(ctx context.Context) error {
+	if summary, err := h.redis.XPending(ctx, h.orderStream, h.group).Result(); err == nil {
+		metrics.SetStreamPending(h.orderStream, h.group, summary.Count)
+	}
+
 	pending, err := h.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: h.orderStream,
 		Group:  h.group,
@@ -174,9 +185,13 @@ func (h *Handler) processPending(ctx context.Context) error {
 	}
 
 	var ids []string
+	dlqIDs := make(map[string]int64)
 	for _, entry := range pending {
-		if entry.Idle >= 30*time.Second {
+		if entry.Idle >= defaultClaimMinIdle {
 			ids = append(ids, entry.ID)
+			if entry.RetryCount > defaultMaxStreamRetries {
+				dlqIDs[entry.ID] = entry.RetryCount
+			}
 		}
 	}
 	if len(ids) == 0 {
@@ -187,7 +202,7 @@ func (h *Handler) processPending(ctx context.Context) error {
 		Stream:   h.orderStream,
 		Group:    h.group,
 		Consumer: h.consumer,
-		MinIdle:  30 * time.Second,
+		MinIdle:  defaultClaimMinIdle,
 		Messages: ids,
 	}).Result()
 	if err != nil {
@@ -195,9 +210,36 @@ func (h *Handler) processPending(ctx context.Context) error {
 	}
 
 	for _, msg := range claimed {
+		if retryCount, toDLQ := dlqIDs[msg.ID]; toDLQ {
+			if err := h.sendToDLQ(ctx, &msg, fmt.Sprintf("max retries exceeded: %d", retryCount)); err != nil {
+				metrics.IncStreamError(h.orderStream, h.group)
+				log.Printf("send dlq error: %v", err)
+				continue
+			}
+			metrics.IncStreamDLQ(h.orderStream, h.group)
+			h.ack(ctx, msg.ID)
+			continue
+		}
 		h.processMessage(ctx, msg)
 	}
 	return nil
+}
+
+func (h *Handler) sendToDLQ(ctx context.Context, msg *redis.XMessage, reason string) error {
+	dlqStream := h.orderStream + ":dlq"
+	_, err := h.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: dlqStream,
+		Values: map[string]interface{}{
+			"stream":   h.orderStream,
+			"msgId":    msg.ID,
+			"reason":   reason,
+			"data":     msg.Values["data"],
+			"tsMs":     time.Now().UnixMilli(),
+			"group":    h.group,
+			"consumer": h.consumer,
+		},
+	}).Result()
+	return err
 }
 
 func (h *Handler) getOrCreateEngine(symbol string) *engine.Engine {
@@ -372,14 +414,10 @@ func eventTypeToString(t engine.EventType) string {
 
 // GetDepth 获取深度
 func (h *Handler) GetDepth(symbol string, limit int) (bids, asks []orderbook.PriceQty, ok bool) {
-	h.mu.RLock()
-	eng, exists := h.engines[symbol]
-	h.mu.RUnlock()
-
-	if !exists {
+	if symbol == "" {
 		return nil, nil, false
 	}
-
+	eng := h.getOrCreateEngine(symbol)
 	bids, asks = eng.Depth(limit)
 	return bids, asks, true
 }

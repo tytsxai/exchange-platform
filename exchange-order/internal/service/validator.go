@@ -72,10 +72,14 @@ func (v *PriceValidator) ValidatePrice(symbol, side string, price int64) error {
 
 	refValue, err := v.matching.GetLastPrice(symbol)
 	if err != nil {
+		if errors.Is(err, client.ErrNoReferencePrice) {
+			// 当撮合簿为空时允许首单进入（由首单形成参考价）
+			return nil
+		}
 		return err
 	}
 	if refValue == 0 {
-		return errors.New("no reference price")
+		return nil
 	}
 	pricePrecision := 0
 	if cfg != nil {
