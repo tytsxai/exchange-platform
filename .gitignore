@@ -13,3 +13,6 @@
 **/coverage*.out
 **/*.log
 **/*.pid
+
+# Production env (secrets)
+deploy/prod/prod.env

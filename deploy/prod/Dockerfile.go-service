@@ -1,0 +1,27 @@
+FROM golang:1.21-alpine AS build
+
+ARG SERVICE_DIR
+ARG CMD_DIR
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN apk add --no-cache ca-certificates git
+
+WORKDIR /src
+COPY . .
+
+WORKDIR /src/${SERVICE_DIR}
+
+# Build a single service binary.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/app ./cmd/${CMD_DIR}
+
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata && adduser -D -H -u 10001 app
+
+USER app
+WORKDIR /app
+
+COPY --from=build /out/app /app/app
+
+ENTRYPOINT ["/app/app"]

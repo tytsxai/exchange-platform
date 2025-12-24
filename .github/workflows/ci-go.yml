@@ -1,0 +1,52 @@
+name: Go CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/ci-go.yml"
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - exchange-common
+          - exchange-gateway
+          - exchange-user
+          - exchange-order
+          - exchange-matching
+          - exchange-clearing
+          - exchange-marketdata
+          - exchange-admin
+          - exchange-wallet
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21.x"
+          cache: true
+
+      - name: Go Test
+        run: |
+          set -euo pipefail
+          cd "${{ matrix.module }}"
+          go test ./...
+
+      - name: Go Vet
+        run: |
+          set -euo pipefail
+          cd "${{ matrix.module }}"
+          go vet ./...

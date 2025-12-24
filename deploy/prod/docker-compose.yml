@@ -1,0 +1,113 @@
+services:
+  # NOTE:
+  # - Default production posture: only expose gateway (and optionally marketdata WS) to the public internet.
+  # - Postgres/Redis are expected to be managed/external in production (TLS + auth).
+  # - For a full local stack, use `exchange-common/docker-compose.yml` for infra and run services via scripts.
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-gateway
+        CMD_DIR: gateway
+    env_file:
+      - ./prod.env
+    ports:
+      - "8080:8080"
+      - "8090:8090"
+    restart: unless-stopped
+    depends_on: []
+    networks: [exchange-net]
+
+  user:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-user
+        CMD_DIR: user
+    env_file:
+      - ./prod.env
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  order:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-order
+        CMD_DIR: order
+    env_file:
+      - ./prod.env
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  matching:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-matching
+        CMD_DIR: matching
+    env_file:
+      - ./prod.env
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  clearing:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-clearing
+        CMD_DIR: clearing
+    env_file:
+      - ./prod.env
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  marketdata:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-marketdata
+        CMD_DIR: marketdata
+    env_file:
+      - ./prod.env
+    # If you need to expose public WS directly, uncomment this.
+    # ports:
+    #   - "8094:8094"
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  # Admin/Wallet should not be public. Put behind VPN or internal ingress.
+  admin:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-admin
+        CMD_DIR: admin
+    env_file:
+      - ./prod.env
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  wallet:
+    build:
+      context: ../..
+      dockerfile: deploy/prod/Dockerfile.go-service
+      args:
+        SERVICE_DIR: exchange-wallet
+        CMD_DIR: wallet
+    env_file:
+      - ./prod.env
+    restart: unless-stopped
+    networks: [exchange-net]
+
+networks:
+  exchange-net:
+    name: exchange-prod-net
