@@ -18,6 +18,7 @@ type MarketDataService struct {
 	eventStream string
 	group       string
 	consumer    string
+	replayCount int
 
 	// 内存盘口
 	depths map[string]*Depth
@@ -88,6 +89,7 @@ type Config struct {
 	EventStream string
 	Group       string
 	Consumer    string
+	ReplayCount int
 }
 
 // NewMarketDataService 创建行情服务
@@ -97,6 +99,7 @@ func NewMarketDataService(redisClient RedisClient, cfg *Config) *MarketDataServi
 		eventStream: cfg.EventStream,
 		group:       cfg.Group,
 		consumer:    cfg.Consumer,
+		replayCount: cfg.ReplayCount,
 		depths:      make(map[string]*Depth),
 		trades:      make(map[string][]*Trade),
 		tickers:     make(map[string]*Ticker),
@@ -110,6 +113,12 @@ func (s *MarketDataService) Start(ctx context.Context) error {
 	err := s.redis.XGroupCreateMkStream(ctx, s.eventStream, s.group, "0").Err()
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return err
+	}
+
+	if s.replayCount > 0 {
+		if err := s.replayRecent(ctx, s.replayCount); err != nil {
+			log.Printf("replay events error: %v", err)
+		}
 	}
 
 	go s.consumeEvents(ctx)
@@ -342,11 +351,16 @@ func (s *MarketDataService) processEvent(ctx context.Context, msg redis.XMessage
 		return
 	}
 
+	if err := s.processEventData(data); err != nil {
+		log.Printf("process event error: %v", err)
+	}
+	s.redis.XAck(ctx, s.eventStream, s.group, msg.ID)
+}
+
+func (s *MarketDataService) processEventData(data string) error {
 	var event MatchingEvent
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		log.Printf("Unmarshal event error: %v", err)
-		s.redis.XAck(ctx, s.eventStream, s.group, msg.ID)
-		return
+		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
 	switch event.Type {
@@ -358,7 +372,32 @@ func (s *MarketDataService) processEvent(ctx context.Context, msg redis.XMessage
 		s.handleOrderRemoved(event)
 	}
 
-	s.redis.XAck(ctx, s.eventStream, s.group, msg.ID)
+	return nil
+}
+
+func (s *MarketDataService) replayRecent(ctx context.Context, count int) error {
+	if count <= 0 {
+		return nil
+	}
+
+	results, err := s.redis.XRevRangeN(ctx, s.eventStream, "+", "-", int64(count)).Result()
+	if err == redis.Nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	for i := len(results) - 1; i >= 0; i-- {
+		data, ok := results[i].Values["data"].(string)
+		if !ok {
+			continue
+		}
+		if err := s.processEventData(data); err != nil {
+			log.Printf("replay event error: %v", err)
+		}
+	}
+	return nil
 }
 
 func (s *MarketDataService) handleTradeCreated(event MatchingEvent) {

@@ -33,6 +33,7 @@ source: ""
 - `INTERNAL_TOKEN` 必须配置且非默认值（所有内部调用需一致）
 - `AUTH_TOKEN_SECRET` 必须配置（长度不少于 32 字符），`AUTH_TOKEN_TTL` 设置合理过期
 - `ADMIN_TOKEN` 必须配置（保护后台与钱包管理接口；请求需携带 `X-Admin-Token`）
+- `EVENT_REPLAY_COUNT` 建议设置（行情重启回放条数，默认 1000，可按 TPS 调整）
 - `DB_SSL_MODE=require`（生产）+ 合理的连接池参数（`DB_MAX_OPEN_CONNS` 等）
 
 ## 1 SLO 与告警目标

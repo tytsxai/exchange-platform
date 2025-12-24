@@ -43,6 +43,7 @@ func main() {
 		EventStream: cfg.EventStream,
 		Group:       cfg.ConsumerGroup,
 		Consumer:    cfg.ConsumerName,
+		ReplayCount: cfg.ReplayCount,
 	})
 
 	// 启动事件消费

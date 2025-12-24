@@ -14,6 +14,7 @@ type RedisClient interface {
 	XPendingExt(ctx context.Context, args *redis.XPendingExtArgs) *redis.XPendingExtCmd
 	XClaim(ctx context.Context, args *redis.XClaimArgs) *redis.XMessageSliceCmd
 	XAck(ctx context.Context, stream, group string, ids ...string) *redis.IntCmd
+	XRevRangeN(ctx context.Context, stream, start, stop string, count int64) *redis.XMessageSliceCmd
 }
 
 // RedisClientAdapter 适配器，将 *redis.Client 适配为 RedisClient 接口
@@ -44,4 +45,8 @@ func (a *RedisClientAdapter) XClaim(ctx context.Context, args *redis.XClaimArgs)
 
 func (a *RedisClientAdapter) XAck(ctx context.Context, stream, group string, ids ...string) *redis.IntCmd {
 	return a.client.XAck(ctx, stream, group, ids...)
+}
+
+func (a *RedisClientAdapter) XRevRangeN(ctx context.Context, stream, start, stop string, count int64) *redis.XMessageSliceCmd {
+	return a.client.XRevRangeN(ctx, stream, start, stop, count)
 }

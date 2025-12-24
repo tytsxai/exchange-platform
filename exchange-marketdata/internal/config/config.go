@@ -20,6 +20,7 @@ type Config struct {
 	EventStream   string
 	ConsumerGroup string
 	ConsumerName  string
+	ReplayCount   int
 
 	// Private events (pub/sub)
 	PrivateUserEventChannel string
@@ -39,6 +40,7 @@ func Load() *Config {
 		EventStream:   envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
 		ConsumerGroup: envconfig.GetEnv("CONSUMER_GROUP", "marketdata-group"),
 		ConsumerName:  envconfig.GetEnv("CONSUMER_NAME", "marketdata-1"),
+		ReplayCount:   envconfig.GetEnvInt("EVENT_REPLAY_COUNT", 1000),
 
 		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 	}
