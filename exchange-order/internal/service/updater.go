@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -435,6 +436,9 @@ func (u *OrderUpdater) handleTradeCreated(ctx context.Context, event *MatchingEv
 	}
 
 	if err := u.tradeStore.SaveTrade(ctx, trade); err != nil {
+		if errors.Is(err, repository.ErrDuplicateTrade) {
+			return nil
+		}
 		return err
 	}
 

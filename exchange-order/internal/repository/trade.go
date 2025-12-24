@@ -4,9 +4,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 )
+
+var ErrDuplicateTrade = errors.New("duplicate trade")
 
 // TradeRepository 成交仓储
 type TradeRepository struct {
@@ -38,6 +41,9 @@ func (r *TradeRepository) SaveTrade(ctx context.Context, trade *Trade) error {
 		trade.FeeAsset, trade.TakerSide, trade.TimestampMs,
 	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrDuplicateTrade
+		}
 		return fmt.Errorf("insert trade: %w", err)
 	}
 	return nil
