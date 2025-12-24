@@ -27,6 +27,10 @@ func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
 
+	if cfg.AdminToken == "" {
+		log.Fatal("ADMIN_TOKEN is required")
+	}
+
 	tokenManager, err := commonauth.NewTokenManager(cfg.AuthTokenSecret, cfg.AuthTokenTTL)
 	if err != nil {
 		log.Fatalf("Invalid auth token config: %v", err)
@@ -361,6 +365,7 @@ func main() {
 
 	// 中间件链
 	handler := authMiddleware(tokenManager, mux)
+	handler = adminTokenMiddleware(cfg.AdminToken, handler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -480,6 +485,18 @@ func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) ht
 
 		// 4. 设置 Header (供后续 handler 使用)
 		r.Header.Set("X-Actor-ID", fmt.Sprintf("%d", userID))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func adminTokenMiddleware(adminToken string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/admin") {
+			if r.Header.Get("X-Admin-Token") != adminToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }

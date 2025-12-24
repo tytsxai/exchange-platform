@@ -33,6 +33,7 @@ type Config struct {
 	// Auth
 	AuthTokenSecret string
 	AuthTokenTTL    time.Duration
+	AdminToken      string
 
 	WorkerID int64
 }
@@ -60,6 +61,7 @@ func Load() *Config {
 
 		AuthTokenSecret: envconfig.GetEnv("AUTH_TOKEN_SECRET", ""),
 		AuthTokenTTL:    envconfig.GetEnvDuration("AUTH_TOKEN_TTL", 24*time.Hour),
+		AdminToken:      envconfig.GetEnv("ADMIN_TOKEN", ""),
 
 		WorkerID: envconfig.GetEnvInt64("WORKER_ID", 6),
 	}

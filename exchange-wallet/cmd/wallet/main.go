@@ -31,6 +31,9 @@ func main() {
 	if cfg.InternalToken == "" {
 		log.Fatal("INTERNAL_TOKEN is required")
 	}
+	if cfg.AdminToken == "" {
+		log.Fatal("ADMIN_TOKEN is required")
+	}
 
 	tokenManager, err := commonauth.NewTokenManager(cfg.AuthTokenSecret, cfg.AuthTokenTTL)
 	if err != nil {
@@ -365,6 +368,7 @@ func main() {
 
 	// 中间件
 	handler := authMiddleware(tokenManager, mux)
+	handler = adminTokenMiddleware(cfg.AdminToken, handler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -518,6 +522,18 @@ func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) ht
 		// 4. 设置 Header (供后续 handler 使用)
 		r.Header.Set("X-User-ID", fmt.Sprintf("%d", userID))
 		r.Header.Set("X-Approver-ID", fmt.Sprintf("%d", userID)) // 假设 Approve 也是同一个人
+		next.ServeHTTP(w, r)
+	})
+}
+
+func adminTokenMiddleware(adminToken string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/wallet/admin") {
+			if r.Header.Get("X-Admin-Token") != adminToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }

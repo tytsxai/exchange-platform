@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	envconfig "github.com/exchange/common/pkg/config"
 	commondecimal "github.com/exchange/common/pkg/decimal"
 )
 
@@ -43,32 +44,32 @@ func TestPriceProtectionInvalidLimitRate(t *testing.T) {
 
 func TestConfigHelpers(t *testing.T) {
 	t.Setenv("TEST_ENV", "value")
-	if getEnv("TEST_ENV", "default") != "value" {
+	if envconfig.GetEnv("TEST_ENV", "default") != "value" {
 		t.Fatal("expected getEnv to return value")
 	}
-	if getEnv("MISSING_ENV", "default") != "default" {
+	if envconfig.GetEnv("MISSING_ENV", "default") != "default" {
 		t.Fatal("expected getEnv default")
 	}
 
 	t.Setenv("INT_ENV", "abc")
-	if getEnvInt("INT_ENV", 5) != 5 {
+	if envconfig.GetEnvInt("INT_ENV", 5) != 5 {
 		t.Fatal("expected getEnvInt default on invalid")
 	}
 	t.Setenv("INT_ENV", "6")
-	if getEnvInt("INT_ENV", 5) != 6 {
+	if envconfig.GetEnvInt("INT_ENV", 5) != 6 {
 		t.Fatal("expected getEnvInt parsed value")
 	}
 
 	t.Setenv("BOOL_ENV", "TRUE")
-	if !getEnvBool("BOOL_ENV", false) {
+	if !envconfig.GetEnvBool("BOOL_ENV", false) {
 		t.Fatal("expected getEnvBool true")
 	}
 	t.Setenv("BOOL_ENV", "0")
-	if getEnvBool("BOOL_ENV", true) {
+	if envconfig.GetEnvBool("BOOL_ENV", true) {
 		t.Fatal("expected getEnvBool false")
 	}
 	t.Setenv("BOOL_ENV", "invalid")
-	if !getEnvBool("BOOL_ENV", true) {
+	if !envconfig.GetEnvBool("BOOL_ENV", true) {
 		t.Fatal("expected getEnvBool default")
 	}
 

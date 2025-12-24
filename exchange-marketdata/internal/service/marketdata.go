@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -562,12 +563,9 @@ func insertLevel(levels []PriceLevel, level PriceLevel, descending bool) []Price
 }
 
 func formatPercent(p float64) string {
-	if p >= 0 {
-		return "+" + formatFloat(p) + "%"
-	}
-	return formatFloat(p) + "%"
+	return fmt.Sprintf("%+.2f%%", p)
 }
 
 func formatFloat(f float64) string {
-	return string(rune(int(f*100))) + "." + string(rune(int(f*10000)%100))
+	return fmt.Sprintf("%.2f", f)
 }
