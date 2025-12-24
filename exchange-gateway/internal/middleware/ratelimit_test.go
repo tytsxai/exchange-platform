@@ -133,8 +133,8 @@ func TestIPKeyFunc(t *testing.T) {
 	req.RemoteAddr = "192.168.1.1:12345"
 
 	key = IPKeyFunc(req)
-	if key != "192.168.1.1:12345" {
-		t.Fatalf("expected key=192.168.1.1:12345, got %s", key)
+	if key != "192.168.1.1" {
+		t.Fatalf("expected key=192.168.1.1, got %s", key)
 	}
 }
 
@@ -145,14 +145,14 @@ func TestUserKeyFunc(t *testing.T) {
 
 	// Without user ID, should fall back to IP
 	key := UserKeyFunc(req)
-	if key != "192.168.1.1:12345" {
+	if key != "192.168.1.1" {
 		t.Fatalf("expected fallback to IP, got %s", key)
 	}
 
 	ctx := context.WithValue(req.Context(), userIDKey, int64(9))
 	req = req.WithContext(ctx)
 	key = UserKeyFunc(req)
-	if key != string(rune(9)) {
+	if key != "9" {
 		t.Fatalf("expected user ID key, got %s", key)
 	}
 }

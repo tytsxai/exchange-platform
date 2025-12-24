@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,9 @@ func main() {
 	cfg := config.Load()
 
 	log.Printf("Starting %s...", cfg.ServiceName)
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
+	}
 
 	// 连接 Redis
 	redisClient := redis.NewClient(&redis.Options{
@@ -56,6 +60,15 @@ func main() {
 
 	// HTTP 服务（健康检查 + 深度查询）
 	mux := http.NewServeMux()
+	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
@@ -68,8 +81,18 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
-	mux.Handle("/metrics", metrics.Handler())
-	mux.HandleFunc("/depth", func(w http.ResponseWriter, r *http.Request) {
+	metricsHandler := metrics.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			metrics.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
+	depthHandler := requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 		if symbol == "" {
 			http.Error(w, "symbol required", http.StatusBadRequest)
@@ -87,6 +110,8 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(resp)
 	})
+	mux.HandleFunc("/depth", depthHandler)
+	mux.HandleFunc("/v1/depth", depthHandler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -164,6 +189,20 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 		Status:       status,
 		Dependencies: deps,
 	})
+}
+
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
 }
 
 // 保留 orderbook 包引用

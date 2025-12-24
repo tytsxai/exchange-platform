@@ -27,8 +27,8 @@ func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
 
-	if cfg.AdminToken == "" {
-		log.Fatal("ADMIN_TOKEN is required")
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
 	}
 
 	tokenManager, err := commonauth.NewTokenManager(cfg.AuthTokenSecret, cfg.AuthTokenTTL)
@@ -71,7 +71,17 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
-	mux.Handle("/metrics", promhttp.Handler())
+	metricsHandler := promhttp.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			promhttp.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -82,11 +92,12 @@ func main() {
 	// Swagger UI - API 文档
 	// 访问 /docs 查看交互式 API 文档，支持在线测试
 	// 访问 /openapi.yaml 获取 OpenAPI 3.0 规范文件
-	mux.HandleFunc("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "api/openapi.yaml")
-	})
-	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
-		html := `
+	if cfg.EnableDocs {
+		mux.HandleFunc("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "api/openapi.yaml")
+		})
+		mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
+			html := `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -124,9 +135,17 @@ func main() {
     </script>
 </body>
 </html>`
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(html))
-	})
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(html))
+		})
+	} else {
+		mux.HandleFunc("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+		mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
 
 	// 系统状态
 	mux.HandleFunc("/admin/status", func(w http.ResponseWriter, r *http.Request) {
@@ -499,4 +518,18 @@ func adminTokenMiddleware(adminToken string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
 }

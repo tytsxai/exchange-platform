@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,8 +32,8 @@ func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
 
-	if cfg.InternalToken == "" {
-		log.Fatal("INTERNAL_TOKEN is required")
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
 	}
 
 	tokenManager, err := commonauth.NewTokenManager(cfg.AuthTokenSecret, cfg.AuthTokenTTL)
@@ -97,7 +98,17 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
-	mux.Handle("/metrics", promhttp.Handler())
+	metricsHandler := promhttp.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			promhttp.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -187,9 +198,9 @@ func main() {
 	mux.HandleFunc("/v1/apiKeys", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
-			handleCreateApiKey(w, r, svc)
+			handleCreateApiKey(w, r, svc, tokenManager)
 		case http.MethodGet:
-			handleListApiKeys(w, r, svc)
+			handleListApiKeys(w, r, svc, tokenManager)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -201,7 +212,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		handleDeleteApiKey(w, r, svc)
+		handleDeleteApiKey(w, r, svc, tokenManager)
 	})
 
 	// 内部接口：获取 API Key 信息（供网关调用）
@@ -408,10 +419,24 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 	})
 }
 
-func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService) {
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
-	if userID == 0 {
-		http.Error(w, "userId required", http.StatusBadRequest)
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
+}
+
+func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService, tokenManager *commonauth.TokenManager) {
+	userID, err := userIDFromBearer(r, tokenManager)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -446,10 +471,10 @@ func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.Use
 	})
 }
 
-func handleListApiKeys(w http.ResponseWriter, r *http.Request, svc *service.UserService) {
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
-	if userID == 0 {
-		http.Error(w, "userId required", http.StatusBadRequest)
+func handleListApiKeys(w http.ResponseWriter, r *http.Request, svc *service.UserService, tokenManager *commonauth.TokenManager) {
+	userID, err := userIDFromBearer(r, tokenManager)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -460,22 +485,37 @@ func handleListApiKeys(w http.ResponseWriter, r *http.Request, svc *service.User
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(keys)
+	resp := make([]map[string]interface{}, 0, len(keys))
+	for _, k := range keys {
+		resp = append(resp, map[string]interface{}{
+			"apiKeyId":    k.ApiKeyID,
+			"apiKey":      k.ApiKey,
+			"label":       k.Label,
+			"permissions": k.Permissions,
+			"ipWhitelist": k.IPWhitelist,
+			"createdAt":   k.CreatedAtMs,
+		})
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
-func handleDeleteApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService) {
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
+func handleDeleteApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService, tokenManager *commonauth.TokenManager) {
+	userID, err := userIDFromBearer(r, tokenManager)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	// 从路径提取 apiKeyId
 	path := r.URL.Path
 	apiKeyIDStr := path[len("/v1/apiKeys/"):]
 	apiKeyID, _ := strconv.ParseInt(apiKeyIDStr, 10, 64)
 
-	if userID == 0 || apiKeyID == 0 {
-		http.Error(w, "userId and apiKeyId required", http.StatusBadRequest)
+	if apiKeyID == 0 {
+		http.Error(w, "apiKeyId required", http.StatusBadRequest)
 		return
 	}
 
-	err := svc.DeleteApiKey(r.Context(), userID, apiKeyID)
+	err = svc.DeleteApiKey(r.Context(), userID, apiKeyID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -483,4 +523,23 @@ func handleDeleteApiKey(w http.ResponseWriter, r *http.Request, svc *service.Use
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func userIDFromBearer(r *http.Request, tokenManager *commonauth.TokenManager) (int64, error) {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader == "" {
+		return 0, fmt.Errorf("authorization required")
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		return 0, fmt.Errorf("invalid authorization format")
+	}
+	userID, err := tokenManager.Verify(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid token")
+	}
+	if userID <= 0 {
+		return 0, fmt.Errorf("invalid token")
+	}
+	return userID, nil
 }

@@ -19,15 +19,35 @@ import (
 	"github.com/exchange/clearing/internal/service"
 	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
+
+var (
+	streamPending = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "redis_stream_pending",
+		Help: "Number of pending messages in Redis Streams consumer groups.",
+	}, []string{"stream", "group"})
+	streamErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "redis_stream_handler_errors_total",
+		Help: "Total number of stream handler errors.",
+	}, []string{"stream", "group"})
+	streamDLQ = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "redis_stream_dlq_total",
+		Help: "Total number of messages moved to Redis Stream DLQ.",
+	}, []string{"stream", "group"})
+)
+
+func init() {
+	prometheus.MustRegister(streamPending, streamErrors, streamDLQ)
+}
 
 func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
 
-	if cfg.InternalToken == "" {
-		log.Fatal("INTERNAL_TOKEN is required")
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
 	}
 
 	if err := snowflake.Init(cfg.WorkerID); err != nil {
@@ -85,7 +105,17 @@ func main() {
 			next(w, r)
 		}
 	}
-	mux.Handle("/metrics", metricsCollector.Handler())
+	metricsHandler := metricsCollector.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			metricsCollector.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -104,10 +134,15 @@ func main() {
 	})
 
 	// 获取余额
-	mux.HandleFunc("/v1/account", func(w http.ResponseWriter, r *http.Request) {
-		userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
-		if userID == 0 {
-			http.Error(w, "userId required", http.StatusBadRequest)
+	mux.HandleFunc("/v1/account", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+		userIDStr := strings.TrimSpace(r.Header.Get("X-User-Id"))
+		if userIDStr == "" {
+			http.Error(w, "X-User-Id header required", http.StatusBadRequest)
+			return
+		}
+		userID, err := strconv.ParseInt(userIDStr, 10, 64)
+		if err != nil || userID <= 0 {
+			http.Error(w, "invalid X-User-Id", http.StatusBadRequest)
 			return
 		}
 
@@ -122,7 +157,7 @@ func main() {
 			"userId":   userID,
 			"balances": balances,
 		})
-	})
+	}))
 
 	// 冻结资金
 	mux.HandleFunc("/internal/freeze", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +451,10 @@ func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.
 }
 
 func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config) error {
+	if summary, err := redisClient.XPending(ctx, cfg.EventStream, cfg.ConsumerGroup).Result(); err == nil {
+		streamPending.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Set(float64(summary.Count))
+	}
+
 	pending, err := redisClient.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: cfg.EventStream,
 		Group:  cfg.ConsumerGroup,
@@ -428,9 +467,13 @@ func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *s
 	}
 
 	var ids []string
+	dlqIDs := make(map[string]int64)
 	for _, entry := range pending {
 		if entry.Idle >= 30*time.Second {
 			ids = append(ids, entry.ID)
+			if entry.RetryCount > 10 {
+				dlqIDs[entry.ID] = entry.RetryCount
+			}
 		}
 	}
 	if len(ids) == 0 {
@@ -449,9 +492,36 @@ func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *s
 	}
 
 	for _, msg := range claimed {
+		if retryCount, toDLQ := dlqIDs[msg.ID]; toDLQ {
+			if err := sendToDLQ(ctx, redisClient, cfg.EventStream, cfg.ConsumerGroup, cfg.ConsumerName, msg, fmt.Sprintf("max retries exceeded: %d", retryCount)); err != nil {
+				streamErrors.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Inc()
+				log.Printf("send dlq error: %v", err)
+				continue
+			}
+			streamDLQ.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Inc()
+			redisClient.XAck(ctx, cfg.EventStream, cfg.ConsumerGroup, msg.ID)
+			continue
+		}
 		processEvent(ctx, redisClient, svc, cfg, msg)
 	}
 	return nil
+}
+
+func sendToDLQ(ctx context.Context, redisClient *redis.Client, stream, group, consumer string, msg redis.XMessage, reason string) error {
+	dlqStream := stream + ":dlq"
+	_, err := redisClient.XAdd(ctx, &redis.XAddArgs{
+		Stream: dlqStream,
+		Values: map[string]interface{}{
+			"stream":   stream,
+			"msgId":    msg.ID,
+			"reason":   reason,
+			"data":     msg.Values["data"],
+			"tsMs":     time.Now().UnixMilli(),
+			"group":    group,
+			"consumer": consumer,
+		},
+	}).Result()
+	return err
 }
 
 func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, msg redis.XMessage) {
@@ -528,6 +598,7 @@ func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.C
 
 	_, err := svc.SettleTrade(ctx, req)
 	if err != nil {
+		streamErrors.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Inc()
 		log.Printf("Settle trade error: %v", err)
 		// 不 ACK，等待重试
 		return
@@ -543,4 +614,18 @@ func parseSymbol(symbol string) (base, quote string) {
 		return symbol[:len(symbol)-4], "USDT"
 	}
 	return symbol, "USDT"
+}
+
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
 }

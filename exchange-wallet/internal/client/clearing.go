@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 type ClearingClient struct {
@@ -18,7 +19,9 @@ func NewClearingClient(baseURL, internalToken string) *ClearingClient {
 	return &ClearingClient{
 		baseURL:       baseURL,
 		internalToken: internalToken,
-		client:        &http.Client{},
+		client: &http.Client{
+			Timeout: 5 * time.Second,
+		},
 	}
 }
 

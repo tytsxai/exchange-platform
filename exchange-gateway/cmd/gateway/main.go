@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,8 +38,8 @@ func main() {
 	l := logger.New(cfg.ServiceName, os.Stdout)
 	l.Info(fmt.Sprintf("Starting %s...", cfg.ServiceName))
 
-	if cfg.InternalToken == "" {
-		l.Error("INTERNAL_TOKEN is required")
+	if err := cfg.Validate(); err != nil {
+		l.Error(fmt.Sprintf("Invalid config: %v", err))
 		os.Exit(1)
 	}
 
@@ -76,7 +78,17 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
-	mux.Handle("/metrics", promhttp.Handler())
+	metricsHandler := promhttp.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			promhttp.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
@@ -101,21 +113,26 @@ func main() {
 	})
 
 	// 代理到 order 服务
-	mux.HandleFunc("/v1/exchangeInfo", proxyHandler(cfg.OrderServiceURL))
-	mux.HandleFunc("/v1/depth", proxyHandler(cfg.MatchingServiceURL))
+	mux.HandleFunc("/v1/exchangeInfo", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/depth", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/trades", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/ticker", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken))
 
 	// 代理到 user 服务 (Auth)
-	mux.HandleFunc("/v1/auth/register", proxyHandler(cfg.UserServiceURL))
-	mux.HandleFunc("/v1/auth/login", proxyHandler(cfg.UserServiceURL))
+	mux.HandleFunc("/v1/auth/register", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/auth/login", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/apiKeys", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/apiKeys/", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
 
 	// Swagger UI - API 文档
 	// 访问 /docs 查看交互式 API 文档，支持在线测试
 	// 访问 /openapi.yaml 获取 OpenAPI 3.0 规范文件
-	mux.HandleFunc("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "api/openapi.yaml")
-	})
-	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
-		html := `
+	if cfg.EnableDocs {
+		mux.HandleFunc("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "api/openapi.yaml")
+		})
+		mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
+			html := `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -166,9 +183,17 @@ func main() {
     </script>
 </body>
 </html>`
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(html))
-	})
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(html))
+		})
+	} else {
+		mux.HandleFunc("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+		mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
 
 	// 需要鉴权的接口
 	authCfg := &middleware.AuthConfig{
@@ -259,12 +284,12 @@ func main() {
 
 	// 私有接口（需要鉴权）
 	privateMux := http.NewServeMux()
-	privateMux.HandleFunc("/v1/order", proxyHandler(cfg.OrderServiceURL))
-	privateMux.HandleFunc("/v1/openOrders", proxyHandler(cfg.OrderServiceURL))
-	privateMux.HandleFunc("/v1/allOrders", proxyHandler(cfg.OrderServiceURL))
-	privateMux.HandleFunc("/v1/myTrades", proxyHandler(cfg.OrderServiceURL))
-	privateMux.HandleFunc("/v1/account", proxyHandler(cfg.ClearingServiceURL))
-	privateMux.HandleFunc("/v1/ledger", proxyHandler(cfg.ClearingServiceURL))
+	privateMux.HandleFunc("/v1/order", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
+	privateMux.HandleFunc("/v1/openOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
+	privateMux.HandleFunc("/v1/allOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
+	privateMux.HandleFunc("/v1/myTrades", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
+	privateMux.HandleFunc("/v1/account", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken))
+	privateMux.HandleFunc("/v1/ledger", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken))
 
 	// 组合中间件
 	authHandler := middleware.Auth(authCfg)(privateMux)
@@ -282,7 +307,8 @@ func main() {
 	handler := middleware.RateLimit(ipLimiter, middleware.IPKeyFunc)(mux)
 
 	// 添加 CORS 和日志
-	handler = corsMiddleware(handler)
+	handler = corsMiddleware(cfg.CORSAllowOrigins, handler)
+	handler = requestIDMiddleware(handler)
 	handler = loggingMiddleware(l, handler)
 
 	server := &http.Server{
@@ -392,22 +418,15 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 }
 
 // proxyHandler 创建代理处理器
-func proxyHandler(targetURL string) http.HandlerFunc {
+func proxyHandler(targetURL string, internalToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 构建目标 URL
+		// 构建目标 URL（禁止信任客户端 userId；由网关注入）
 		target := targetURL + r.URL.Path
-		if r.URL.RawQuery != "" {
-			target += "?" + r.URL.RawQuery
-		}
-
-		// 添加用户 ID 到查询参数
-		userID := middleware.GetUserID(r.Context())
-		if userID > 0 {
-			if r.URL.RawQuery != "" {
-				target += fmt.Sprintf("&userId=%d", userID)
-			} else {
-				target += fmt.Sprintf("?userId=%d", userID)
-			}
+		q := r.URL.Query()
+		q.Del("userId")
+		encoded := q.Encode()
+		if encoded != "" {
+			target += "?" + encoded
 		}
 
 		// 创建代理请求
@@ -423,8 +442,24 @@ func proxyHandler(targetURL string) http.HandlerFunc {
 				proxyReq.Header.Add(key, value)
 			}
 		}
+		// 覆盖敏感头，防止客户端伪造
+		proxyReq.Header.Del("X-Internal-Token")
+		proxyReq.Header.Del("X-User-Id")
+		proxyReq.Header.Del("X-User-ID")
+
 		proxyReq.Header.Set("X-Forwarded-For", r.RemoteAddr)
 		proxyReq.Header.Set("X-Request-ID", r.Header.Get("X-Request-ID"))
+
+		// 内部服务鉴权：统一携带 INTERNAL_TOKEN
+		// 注意：对 user-service 的 public /v1/auth/* 无影响（它不会校验该头）。
+		if internalToken != "" {
+			proxyReq.Header.Set("X-Internal-Token", internalToken)
+		}
+
+		// 用户身份绑定：下游只信任网关注入的 userId header
+		if userID := middleware.GetUserID(r.Context()); userID > 0 {
+			proxyReq.Header.Set("X-User-Id", fmt.Sprintf("%d", userID))
+		}
 
 		// 发送请求
 		resp, err := httpClient.Do(proxyReq)
@@ -448,9 +483,26 @@ func proxyHandler(targetURL string) http.HandlerFunc {
 }
 
 // corsMiddleware CORS 中间件
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		allowOrigin := ""
+		for _, o := range allowedOrigins {
+			if o == "*" {
+				allowOrigin = "*"
+				break
+			}
+			if origin != "" && origin == o {
+				allowOrigin = origin
+				break
+			}
+		}
+		if allowOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
+			if allowOrigin != "*" {
+				w.Header().Set("Vary", "Origin")
+			}
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-KEY, X-API-TIMESTAMP, X-API-NONCE, X-API-SIGNATURE, X-Request-ID")
 
@@ -469,18 +521,73 @@ func loggingMiddleware(l *logger.Logger, next http.Handler) http.Handler {
 		start := time.Now()
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-		next.ServeHTTP(wrapped, r)
+		defer func() {
+			if v := recover(); v != nil {
+				if !wrapped.wroteHeader {
+					http.Error(wrapped, "internal server error", http.StatusInternalServerError)
+				}
+				l.Error(fmt.Sprintf("panic recovered: %v request_id=%s", v, requestIDFromRequest(r)))
+			}
+			l.Info(fmt.Sprintf("%s %s %d %v request_id=%s", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start), requestIDFromRequest(r)))
+		}()
 
-		l.Info(fmt.Sprintf("%s %s %d %v", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start)))
+		next.ServeHTTP(wrapped, r)
 	})
 }
 
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode  int
+	wroteHeader bool
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
+	rw.wroteHeader = true
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func requestIDFromRequest(r *http.Request) string {
+	reqID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if reqID == "" {
+		reqID = strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	}
+	if reqID == "" {
+		return "-"
+	}
+	return reqID
+}
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		if reqID == "" {
+			reqID = strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		}
+		if reqID == "" {
+			buf := make([]byte, 16)
+			if _, err := rand.Read(buf); err == nil {
+				reqID = hex.EncodeToString(buf)
+			}
+		}
+		if reqID != "" {
+			r.Header.Set("X-Request-ID", reqID)
+			w.Header().Set("X-Request-ID", reqID)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
 }

@@ -2,6 +2,9 @@
 package config
 
 import (
+	"fmt"
+	"strings"
+
 	envconfig "github.com/exchange/common/pkg/config"
 )
 
@@ -10,6 +13,7 @@ type Config struct {
 	ServiceName string
 	HTTPPort    int
 	WSPort      int
+	AppEnv      string
 
 	// Redis
 	RedisAddr     string
@@ -24,6 +28,9 @@ type Config struct {
 
 	// Private events (pub/sub)
 	PrivateUserEventChannel string
+
+	// Internal Auth
+	InternalToken string
 }
 
 // Load 加载配置
@@ -32,6 +39,7 @@ func Load() *Config {
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-marketdata"),
 		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8084),
 		WSPort:      envconfig.GetEnvInt("WS_PORT", 8094),
+		AppEnv:      strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")),
 
 		RedisAddr:     envconfig.GetEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突
 		RedisPassword: envconfig.GetEnv("REDIS_PASSWORD", ""),
@@ -43,5 +51,25 @@ func Load() *Config {
 		ReplayCount:   envconfig.GetEnvInt("EVENT_REPLAY_COUNT", 1000),
 
 		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
+
+		InternalToken: envconfig.GetEnv("INTERNAL_TOKEN", ""),
 	}
+}
+
+func (c *Config) Validate() error {
+	if c.InternalToken == "" {
+		return fmt.Errorf("INTERNAL_TOKEN is required")
+	}
+	if c.AppEnv != "dev" {
+		if envconfig.IsInsecureDevSecret(c.InternalToken) {
+			return fmt.Errorf("INTERNAL_TOKEN must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)
+		}
+		if c.RedisPassword == "" {
+			return fmt.Errorf("REDIS_PASSWORD is required (APP_ENV=%s)", c.AppEnv)
+		}
+		if strings.TrimSpace(c.ConsumerGroup) == "" || strings.TrimSpace(c.ConsumerName) == "" {
+			return fmt.Errorf("CONSUMER_GROUP and CONSUMER_NAME are required (APP_ENV=%s)", c.AppEnv)
+		}
+	}
+	return nil
 }

@@ -28,8 +28,8 @@ func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
 
-	if cfg.InternalToken == "" {
-		log.Fatal("INTERNAL_TOKEN is required")
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
 	}
 
 	if err := snowflake.Init(cfg.WorkerID); err != nil {
@@ -72,7 +72,7 @@ func main() {
 	// 创建服务
 	idGen := snowflakeIDGen{}
 	repo := repository.NewOrderRepository(db)
-	matchingClient := client.NewMatchingClient(cfg.MatchingServiceURL)
+	matchingClient := client.NewMatchingClient(cfg.MatchingServiceURL, cfg.InternalToken)
 	clearingClient := client.NewClearingClient(cfg.ClearingBaseURL, cfg.InternalToken)
 	validator := service.NewPriceValidator(repo, matchingClient, service.PriceValidatorConfig{
 		Enabled:          cfg.PriceProtection.Enabled,
@@ -93,6 +93,15 @@ func main() {
 	// HTTP 服务
 	mux := http.NewServeMux()
 	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
+	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +124,7 @@ func main() {
 	})
 
 	// 交易所信息
-	mux.HandleFunc("/v1/exchangeInfo", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/exchangeInfo", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		configs, err := svc.GetExchangeInfo(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -126,13 +135,23 @@ func main() {
 			"serverTime": time.Now().UnixMilli(),
 			"symbols":    configs,
 		})
-	})
+	}))
 
 	// Prometheus metrics
-	mux.Handle("/metrics", metricsClient.Handler())
+	metricsHandler := metricsClient.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			metricsClient.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
 
 	// 下单
-	mux.HandleFunc("/v1/order", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/order", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
 			handleCreateOrder(w, r, svc)
@@ -143,11 +162,15 @@ func main() {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 
 	// 当前委托
-	mux.HandleFunc("/v1/openOrders", func(w http.ResponseWriter, r *http.Request) {
-		userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
+	mux.HandleFunc("/v1/openOrders", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+		userID, err := getUserIDFromHeader(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		symbol := r.URL.Query().Get("symbol")
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit == 0 {
@@ -162,11 +185,15 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(orders)
-	})
+	}))
 
 	// 历史订单
-	mux.HandleFunc("/v1/allOrders", func(w http.ResponseWriter, r *http.Request) {
-		userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
+	mux.HandleFunc("/v1/allOrders", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+		userID, err := getUserIDFromHeader(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		symbol := r.URL.Query().Get("symbol")
 		startTime, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
 		endTime, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
@@ -180,7 +207,33 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(orders)
-	})
+	}))
+
+	// 我的成交
+	mux.HandleFunc("/v1/myTrades", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+		userID, err := getUserIDFromHeader(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		symbol := r.URL.Query().Get("symbol")
+		if strings.TrimSpace(symbol) == "" {
+			http.Error(w, "symbol required", http.StatusBadRequest)
+			return
+		}
+		startTime, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
+		endTime, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+		trades, err := tradeRepo.ListTradesByUser(r.Context(), userID, symbol, startTime, endTime, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(trades)
+	}))
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -320,10 +373,22 @@ type CreateOrderRequest struct {
 	ClientOrderID string `json:"clientOrderId"`
 }
 
+func getUserIDFromHeader(r *http.Request) (int64, error) {
+	userIDStr := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userIDStr == "" {
+		return 0, fmt.Errorf("X-User-Id header required")
+	}
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil || userID <= 0 {
+		return 0, fmt.Errorf("invalid X-User-Id")
+	}
+	return userID, nil
+}
+
 func handleCreateOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderService) {
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
-	if userID == 0 {
-		http.Error(w, "userId required", http.StatusBadRequest)
+	userID, err := getUserIDFromHeader(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -359,7 +424,11 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request, svc *service.Orde
 }
 
 func handleCancelOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderService) {
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
+	userID, err := getUserIDFromHeader(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	symbol := r.URL.Query().Get("symbol")
 	orderID, _ := strconv.ParseInt(r.URL.Query().Get("orderId"), 10, 64)
 	clientOrderID := r.URL.Query().Get("clientOrderId")
@@ -385,7 +454,11 @@ func handleCancelOrder(w http.ResponseWriter, r *http.Request, svc *service.Orde
 }
 
 func handleGetOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderService) {
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
+	userID, err := getUserIDFromHeader(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	orderID, _ := strconv.ParseInt(r.URL.Query().Get("orderId"), 10, 64)
 
 	order, err := svc.GetOrder(r.Context(), userID, orderID)
@@ -396,4 +469,18 @@ func handleGetOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderSe
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(order)
+}
+
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
 }

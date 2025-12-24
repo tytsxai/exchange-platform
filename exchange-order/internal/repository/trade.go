@@ -48,3 +48,47 @@ func (r *TradeRepository) SaveTrade(ctx context.Context, trade *Trade) error {
 	}
 	return nil
 }
+
+// ListTradesByUser returns recent trades where the given user participated as maker or taker.
+func (r *TradeRepository) ListTradesByUser(ctx context.Context, userID int64, symbol string, startTimeMs, endTimeMs int64, limit int) ([]*Trade, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	query := `
+		SELECT trade_id, symbol, maker_order_id, taker_order_id, maker_user_id, taker_user_id,
+			   price, qty, quote_qty, maker_fee, taker_fee, fee_asset, taker_side, timestamp_ms
+		FROM exchange_order.trades
+		WHERE (maker_user_id = $1 OR taker_user_id = $1)
+		  AND ($2 = '' OR symbol = $2)
+		  AND ($3 = 0 OR timestamp_ms >= $3)
+		  AND ($4 = 0 OR timestamp_ms <= $4)
+		ORDER BY timestamp_ms DESC
+		LIMIT $5
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID, symbol, startTimeMs, endTimeMs, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query trades: %w", err)
+	}
+	defer rows.Close()
+
+	var trades []*Trade
+	for rows.Next() {
+		var t Trade
+		if err := rows.Scan(
+			&t.TradeID, &t.Symbol, &t.MakerOrderID, &t.TakerOrderID, &t.MakerUserID, &t.TakerUserID,
+			&t.Price, &t.Qty, &t.QuoteQty, &t.MakerFee, &t.TakerFee, &t.FeeAsset, &t.TakerSide, &t.TimestampMs,
+		); err != nil {
+			return nil, fmt.Errorf("scan trade: %w", err)
+		}
+		trades = append(trades, &t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows trade: %w", err)
+	}
+	return trades, nil
+}

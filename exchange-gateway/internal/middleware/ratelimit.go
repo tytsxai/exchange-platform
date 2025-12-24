@@ -2,7 +2,10 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,8 +19,8 @@ type RateLimiter struct {
 }
 
 type bucket struct {
-	count    int
-	resetAt  time.Time
+	count   int
+	resetAt time.Time
 }
 
 // NewRateLimiter 创建限流器
@@ -92,7 +95,15 @@ func RateLimit(rl *RateLimiter, keyFunc func(*http.Request) string) func(http.Ha
 func IPKeyFunc(r *http.Request) string {
 	// 优先使用 X-Forwarded-For
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
+		// 取第一个 IP
+		if idx := strings.IndexByte(xff, ','); idx >= 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
 	}
 	return r.RemoteAddr
 }
@@ -101,7 +112,7 @@ func IPKeyFunc(r *http.Request) string {
 func UserKeyFunc(r *http.Request) string {
 	userID := GetUserID(r.Context())
 	if userID > 0 {
-		return string(rune(userID))
+		return strconv.FormatInt(userID, 10)
 	}
 	return IPKeyFunc(r)
 }

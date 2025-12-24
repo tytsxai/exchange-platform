@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,9 @@ import (
 func main() {
 	cfg := config.Load()
 	log.Printf("Starting %s...", cfg.ServiceName)
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
+	}
 
 	// 连接 Redis
 	redisClient := redis.NewClient(&redis.Options{
@@ -64,6 +68,15 @@ func main() {
 
 	// HTTP REST 服务
 	mux := http.NewServeMux()
+	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
 
 	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +85,17 @@ func main() {
 		}
 		writeHealth(w, deps)
 	})
-	mux.Handle("/metrics", promhttp.Handler())
+	metricsHandler := promhttp.Handler()
+	if token := os.Getenv("METRICS_TOKEN"); token != "" {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metricsAuthorized(r, token) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			promhttp.Handler().ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
@@ -81,7 +104,7 @@ func main() {
 	})
 
 	// 盘口
-	mux.HandleFunc("/v1/depth", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/depth", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 		if symbol == "" {
 			http.Error(w, "symbol required", http.StatusBadRequest)
@@ -95,10 +118,10 @@ func main() {
 		depth := svc.GetDepth(symbol, limit)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(depth)
-	})
+	}))
 
 	// 最近成交
-	mux.HandleFunc("/v1/trades", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/trades", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 		if symbol == "" {
 			http.Error(w, "symbol required", http.StatusBadRequest)
@@ -112,10 +135,10 @@ func main() {
 		trades := svc.GetTrades(symbol, limit)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(trades)
-	})
+	}))
 
 	// 24h 行情
-	mux.HandleFunc("/v1/ticker", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/ticker", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 
 		w.Header().Set("Content-Type", "application/json")
@@ -126,15 +149,15 @@ func main() {
 			tickers := svc.GetAllTickers()
 			json.NewEncoder(w).Encode(tickers)
 		}
-	})
+	}))
 
 	// WebSocket 连接数
-	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/stats", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]int{
 			"wsClients": wsServer.ClientCount(),
 		})
-	})
+	}))
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -211,4 +234,18 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 		Status:       status,
 		Dependencies: deps,
 	})
+}
+
+func metricsAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return true
+	}
+	if strings.TrimSpace(r.Header.Get("X-Metrics-Token")) == token {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == token {
+		return true
+	}
+	return false
 }

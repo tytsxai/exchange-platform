@@ -2,7 +2,9 @@
 package config
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	envconfig "github.com/exchange/common/pkg/config"
@@ -13,6 +15,7 @@ type Config struct {
 	ServiceName string
 	HTTPPort    int
 	GRPCPort    int
+	AppEnv      string
 
 	// PostgreSQL
 	DBHost            string
@@ -54,6 +57,7 @@ func Load() *Config {
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-clearing"),
 		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8083),
 		GRPCPort:    envconfig.GetEnvInt("GRPC_PORT", 9083),
+		AppEnv:      strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")),
 
 		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),
 		DBPort:            envconfig.GetEnvInt("DB_PORT", 5436), // 默认使用5436避免与其他项目冲突
@@ -82,6 +86,30 @@ func Load() *Config {
 
 		WorkerID: envconfig.GetEnvInt64("WORKER_ID", 2),
 	}
+}
+
+func (c *Config) Validate() error {
+	if c.InternalToken == "" {
+		return fmt.Errorf("INTERNAL_TOKEN is required")
+	}
+	if c.AppEnv != "dev" {
+		if envconfig.IsInsecureDevSecret(c.InternalToken) {
+			return fmt.Errorf("INTERNAL_TOKEN must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)
+		}
+		if c.RedisPassword == "" {
+			return fmt.Errorf("REDIS_PASSWORD is required (APP_ENV=%s)", c.AppEnv)
+		}
+		if strings.TrimSpace(c.ConsumerGroup) == "" || strings.TrimSpace(c.ConsumerName) == "" {
+			return fmt.Errorf("CONSUMER_GROUP and CONSUMER_NAME are required (APP_ENV=%s)", c.AppEnv)
+		}
+		if c.DBPassword == "" || c.DBPassword == "exchange123" {
+			return fmt.Errorf("DB_PASSWORD must be explicitly set (APP_ENV=%s)", c.AppEnv)
+		}
+		if strings.EqualFold(c.DBSSLMode, "disable") {
+			return fmt.Errorf("DB_SSL_MODE must not be disable (APP_ENV=%s)", c.AppEnv)
+		}
+	}
+	return nil
 }
 
 // DSN 返回数据库连接字符串
