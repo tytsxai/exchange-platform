@@ -15,6 +15,10 @@ type Metrics struct {
 	orderLatency  prometheus.Histogram
 	orderRejected *prometheus.CounterVec
 	activeOrders  prometheus.Gauge
+
+	streamPending *prometheus.GaugeVec
+	streamErrors  *prometheus.CounterVec
+	streamDLQ     *prometheus.CounterVec
 }
 
 // New creates a metrics registry and registers order metrics.
@@ -47,7 +51,22 @@ func New() *Metrics {
 		Help: "Current number of active orders.",
 	})
 
-	registry.MustRegister(orderCreated, orderLatency, orderRejected, activeOrders)
+	streamPending := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "redis_stream_pending",
+		Help: "Number of pending messages in Redis Streams consumer groups.",
+	}, []string{"stream", "group"})
+
+	streamErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "redis_stream_handler_errors_total",
+		Help: "Total number of stream handler errors.",
+	}, []string{"stream", "group"})
+
+	streamDLQ := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "redis_stream_dlq_total",
+		Help: "Total number of messages moved to Redis Stream DLQ.",
+	}, []string{"stream", "group"})
+
+	registry.MustRegister(orderCreated, orderLatency, orderRejected, activeOrders, streamPending, streamErrors, streamDLQ)
 
 	return &Metrics{
 		registry:      registry,
@@ -55,6 +74,9 @@ func New() *Metrics {
 		orderLatency:  orderLatency,
 		orderRejected: orderRejected,
 		activeOrders:  activeOrders,
+		streamPending: streamPending,
+		streamErrors:  streamErrors,
+		streamDLQ:     streamDLQ,
 	}
 }
 
@@ -96,4 +118,25 @@ func (m *Metrics) IncActiveOrders() {
 // DecActiveOrders decrements the active orders gauge.
 func (m *Metrics) DecActiveOrders() {
 	m.activeOrders.Dec()
+}
+
+func (m *Metrics) SetStreamPending(stream, group string, pending int64) {
+	if m == nil {
+		return
+	}
+	m.streamPending.WithLabelValues(stream, group).Set(float64(pending))
+}
+
+func (m *Metrics) IncStreamError(stream, group string) {
+	if m == nil {
+		return
+	}
+	m.streamErrors.WithLabelValues(stream, group).Inc()
+}
+
+func (m *Metrics) IncStreamDLQ(stream, group string) {
+	if m == nil {
+		return
+	}
+	m.streamDLQ.WithLabelValues(stream, group).Inc()
 }

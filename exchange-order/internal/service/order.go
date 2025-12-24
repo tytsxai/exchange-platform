@@ -83,7 +83,7 @@ type CreateOrderResponse struct {
 func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest) (*CreateOrderResponse, error) {
 	start := time.Now()
 	if s.metrics != nil {
-		defer s.metrics.ObserveOrderLatency(time.Since(start))
+		defer func() { s.metrics.ObserveOrderLatency(time.Since(start)) }()
 	}
 
 	reject := func(code string) *CreateOrderResponse {

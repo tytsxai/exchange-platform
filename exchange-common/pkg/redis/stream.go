@@ -88,15 +88,18 @@ type ConsumerOptions struct {
 	MaxRetries   int           // 最大重试次数
 	RetryBackoff time.Duration // 重试间隔
 	ClaimMinIdle time.Duration // 认领空闲消息的最小时间
+	// PendingCheckInterval 周期性处理 pending 的间隔
+	PendingCheckInterval time.Duration
 }
 
 // DefaultConsumerOptions 默认选项
 var DefaultConsumerOptions = ConsumerOptions{
-	BatchSize:    10,
-	BlockTime:    5 * time.Second,
-	MaxRetries:   3,
-	RetryBackoff: time.Second,
-	ClaimMinIdle: 30 * time.Second,
+	BatchSize:            10,
+	BlockTime:            5 * time.Second,
+	MaxRetries:           3,
+	RetryBackoff:         time.Second,
+	ClaimMinIdle:         30 * time.Second,
+	PendingCheckInterval: 30 * time.Second,
 }
 
 // NewConsumer 创建消费者
@@ -153,11 +156,15 @@ func (c *Consumer) processPending(ctx context.Context) error {
 				break
 			}
 
-			// 认领并处理
+			// 认领并处理（带最大重试/死信）
 			ids := make([]string, 0, len(pending))
+			dlqIDs := make(map[string]int64)
 			for _, p := range pending {
 				if p.Idle >= c.opts.ClaimMinIdle {
 					ids = append(ids, p.ID)
+					if c.opts.MaxRetries > 0 && p.RetryCount > int64(c.opts.MaxRetries) {
+						dlqIDs[p.ID] = p.RetryCount
+					}
 				}
 			}
 
@@ -177,8 +184,18 @@ func (c *Consumer) processPending(ctx context.Context) error {
 			}
 
 			for _, m := range messages {
+				if retryCount, toDLQ := dlqIDs[m.ID]; toDLQ {
+					if err := c.sendToDLQ(ctx, stream, &m, fmt.Sprintf("max retries exceeded: %d", retryCount)); err != nil {
+						fmt.Printf("send to dlq error: %v\n", err)
+						continue
+					}
+					if err := c.client.client.XAck(ctx, stream, c.group, m.ID).Err(); err != nil {
+						fmt.Printf("ack dlq message error: %v\n", err)
+					}
+					continue
+				}
+
 				if err := c.processMessage(ctx, stream, m); err != nil {
-					// 记录错误但继续处理
 					fmt.Printf("process pending message error: %v\n", err)
 				}
 			}
@@ -198,10 +215,17 @@ func (c *Consumer) consume(ctx context.Context) error {
 		args = append(args, ">")
 	}
 
+	pendingTicker := time.NewTicker(c.opts.PendingCheckInterval)
+	defer pendingTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-pendingTicker.C:
+			if err := c.processPending(ctx); err != nil && ctx.Err() == nil {
+				fmt.Printf("process pending error: %v\n", err)
+			}
 		default:
 		}
 
@@ -247,11 +271,47 @@ func (c *Consumer) processMessage(ctx context.Context, stream string, m redis.XM
 
 	// 调用处理函数
 	if err := c.handler(ctx, msg); err != nil {
+		// 超过最大重试，写入死信流并 ACK
+		if c.opts.MaxRetries > 0 {
+			pending, pErr := c.client.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+				Stream: stream,
+				Group:  c.group,
+				Start:  m.ID,
+				End:    m.ID,
+				Count:  1,
+			}).Result()
+			if pErr == nil && len(pending) == 1 && pending[0].RetryCount > int64(c.opts.MaxRetries) {
+				if dlqErr := c.sendToDLQ(ctx, stream, &m, err.Error()); dlqErr == nil {
+					return c.client.client.XAck(ctx, stream, c.group, m.ID).Err()
+				}
+			}
+		}
 		return err
 	}
 
 	// ACK
 	return c.client.client.XAck(ctx, stream, c.group, m.ID).Err()
+}
+
+func (c *Consumer) sendToDLQ(ctx context.Context, stream string, m *redis.XMessage, reason string) error {
+	dlqStream := stream + ":dlq"
+	values := map[string]interface{}{
+		"stream":   stream,
+		"msgId":    m.ID,
+		"reason":   reason,
+		"data":     m.Values["data"],
+		"tsMs":     time.Now().UnixMilli(),
+		"group":    c.group,
+		"consumer": c.consumer,
+	}
+	_, err := c.client.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: dlqStream,
+		Values: values,
+	}).Result()
+	if err != nil {
+		return fmt.Errorf("xadd dlq: %w", err)
+	}
+	return nil
 }
 
 // Ack 手动确认消息

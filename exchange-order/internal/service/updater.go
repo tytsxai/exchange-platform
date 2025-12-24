@@ -36,6 +36,10 @@ type OrderUpdater struct {
 	consumer    string
 }
 
+const (
+	defaultMaxStreamRetries = 10
+)
+
 // OrderUpdaterStore 订单更新依赖接口
 type OrderUpdaterStore interface {
 	UpdateOrderStatus(ctx context.Context, orderID int64, status int, executedQty, cumulativeQuoteQty, updateTimeMs int64) error
@@ -127,6 +131,9 @@ func (u *OrderUpdater) consumeOnce(ctx context.Context) error {
 	for _, result := range results {
 		for _, msg := range result.Messages {
 			if err := u.processMessage(ctx, msg); err != nil {
+				if u.metrics != nil {
+					u.metrics.IncStreamError(u.eventStream, u.group)
+				}
 				log.Printf("process event error: %v", err)
 				continue
 			}
@@ -137,6 +144,12 @@ func (u *OrderUpdater) consumeOnce(ctx context.Context) error {
 }
 
 func (u *OrderUpdater) processPending(ctx context.Context) error {
+	if u.metrics != nil {
+		if summary, err := u.redis.XPending(ctx, u.eventStream, u.group).Result(); err == nil {
+			u.metrics.SetStreamPending(u.eventStream, u.group, summary.Count)
+		}
+	}
+
 	pending, err := u.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: u.eventStream,
 		Group:  u.group,
@@ -149,9 +162,13 @@ func (u *OrderUpdater) processPending(ctx context.Context) error {
 	}
 
 	var ids []string
+	dlqIDs := make(map[string]int64)
 	for _, entry := range pending {
 		if entry.Idle >= 30*time.Second {
 			ids = append(ids, entry.ID)
+			if entry.RetryCount > defaultMaxStreamRetries {
+				dlqIDs[entry.ID] = entry.RetryCount
+			}
 		}
 	}
 	if len(ids) == 0 {
@@ -170,13 +187,47 @@ func (u *OrderUpdater) processPending(ctx context.Context) error {
 	}
 
 	for _, msg := range claimed {
+		if retryCount, toDLQ := dlqIDs[msg.ID]; toDLQ {
+			if err := u.sendToDLQ(ctx, &msg, fmt.Sprintf("max retries exceeded: %d", retryCount)); err != nil {
+				if u.metrics != nil {
+					u.metrics.IncStreamError(u.eventStream, u.group)
+				}
+				log.Printf("send dlq error: %v", err)
+				continue
+			}
+			if u.metrics != nil {
+				u.metrics.IncStreamDLQ(u.eventStream, u.group)
+			}
+			u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
+			continue
+		}
 		if err := u.processMessage(ctx, msg); err != nil {
+			if u.metrics != nil {
+				u.metrics.IncStreamError(u.eventStream, u.group)
+			}
 			log.Printf("process pending event error: %v", err)
 			continue
 		}
 		u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
 	}
 	return nil
+}
+
+func (u *OrderUpdater) sendToDLQ(ctx context.Context, msg *redis.XMessage, reason string) error {
+	dlqStream := u.eventStream + ":dlq"
+	_, err := u.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: dlqStream,
+		Values: map[string]interface{}{
+			"stream":   u.eventStream,
+			"msgId":    msg.ID,
+			"reason":   reason,
+			"data":     msg.Values["data"],
+			"tsMs":     time.Now().UnixMilli(),
+			"group":    u.group,
+			"consumer": u.consumer,
+		},
+	}).Result()
+	return err
 }
 
 func (u *OrderUpdater) processMessage(ctx context.Context, msg redis.XMessage) error {
