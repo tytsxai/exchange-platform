@@ -140,7 +140,9 @@ func runOnce(ctx context.Context, cfg reconciliationConfig, out, errOut io.Write
 	}
 	defer db.Close()
 
-	if err := db.Ping(); err != nil {
+	dbPingCtx, dbPingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer dbPingCancel()
+	if err := db.PingContext(dbPingCtx); err != nil {
 		fmt.Fprintf(errOut, "failed to ping database: %v\n", err)
 		return 2
 	}
@@ -356,7 +358,8 @@ func postJSON(ctx context.Context, url string, payload interface{}) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

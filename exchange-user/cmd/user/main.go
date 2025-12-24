@@ -56,7 +56,9 @@ func main() {
 	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
 	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
-	if err := db.Ping(); err != nil {
+	dbPingCtx, dbPingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dbPingCancel()
+	if err := db.PingContext(dbPingCtx); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 	log.Printf("Connected to PostgreSQL")
@@ -67,12 +69,19 @@ func main() {
 	svc := service.NewUserService(repo, idGen, tokenManager)
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-		DB:       cfg.RedisDB,
+		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
+		DB:           cfg.RedisDB,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolSize:     100,
+		MinIdleConns: 10,
 	})
 	defer rdb.Close()
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
+	redisPingCtx, redisPingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer redisPingCancel()
+	if err := rdb.Ping(redisPingCtx).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	nonceStore := commonredis.NewNonceStore(&commonredis.Client{Client: rdb}, cfg.NonceKeyPrefix)

@@ -65,22 +65,31 @@ func main() {
 	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
 	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
-	if err := db.Ping(); err != nil {
+	dbPingCtx, dbPingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dbPingCancel()
+	if err := db.PingContext(dbPingCtx); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 	log.Printf("Connected to PostgreSQL")
 
 	// 连接 Redis
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
+		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		PoolSize:     200,
+		MinIdleConns: 20,
 	})
 	defer redisClient.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	redisPingCtx, redisPingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer redisPingCancel()
+	if err := redisClient.Ping(redisPingCtx).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	log.Printf("Connected to Redis")

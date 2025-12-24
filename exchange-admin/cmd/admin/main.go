@@ -51,7 +51,9 @@ func main() {
 	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
 	db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
 
-	if err := db.Ping(); err != nil {
+	dbPingCtx, dbPingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dbPingCancel()
+	if err := db.PingContext(dbPingCtx); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 	log.Printf("Connected to PostgreSQL")

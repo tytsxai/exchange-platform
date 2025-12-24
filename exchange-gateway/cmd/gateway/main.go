@@ -52,12 +52,19 @@ func main() {
 
 	// Redis client (private events)
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
+		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		PoolSize:     200,
+		MinIdleConns: 20,
 	})
 	defer redisClient.Close()
 
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	redisPingCtx, redisPingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer redisPingCancel()
+	if err := redisClient.Ping(redisPingCtx).Err(); err != nil {
 		l.Error(fmt.Sprintf("Failed to connect to Redis: %v", err))
 		os.Exit(1)
 	}

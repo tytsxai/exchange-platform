@@ -65,19 +65,40 @@ func NewClient(cfg *Config) (*Client, error) {
 
 // NonceStore 基于 Redis 的 nonce 存储
 type NonceStore struct {
-	client *Client
-	prefix string
+	client  *Client
+	prefix  string
+	timeout time.Duration
+}
+
+type NonceStoreOption func(*NonceStore)
+
+// WithNonceStoreTimeout sets a hard timeout for Redis operations performed by NonceStore.
+func WithNonceStoreTimeout(d time.Duration) NonceStoreOption {
+	return func(s *NonceStore) {
+		if d > 0 {
+			s.timeout = d
+		}
+	}
 }
 
 // NewNonceStore 创建 nonce 存储
-func NewNonceStore(client *Client, prefix string) *NonceStore {
+func NewNonceStore(client *Client, prefix string, opts ...NonceStoreOption) *NonceStore {
 	if prefix == "" {
 		prefix = "nonce:"
 	}
-	return &NonceStore{
+	s := &NonceStore{
 		client: client,
 		prefix: prefix,
+		// Nonce verification sits on the hot path for authenticated requests.
+		// A bounded timeout prevents Redis issues from turning into infinite hangs.
+		timeout: 2 * time.Second,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
 }
 
 // Exists 检查 nonce 是否存在
@@ -89,7 +110,9 @@ func (s *NonceStore) Exists(apiKey, nonce string, expireAt time.Time) (bool, err
 	}
 
 	// SETNX + EXPIRE
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
+
 	ok, err := s.client.SetNX(ctx, key, "1", ttl).Result()
 	if err != nil {
 		return false, err

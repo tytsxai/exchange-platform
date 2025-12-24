@@ -29,17 +29,23 @@ func main() {
 
 	// 连接 Redis
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:        cfg.RedisAddr,
-		Password:    cfg.RedisPassword,
-		DB:          cfg.RedisDB,
-		ReadTimeout: 5 * time.Second,
+		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
+		DB:           cfg.RedisDB,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		PoolSize:     200,
+		MinIdleConns: 20,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// 测试 Redis 连接
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	redisPingCtx, redisPingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer redisPingCancel()
+	if err := redisClient.Ping(redisPingCtx).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	log.Printf("Connected to Redis at %s", cfg.RedisAddr)
