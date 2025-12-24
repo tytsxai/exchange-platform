@@ -125,6 +125,7 @@ source: ""
   2) 等待撮合消费队列清空，确认无积压
   3) 发布后主动撤销所有未成交订单并解冻资金
 - 恢复：确认订单与资金一致后，再恢复下单入口
+ - 工具脚本：`exchange-common/scripts/matching-safe-restart.sh prepare|resume`
 
 ---
 
