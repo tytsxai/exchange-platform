@@ -107,13 +107,17 @@ func NewConsumer(client *StreamClient, group, consumer string, streams []string,
 	if opts == nil {
 		opts = &DefaultConsumerOptions
 	}
+	normalized := *opts
+	if normalized.PendingCheckInterval <= 0 {
+		normalized.PendingCheckInterval = DefaultConsumerOptions.PendingCheckInterval
+	}
 	return &Consumer{
 		client:   client,
 		group:    group,
 		consumer: consumer,
 		streams:  streams,
 		handler:  handler,
-		opts:     *opts,
+		opts:     normalized,
 	}
 }
 
