@@ -23,7 +23,7 @@
             "command": "go test ./exchange-common/...",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-1-2",
@@ -37,7 +37,7 @@
             "command": "go test ./exchange-common/...",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -67,7 +67,7 @@
             "command": "go test ./exchange-matching/...",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-2-2",
@@ -81,7 +81,7 @@
             "command": "go test ./exchange-matching/...",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -112,7 +112,7 @@
             "command": "go test ./exchange-order/internal/service -run TestCreateOrder",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-3-2",

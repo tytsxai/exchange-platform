@@ -27,7 +27,7 @@
             "type": "manual",
             "instructions": "Review DR-PLATFORM.md for documented platform, routing stack, RTO/RPO targets, and core service inventory."
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -58,7 +58,7 @@
             "command": "go test ./exchange-common/...",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-2-2",
@@ -79,7 +79,7 @@
             "command": "go test ./exchange-gateway/...",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-2-3",
@@ -98,7 +98,7 @@
             "command": "bash scripts/dr/routing-switch.sh --help",
             "expected": "Usage"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -129,7 +129,7 @@
             "command": "bash scripts/dr/health-monitor.sh --dry-run",
             "expected": "dry-run"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -161,7 +161,7 @@
             "command": "bash scripts/dr/consistency-check.sh --help",
             "expected": "Usage"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },

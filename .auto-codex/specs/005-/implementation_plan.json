@@ -27,7 +27,7 @@
             "command": "rg \"hot_wallet\" exchange-common/scripts/init-db.sql",
             "expected": "hot_wallet"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-1-2",
@@ -47,7 +47,7 @@
             "command": "go test ./internal/repository -run TestDepositStruct",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },
@@ -80,7 +80,7 @@
             "command": "go test ./internal/service -run TestWalletService",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-2-2",
@@ -101,7 +101,7 @@
             "command": "go test ./internal/service -run TestWalletService_ProcessDeposit",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-2-3",
@@ -122,7 +122,7 @@
             "command": "go test ./internal/service -run TestWalletService_RejectWithdraw",
             "expected": "ok"
           },
-          "status": "pending"
+          "status": "completed"
         }
       ]
     },

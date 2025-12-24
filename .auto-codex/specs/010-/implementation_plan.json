@@ -1,134 +1,166 @@
 {
-  "feature": "Clearing/Wallet reconciliation with audit traceability and idempotency",
+  "feature": "Clearing/Wallet audit traceability and reconciliation",
   "workflow_type": "feature",
-  "workflow_rationale": "Adds reconciliation, audit traceability, idempotency safeguards, and anomaly tracking across clearing and wallet services with schema updates.",
+  "workflow_rationale": "Adds reconciliation, idempotency coverage, and audit linkage between clearing events and wallet ledger changes.",
   "phases": [
     {
-      "id": "phase-1-schema",
-      "name": "Schema and Shared Data",
-      "type": "implementation",
-      "description": "Extend database schema for audit trace links and reconciliation anomaly tracking.",
+      "id": "phase-1-discovery",
+      "name": "Current Patterns Review",
+      "type": "analysis",
+      "description": "Identify existing audit, idempotency, and reconciliation patterns to extend.",
       "depends_on": [],
       "parallel_safe": true,
       "subtasks": [
         {
           "id": "subtask-1-1",
-          "description": "Add audit linkage, reconciliation anomaly, and reconciliation history tables to the shared schema",
+          "description": "Review clearing, wallet, admin audit, and common logger patterns for trace and idempotency usage.",
+          "service": "exchange-clearing/exchange-wallet/exchange-admin/exchange-common",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [
+            "exchange-clearing/internal/repository/balance.go",
+            "exchange-clearing/internal/service/clearing.go",
+            "exchange-clearing/cmd/reconciliation/main.go",
+            "exchange-wallet/internal/service/wallet.go",
+            "exchange-wallet/internal/repository/wallet.go",
+            "exchange-admin/internal/repository/admin.go",
+            "exchange-common/pkg/logger/logger.go"
+          ],
+          "verification": {
+            "type": "note",
+            "command": "",
+            "expected": "Patterns and extension points documented in build-progress.txt"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-schema",
+      "name": "Schema Extensions",
+      "type": "implementation",
+      "description": "Add/extend schema to persist audit linkage and reconciliation anomaly records.",
+      "depends_on": ["phase-1-discovery"],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Update shared schema for audit linkage and reconciliation anomaly tracking tables/fields.",
           "service": "exchange-common",
           "files_to_modify": ["exchange-common/scripts/init-db.sql"],
           "files_to_create": [],
           "patterns_from": ["exchange-common/scripts/init-db.sql", "exchange-admin/internal/repository/admin.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"ledger_audit\|reconciliation_anomalies\|reconciliation_history\" exchange-common/scripts/init-db.sql",
-            "expected": "ledger_audit"
+            "command": "rg \"audit|reconciliation|anomaly\" exchange-common/scripts/init-db.sql",
+            "expected": "audit or reconciliation entries present"
           },
           "status": "pending"
         }
       ]
     },
     {
-      "id": "phase-2-clearing",
-      "name": "Clearing Audit and Reconciliation",
+      "id": "phase-3-clearing",
+      "name": "Clearing Audit + Reconciliation",
       "type": "implementation",
-      "description": "Persist audit links, record anomalies, and add real-time reconciliation checks in clearing.",
-      "depends_on": ["phase-1-schema"],
+      "description": "Wire audit linkage, idempotency markers, and real-time reconciliation in clearing.",
+      "depends_on": ["phase-2-schema"],
       "parallel_safe": true,
       "subtasks": [
         {
-          "id": "subtask-2-1",
-          "description": "Create audit/anomaly repository helpers and wire ledger insertions to write audit links and duplicate markers",
+          "id": "subtask-3-1",
+          "description": "Persist audit trace links and duplicate markers alongside ledger entries.",
           "service": "exchange-clearing",
           "files_to_modify": ["exchange-clearing/internal/repository/balance.go"],
           "files_to_create": ["exchange-clearing/internal/repository/audit.go"],
           "patterns_from": ["exchange-clearing/internal/repository/balance.go", "exchange-admin/internal/repository/admin.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"audit\|anomaly\|reconciliation\" exchange-clearing/internal/repository",
-            "expected": "audit"
+            "command": "rg \"audit|trace|duplicate|idempot\" exchange-clearing/internal/repository",
+            "expected": "audit or trace linkage present"
           },
           "status": "pending"
         },
         {
-          "id": "subtask-2-2",
-          "description": "Add real-time reconciliation checks for wallet-linked ledger entries and record anomalies on mismatch",
+          "id": "subtask-3-2",
+          "description": "Add real-time reconciliation check after ledger write and record anomalies on mismatch.",
           "service": "exchange-clearing",
           "files_to_modify": ["exchange-clearing/internal/service/clearing.go"],
           "files_to_create": ["exchange-clearing/internal/service/reconciliation.go"],
           "patterns_from": ["exchange-clearing/internal/service/clearing.go", "exchange-clearing/cmd/reconciliation/main.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"reconciliation\|anomaly\" exchange-clearing/internal/service",
-            "expected": "reconciliation"
+            "command": "rg \"reconciliation|anomaly\" exchange-clearing/internal/service",
+            "expected": "reconciliation logic present"
           },
           "status": "pending"
         },
         {
-          "id": "subtask-2-3",
-          "description": "Propagate source event metadata (trace ID/ref data) into clearing ledger writes for audit traceability",
+          "id": "subtask-3-3",
+          "description": "Propagate trace and source event metadata into clearing ledger writes.",
           "service": "exchange-clearing",
           "files_to_modify": ["exchange-clearing/internal/service/clearing.go", "exchange-clearing/cmd/clearing/main.go"],
           "files_to_create": [],
-          "patterns_from": ["exchange-clearing/cmd/clearing/main.go", "exchange-common/pkg/logger/logger.go"],
+          "patterns_from": ["exchange-common/pkg/logger/logger.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"Trace|trace|event|source\" exchange-clearing/internal/service/clearing.go exchange-clearing/cmd/clearing/main.go",
-            "expected": "event"
+            "command": "rg \"trace|TraceID|source_event\" exchange-clearing/internal/service/clearing.go",
+            "expected": "trace metadata present"
           },
           "status": "pending"
         },
         {
-          "id": "subtask-2-4",
-          "description": "Enhance reconciliation CLI to include wallet-vs-ledger diffs and persist anomaly records",
+          "id": "subtask-3-4",
+          "description": "Enhance end-of-day reconciliation CLI to output diff list and persist anomaly records.",
           "service": "exchange-clearing",
-          "files_to_modify": ["exchange-clearing/cmd/reconciliation/main.go", "exchange-clearing/scripts/reconciliation.sql"],
+          "files_to_modify": ["exchange-clearing/cmd/reconciliation/main.go"],
           "files_to_create": [],
-          "patterns_from": ["exchange-clearing/cmd/reconciliation/main.go", "exchange-clearing/scripts/reconciliation.sql"],
+          "patterns_from": ["exchange-clearing/cmd/reconciliation/main.go"],
           "verification": {
             "type": "command",
-            "command": "go test ./exchange-clearing/cmd/reconciliation -run TestRunWithDB",
-            "expected": "PASS"
+            "command": "rg \"diff|anomaly|report\" exchange-clearing/cmd/reconciliation/main.go",
+            "expected": "diff/anomaly reporting present"
           },
           "status": "pending"
         }
       ]
     },
     {
-      "id": "phase-3-wallet",
-      "name": "Wallet Idempotency and Audit Metadata",
+      "id": "phase-4-wallet",
+      "name": "Wallet Idempotency + Trace Propagation",
       "type": "implementation",
-      "description": "Propagate audit metadata and idempotency context from wallet flows to clearing.",
-      "depends_on": ["phase-1-schema"],
+      "description": "Ensure wallet flows propagate idempotency and audit metadata to clearing.",
+      "depends_on": ["phase-2-schema"],
       "parallel_safe": true,
       "subtasks": [
         {
-          "id": "subtask-3-1",
-          "description": "Pass trace/audit metadata in wallet-to-clearing requests for deposits and withdrawals",
+          "id": "subtask-4-1",
+          "description": "Pass trace/audit metadata in wallet to clearing calls for deposits and withdrawals.",
           "service": "exchange-wallet",
           "files_to_modify": ["exchange-wallet/internal/service/wallet.go", "exchange-wallet/internal/client/clearing.go"],
           "files_to_create": [],
           "patterns_from": ["exchange-wallet/internal/service/wallet.go", "exchange-common/pkg/logger/logger.go"],
           "verification": {
             "type": "command",
-            "command": "rg \"trace|Trace|audit|IdempotencyKey\" exchange-wallet/internal/service/wallet.go exchange-wallet/internal/client/clearing.go",
-            "expected": "IdempotencyKey"
+            "command": "rg \"trace|TraceID|Idempotency\" exchange-wallet/internal/service/wallet.go exchange-wallet/internal/client/clearing.go",
+            "expected": "trace or idempotency metadata present"
           },
           "status": "pending"
         }
       ]
     },
     {
-      "id": "phase-4-integration",
-      "name": "Integration and Validation",
+      "id": "phase-5-validation",
+      "name": "Integration Validation",
       "type": "integration",
-      "description": "Verify end-to-end audit traceability and reconciliation correctness across clearing and wallet.",
-      "depends_on": ["phase-2-clearing", "phase-3-wallet"],
+      "description": "Validate reconciliation accuracy and audit traceability end-to-end.",
+      "depends_on": ["phase-3-clearing", "phase-4-wallet"],
       "parallel_safe": false,
       "subtasks": [
         {
-          "id": "subtask-4-1",
-          "description": "Add reconciliation integration coverage for audit trace links and zero-diff reports",
-          "all_services": true,
+          "id": "subtask-5-1",
+          "description": "Add/extend reconciliation tests covering audit trace links and zero diff results.",
+          "service": "exchange-clearing",
           "files_to_modify": ["exchange-clearing/cmd/reconciliation/main_test.go"],
           "files_to_create": [],
           "patterns_from": ["exchange-clearing/cmd/reconciliation/main_test.go"],
@@ -143,96 +175,19 @@
     }
   ],
   "summary": {
-    "total_phases": 4,
-    "total_subtasks": 7,
-    "services_involved": ["exchange-common", "exchange-clearing", "exchange-wallet"],
+    "total_phases": 5,
+    "total_subtasks": 8,
+    "services_involved": ["exchange-common", "exchange-clearing", "exchange-wallet", "exchange-admin"],
     "parallelism": {
       "max_parallel_phases": 2,
       "parallel_groups": [
         {
-          "phases": ["phase-2-clearing", "phase-3-wallet"],
-          "reason": "Both depend only on schema updates and touch different services/files."
+          "phases": ["phase-3-clearing", "phase-4-wallet"],
+          "reason": "Both depend on schema updates and touch separate services."
         }
       ],
       "recommended_workers": 2,
-      "speedup_estimate": "~1.5x faster than sequential"
-    },
-    "startup_command": "source auto-codex/.venv/bin/activate && python3 auto-codex/run.py --spec 010 --parallel 2"
-  },
-  "verification_strategy": {
-    "risk_level": "high",
-    "skip_validation": false,
-    "test_creation_phase": "post_implementation",
-    "test_types_required": ["unit", "integration", "e2e"],
-    "security_scanning_required": true,
-    "staging_deployment_required": true,
-    "acceptance_criteria": [
-      "All existing tests pass",
-      "Reconciliation reports zero diffs on test data",
-      "Audit trace links map events to ledger entries",
-      "Idempotency duplicates do not alter balances",
-      "No security vulnerabilities detected"
-    ],
-    "verification_steps": [
-      {
-        "name": "Unit Tests",
-        "command": "go test ./...",
-        "expected_outcome": "All tests pass",
-        "type": "test",
-        "required": true,
-        "blocking": true
-      },
-      {
-        "name": "Integration Tests",
-        "command": "go test ./exchange-clearing/... ./exchange-wallet/...",
-        "expected_outcome": "All integration tests pass",
-        "type": "test",
-        "required": true,
-        "blocking": true
-      },
-      {
-        "name": "E2E Tests",
-        "command": "bash exchange-common/scripts/e2e-test.sh",
-        "expected_outcome": "E2E flows pass",
-        "type": "test",
-        "required": true,
-        "blocking": true
-      },
-      {
-        "name": "Secrets Scan",
-        "command": "python3 auto-codex/scan_secrets.py --all-files --json",
-        "expected_outcome": "No secrets detected",
-        "type": "security",
-        "required": true,
-        "blocking": true
-      }
-    ],
-    "reasoning": "High-risk reconciliation and audit changes require unit, integration, and E2E coverage plus security scanning and staging validation."
-  },
-  "qa_acceptance": {
-    "unit_tests": {
-      "required": true,
-      "commands": ["go test ./..."],
-      "minimum_coverage": null
-    },
-    "integration_tests": {
-      "required": true,
-      "commands": ["go test ./exchange-clearing/... ./exchange-wallet/..."],
-      "services_to_test": ["exchange-clearing", "exchange-wallet"]
-    },
-    "e2e_tests": {
-      "required": true,
-      "commands": ["bash exchange-common/scripts/e2e-test.sh"],
-      "flows": ["reconciliation-eod", "reconciliation-realtime", "audit-trace"]
-    },
-    "browser_verification": {
-      "required": false,
-      "pages": []
-    },
-    "database_verification": {
-      "required": true,
-      "checks": ["reconciliation-diff-zero", "anomaly-records-traceable", "audit-links-present"]
+      "speedup_estimate": "~1.4x faster than sequential"
     }
-  },
-  "qa_signoff": null
+  }
 }
