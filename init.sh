@@ -9,6 +9,15 @@ echo "========================================"
 echo "Starting Development Environment"
 echo "========================================"
 
+# Dev defaults (override in shell for production)
+APP_ENV=${APP_ENV:-"dev"}
+INTERNAL_TOKEN=${INTERNAL_TOKEN:-"dev-internal-token-change-me"}
+AUTH_TOKEN_SECRET=${AUTH_TOKEN_SECRET:-"dev-auth-token-secret-32-bytes-minimum"}
+AUTH_TOKEN_TTL=${AUTH_TOKEN_TTL:-"24h"}
+ADMIN_TOKEN=${ADMIN_TOKEN:-"dev-admin-token-change-me"}
+
+export APP_ENV INTERNAL_TOKEN AUTH_TOKEN_SECRET AUTH_TOKEN_TTL ADMIN_TOKEN
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'

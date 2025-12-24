@@ -27,8 +27,8 @@
 | `exchange-matching` | 8082 | ✅ | 内存订单簿、撮合引擎 |
 | `exchange-clearing` | 8083 | ✅ | 资金冻结/解冻、账本 |
 | `exchange-marketdata` | 8084/8094(WS) | ✅ | 盘口/成交/Ticker/WS推送 |
-| `exchange-admin` | 8086 | 🔲 | 运营后台 |
-| `exchange-wallet` | 8087 | 🔲 | 钱包/出入金 |
+| `exchange-admin` | 8087 | 🔲 | 运营后台 |
+| `exchange-wallet` | 8086 | 🔲 | 钱包/出入金 |
 
 ---
 

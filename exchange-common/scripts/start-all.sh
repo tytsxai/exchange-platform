@@ -17,11 +17,13 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Dev defaults (override in shell for production)
+APP_ENV=${APP_ENV:-"dev"}
 INTERNAL_TOKEN=${INTERNAL_TOKEN:-"dev-internal-token-change-me"}
 AUTH_TOKEN_SECRET=${AUTH_TOKEN_SECRET:-"dev-auth-token-secret-32-bytes-minimum"}
 AUTH_TOKEN_TTL=${AUTH_TOKEN_TTL:-"24h"}
+ADMIN_TOKEN=${ADMIN_TOKEN:-"dev-admin-token-change-me"}
 
-export INTERNAL_TOKEN AUTH_TOKEN_SECRET AUTH_TOKEN_TTL
+export APP_ENV INTERNAL_TOKEN AUTH_TOKEN_SECRET AUTH_TOKEN_TTL ADMIN_TOKEN
 
 # 服务列表
 SERVICES=(
@@ -69,18 +71,43 @@ build_service() {
     fi
 }
 
+pid_listening_on_port() {
+    local port=$1
+    lsof -t -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1
+}
+
+proc_name() {
+    local pid=$1
+    local comm
+    comm=$(ps -o comm= -p "${pid}" 2>/dev/null | tr -d ' ')
+    basename "${comm}"
+}
+
 start_service() {
     local service=$1
     local port=$2
     local service_dir="${EXCHANGE_ROOT}/${service}"
     local binary="bin/${service##*-}"
+    local expected_comm="${service##*-}"
 
     if [ -f "${service_dir}/${binary}" ]; then
+        local existing_pid
+        existing_pid=$(pid_listening_on_port "${port}" || true)
+        if [ -n "${existing_pid}" ]; then
+            log_error "Port ${port} is already in use by PID ${existing_pid} (comm=$(proc_name "${existing_pid}")). Refusing to start ${service}."
+            return 1
+        fi
+
         log_info "Starting ${service} on port ${port}..."
         cd "$service_dir"
         "./${binary}" > "logs/${service##*-}.log" 2>&1 &
         echo $! > "pids/${service##*-}.pid"
         sleep 1
+
+        if ! kill -0 "$!" 2>/dev/null; then
+            log_error "${service} exited immediately. See ${service_dir}/logs/${service##*-}.log"
+            return 1
+        fi
 
         # 健康检查
         if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
@@ -96,21 +123,45 @@ start_service() {
     fi
 }
 
+stop_service() {
+    local service=$1
+    local port=$2
+    local service_dir="${EXCHANGE_ROOT}/${service}"
+    local pid_file="${service_dir}/pids/${service##*-}.pid"
+    local expected_comm="${service##*-}"
+
+    if [ -f "$pid_file" ]; then
+        local pid
+        pid=$(cat "$pid_file" 2>/dev/null || true)
+        if [ -n "${pid}" ] && kill -0 "$pid" 2>/dev/null; then
+            log_info "Stopping ${service} (PID: ${pid})..."
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file"
+    fi
+
+    local listen_pid
+    listen_pid=$(pid_listening_on_port "${port}" || true)
+    if [ -n "${listen_pid}" ]; then
+        local comm
+        comm=$(proc_name "${listen_pid}")
+        if [ "${comm}" = "${expected_comm}" ]; then
+            log_warn "${service} still listening on ${port} (PID: ${listen_pid}); stopping by port."
+            kill "${listen_pid}" 2>/dev/null || true
+        else
+            log_warn "Port ${port} is occupied by PID ${listen_pid} (comm=${comm}); not killing."
+        fi
+    fi
+}
+
 stop_all() {
     log_info "Stopping all services..."
     for entry in "${SERVICES[@]}"; do
         local service="${entry%%:*}"
         local service_dir="${EXCHANGE_ROOT}/${service}"
-        local pid_file="${service_dir}/pids/${service##*-}.pid"
+        local port="${entry##*:}"
 
-        if [ -f "$pid_file" ]; then
-            local pid=$(cat "$pid_file")
-            if kill -0 "$pid" 2>/dev/null; then
-                log_info "Stopping ${service} (PID: ${pid})..."
-                kill "$pid" 2>/dev/null || true
-            fi
-            rm -f "$pid_file"
-        fi
+        stop_service "$service" "$port"
     done
 
     log_info "Stopping infrastructure..."

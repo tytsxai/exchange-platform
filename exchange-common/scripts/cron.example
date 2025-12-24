@@ -1,0 +1,13 @@
+# Example cron entries (server local time).
+# Adjust paths and env vars for your deployment.
+#
+# Recommended: run in a dedicated "ops" host/container with least privilege.
+
+# Daily PostgreSQL backup at 03:00 (requires DB_URL with TLS in prod)
+0 3 * * * DB_URL="postgres://exchange:***@db:5432/exchange?sslmode=require" /bin/bash /opt/exchange/exchange-common/scripts/backup-db.sh >/var/log/exchange/backup-db.log 2>&1
+
+# Daily reconciliation at 04:00 (ensure alerting on failures)
+0 4 * * * /opt/exchange/exchange-clearing/bin/reconciliation >/var/log/exchange/reconciliation.log 2>&1
+
+# Weekly restore drill (stage environment only!) - manual trigger recommended
+# 0 5 * * 0 /bin/bash /opt/exchange/exchange-common/scripts/restore-db.sh /backups/latest.dump
