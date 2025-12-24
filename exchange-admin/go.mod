@@ -1,6 +1,6 @@
 module github.com/exchange/admin
 
-go 1.25.5
+go 1.21
 
 require (
 	github.com/exchange/common v0.0.0
