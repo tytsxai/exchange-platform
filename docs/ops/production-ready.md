@@ -68,3 +68,7 @@
 5. 开启告警（实例存活、stream pending/DLQ、handler errors）。
 6. 做一次备份 + 恢复演练（至少在 staging）。
 
+## 5. 相关文档（建议一起看）
+
+- 运行手册：`docs/ops/runbook.md`
+- 备份与恢复：`docs/ops/backup-restore.md`

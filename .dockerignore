@@ -1,0 +1,17 @@
+.git
+.github
+.DS_Store
+
+# Local tooling / agent metadata
+.auto-*
+.claude*
+
+# Build/test outputs
+**/*.test
+**/*.out
+**/bin
+**/dist
+**/tmp
+
+# Docs and misc
+交易所项目文档

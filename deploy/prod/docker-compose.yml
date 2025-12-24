@@ -16,7 +16,19 @@ services:
     ports:
       - "8080:8080"
       - "8090:8090"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8080/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     depends_on: []
     networks: [exchange-net]
 
@@ -29,7 +41,19 @@ services:
         CMD_DIR: user
     env_file:
       - ./prod.env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8085/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
   order:
@@ -41,7 +65,19 @@ services:
         CMD_DIR: order
     env_file:
       - ./prod.env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8081/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
   matching:
@@ -53,7 +89,19 @@ services:
         CMD_DIR: matching
     env_file:
       - ./prod.env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8082/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
   clearing:
@@ -65,7 +113,19 @@ services:
         CMD_DIR: clearing
     env_file:
       - ./prod.env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8083/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
   marketdata:
@@ -80,7 +140,19 @@ services:
     # If you need to expose public WS directly, uncomment this.
     # ports:
     #   - "8094:8094"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8084/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
   # Admin/Wallet should not be public. Put behind VPN or internal ingress.
@@ -93,7 +165,19 @@ services:
         CMD_DIR: admin
     env_file:
       - ./prod.env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8087/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
   wallet:
@@ -105,7 +189,19 @@ services:
         CMD_DIR: wallet
     env_file:
       - ./prod.env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:8086/ready >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s
+    init: true
     networks: [exchange-net]
 
 networks:
