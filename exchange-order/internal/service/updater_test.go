@@ -55,6 +55,10 @@ func (f *fakeOrderStore) CancelOrder(_ context.Context, orderID int64, reason st
 	return nil
 }
 
+func (f *fakeOrderStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
 func (f *fakeOrderStore) GetOrder(_ context.Context, _ int64) (*repository.Order, error) {
 	return f.order, nil
 }
@@ -97,6 +101,10 @@ func (a *addQtyErrorStore) CancelOrder(_ context.Context, _ int64, _ string, _ i
 	return nil
 }
 
+func (a *addQtyErrorStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
 func (a *addQtyErrorStore) GetOrder(_ context.Context, _ int64) (*repository.Order, error) {
 	return nil, nil
 }
@@ -119,6 +127,10 @@ func (e *errorSymbolStore) UpdateOrderStatus(_ context.Context, _ int64, _ int, 
 }
 
 func (e *errorSymbolStore) CancelOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
+func (e *errorSymbolStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
 	return nil
 }
 
@@ -147,6 +159,10 @@ func (c *cancelErrStore) CancelOrder(_ context.Context, _ int64, _ string, _ int
 	return repository.ErrOrderNotFound
 }
 
+func (c *cancelErrStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
 func (c *cancelErrStore) GetOrder(_ context.Context, _ int64) (*repository.Order, error) {
 	return c.order, nil
 }
@@ -168,6 +184,10 @@ func (o *orderErrStore) UpdateOrderStatus(_ context.Context, _ int64, _ int, _ i
 }
 
 func (o *orderErrStore) CancelOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
+func (o *orderErrStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
 	return nil
 }
 
@@ -218,6 +238,7 @@ func TestOrderUpdater_ConsumeOnce_OrderCanceled(t *testing.T) {
 			Symbol:  "BTCUSDT",
 			Side:    repository.SideBuy,
 			Price:   "100000000",
+			OrigQty: "200000000",
 		},
 		cfg: &repository.SymbolConfig{
 			Symbol:     "BTCUSDT",
@@ -493,6 +514,7 @@ func TestOrderUpdater_HandleOrderCanceled_UnfreezeFailures(t *testing.T) {
 			Symbol:  "BTCUSDT",
 			Side:    repository.SideBuy,
 			Price:   "100000000",
+			OrigQty: "200000000",
 		},
 		cfg: &repository.SymbolConfig{
 			BaseAsset:  "BTC",
@@ -706,7 +728,7 @@ func TestOrderUpdater_HandleOrderCanceled_AmountZero(t *testing.T) {
 			OrderID: 1,
 			UserID:  10,
 			Symbol:  "BTCUSDT",
-			Side:    repository.SideBuy,
+			Side:    repository.SideSell,
 			Price:   "100000000",
 		},
 		cfg: &repository.SymbolConfig{
@@ -740,6 +762,7 @@ func TestOrderUpdater_HandleOrderCanceled_ConfigError(t *testing.T) {
 			Symbol:  "BTCUSDT",
 			Side:    repository.SideBuy,
 			Price:   "100000000",
+			OrigQty: "200000000",
 		},
 		err: errors.New("config error"),
 	}
@@ -765,6 +788,7 @@ func TestOrderUpdater_HandleOrderCanceled_CancelErrorIgnored(t *testing.T) {
 			Symbol:  "BTCUSDT",
 			Side:    repository.SideBuy,
 			Price:   "100000000",
+			OrigQty: "200000000",
 		},
 		cfg: &repository.SymbolConfig{
 			BaseAsset:  "BTC",

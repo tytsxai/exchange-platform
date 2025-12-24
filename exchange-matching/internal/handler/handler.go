@@ -47,6 +47,8 @@ type Handler struct {
 	eventStream string // 输出流名称
 	group       string // 消费者组
 	consumer    string // 消费者名称
+
+	ctx context.Context
 }
 
 // Config 配置
@@ -76,6 +78,8 @@ func (h *Handler) Start(ctx context.Context) error {
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return fmt.Errorf("create consumer group: %w", err)
 	}
+
+	h.ctx = ctx
 
 	// 启动消费循环
 	go h.consumeLoop(ctx)
@@ -217,39 +221,72 @@ func (h *Handler) getOrCreateEngine(symbol string) *engine.Engine {
 	eng.Start()
 
 	// 启动事件转发
-	go h.forwardEvents(eng)
+	evtCtx := h.ctx
+	if evtCtx == nil {
+		evtCtx = context.Background()
+	}
+	go h.forwardEvents(evtCtx, eng)
 
 	h.engines[symbol] = eng
 	return eng
 }
 
-func (h *Handler) forwardEvents(eng *engine.Engine) {
-	ctx := context.Background()
-	for event := range eng.Events() {
-		eventMsg := &EventMessage{
-			Type:      eventTypeToString(event.Type),
-			Symbol:    event.Symbol,
-			Seq:       event.Seq,
-			Timestamp: event.Timestamp,
-			Data:      event.Data,
-		}
+func (h *Handler) forwardEvents(ctx context.Context, eng *engine.Engine) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event := <-eng.Events():
+			if event == nil {
+				continue
+			}
+			eventMsg := &EventMessage{
+				Type:      eventTypeToString(event.Type),
+				Symbol:    event.Symbol,
+				Seq:       event.Seq,
+				Timestamp: event.Timestamp,
+				Data:      event.Data,
+			}
 
-		data, err := json.Marshal(eventMsg)
-		if err != nil {
-			log.Printf("marshal event error: %v", err)
-			continue
-		}
+			data, err := json.Marshal(eventMsg)
+			if err != nil {
+				log.Printf("marshal event error: %v", err)
+				continue
+			}
 
-		// 发送到输出流
-		_, err = h.redis.XAdd(ctx, &redis.XAddArgs{
+			if err := h.publishEvent(ctx, data); err != nil && ctx.Err() == nil {
+				log.Printf("send event error: %v", err)
+			}
+		}
+	}
+}
+
+func (h *Handler) publishEvent(ctx context.Context, payload []byte) error {
+	backoff := 200 * time.Millisecond
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := h.redis.XAdd(sendCtx, &redis.XAddArgs{
 			Stream: h.eventStream,
 			Values: map[string]interface{}{
-				"data": string(data),
+				"data": string(payload),
 			},
 		}).Result()
-
-		if err != nil {
-			log.Printf("send event error: %v", err)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < 2*time.Second {
+			backoff *= 2
 		}
 	}
 }

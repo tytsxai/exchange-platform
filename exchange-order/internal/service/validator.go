@@ -44,6 +44,14 @@ func NewPriceValidator(store SymbolConfigStore, matching MatchingPriceClient, cf
 	}
 }
 
+// ReferencePrice 获取参考价
+func (v *PriceValidator) ReferencePrice(symbol string) (int64, error) {
+	if v == nil || v.matching == nil {
+		return 0, errors.New("no reference price")
+	}
+	return v.matching.GetLastPrice(symbol)
+}
+
 // ValidatePrice 校验限价单价格偏离
 func (v *PriceValidator) ValidatePrice(symbol, side string, price int64) error {
 	if !v.cfg.Enabled {

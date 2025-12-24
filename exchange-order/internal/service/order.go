@@ -4,10 +4,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
+	commondecimal "github.com/exchange/common/pkg/decimal"
 	"github.com/exchange/order/internal/client"
 	"github.com/exchange/order/internal/metrics"
 	"github.com/exchange/order/internal/repository"
@@ -34,6 +36,10 @@ type OrderStore interface {
 	ListOpenOrders(ctx context.Context, userID int64, symbol string, limit int) ([]*repository.Order, error)
 	ListOrders(ctx context.Context, userID int64, symbol string, startTime, endTime int64, limit int) ([]*repository.Order, error)
 	ListSymbolConfigs(ctx context.Context) ([]*repository.SymbolConfig, error)
+}
+
+type orderRejector interface {
+	RejectOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error
 }
 
 // IDGenerator ID 生成器接口
@@ -119,6 +125,10 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	}
 
 	now := time.Now().UnixMilli()
+	tif := parseTIF(req.TimeInForce)
+	if req.Type == "MARKET" && tif == 1 {
+		tif = 2 // MARKET 默认按 IOC 处理，避免挂单
+	}
 	order := &repository.Order{
 		OrderID:            s.idGen.NextID(),
 		ClientOrderID:      req.ClientOrderID,
@@ -126,7 +136,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		Symbol:             req.Symbol,
 		Side:               parseSide(req.Side),
 		Type:               parseType(req.Type),
-		TimeInForce:        parseTIF(req.TimeInForce),
+		TimeInForce:        tif,
 		Price:              strconv.FormatInt(req.Price, 10),
 		StopPrice:          "0",
 		OrigQty:            strconv.FormatInt(req.Quantity, 10),
@@ -143,7 +153,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	if order.Side == repository.SideBuy {
 		freezeAsset = cfg.QuoteAsset
 		if order.Type == repository.TypeMarket {
-			freezeAmount = req.QuoteOrderQty
+			bufferedPrice, quoteAmount, err := s.marketBuyQuoteAmount(ctx, req.Symbol, req.Quantity, cfg)
+			if err != nil {
+				return reject("NO_REFERENCE_PRICE"), nil
+			}
+			order.Price = strconv.FormatInt(bufferedPrice, 10)
+			freezeAmount = quoteAmount
 		} else {
 			freezeAmount = quoteQty(req.Price, req.Quantity, cfg.QtyPrecision)
 		}
@@ -170,16 +185,28 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		if s.metrics != nil {
 			s.metrics.IncOrderRejected("INTERNAL_ERROR")
 		}
-		// 回滚冻结（实际应该调用解冻）
+		if errors.Is(err, repository.ErrDuplicateClientOrderID) && req.ClientOrderID != "" {
+			_ = s.rollbackFreeze(ctx, order, freezeAsset, freezeAmount, "duplicate_client_id")
+			existing, fetchErr := s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
+			if fetchErr == nil && existing != nil {
+				return &CreateOrderResponse{Order: existing}, nil
+			}
+		}
+		if rollbackErr := s.rollbackFreeze(ctx, order, freezeAsset, freezeAmount, "create_failed"); rollbackErr != nil {
+			return nil, fmt.Errorf("create order: %w (rollback: %v)", err, rollbackErr)
+		}
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
 	// 9. 发送到撮合队列
-	if err := s.sendToMatching(ctx, order); err != nil {
+	if err := s.sendToMatchingWithRetry(ctx, order); err != nil {
 		if s.metrics != nil {
 			s.metrics.IncOrderRejected("INTERNAL_ERROR")
 		}
-		// 订单已创建，撮合失败需要告警
+		s.rejectOrder(ctx, order.OrderID, "MATCHING_UNAVAILABLE")
+		if rollbackErr := s.rollbackFreeze(ctx, order, freezeAsset, freezeAmount, "matching_failed"); rollbackErr != nil {
+			return nil, fmt.Errorf("send to matching: %w (rollback: %v)", err, rollbackErr)
+		}
 		return nil, fmt.Errorf("send to matching: %w", err)
 	}
 
@@ -188,6 +215,57 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	}
 
 	return &CreateOrderResponse{Order: order}, nil
+}
+
+func (s *OrderService) sendToMatchingWithRetry(ctx context.Context, order *repository.Order) error {
+	const maxAttempts = 3
+	backoff := 50 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := s.sendToMatching(ctx, order); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
+	}
+	return lastErr
+}
+
+func (s *OrderService) rejectOrder(ctx context.Context, orderID int64, reason string) {
+	if repo, ok := s.repo.(orderRejector); ok {
+		_ = repo.RejectOrder(ctx, orderID, reason, time.Now().UnixMilli())
+	}
+}
+
+func (s *OrderService) rollbackFreeze(ctx context.Context, order *repository.Order, asset string, amount int64, reason string) error {
+	if s.clearing == nil {
+		return fmt.Errorf("clearing client not configured")
+	}
+	if amount <= 0 {
+		return nil
+	}
+	key := fmt.Sprintf("unfreeze:order:%d:%s", order.OrderID, reason)
+	resp, err := s.clearing.UnfreezeBalance(ctx, order.UserID, asset, amount, key)
+	if err != nil {
+		return err
+	}
+	if resp != nil && !resp.Success {
+		return fmt.Errorf("unfreeze failed: %s", resp.ErrorCode)
+	}
+	return nil
 }
 
 // CancelOrderRequest 撤单请求
@@ -334,6 +412,47 @@ func (s *OrderService) validateOrder(req *CreateOrderRequest, cfg *repository.Sy
 	}
 
 	return nil
+}
+
+func (s *OrderService) marketBuyQuoteAmount(ctx context.Context, symbol string, qty int64, cfg *repository.SymbolConfig) (int64, int64, error) {
+	if qty <= 0 {
+		return 0, 0, errors.New("invalid quantity")
+	}
+	if s.validator == nil {
+		return 0, 0, errors.New("no reference price")
+	}
+	refPrice, err := s.validator.ReferencePrice(symbol)
+	if err != nil || refPrice <= 0 {
+		return 0, 0, errors.New("no reference price")
+	}
+
+	limitRate := resolveLimitRate(cfg)
+	pricePrecision := normalizePrecision(cfg.PricePrecision)
+	priceDec := commondecimal.FromIntWithScale(refPrice, pricePrecision)
+	one := commondecimal.FromInt(1)
+	buffered := priceDec.Mul(one.Add(&limitRate))
+	bufferedPrice := buffered.ToInt(pricePrecision)
+	if bufferedPrice <= 0 {
+		return 0, 0, errors.New("invalid reference price")
+	}
+
+	quoteAmount := quoteQty(bufferedPrice, qty, cfg.QtyPrecision)
+	if quoteAmount <= 0 {
+		return 0, 0, errors.New("invalid quote amount")
+	}
+
+	return bufferedPrice, quoteAmount, nil
+}
+
+func resolveLimitRate(cfg *repository.SymbolConfig) commondecimal.Decimal {
+	rate := *commondecimal.MustNew("0.05")
+	if cfg == nil || cfg.PriceLimitRate == "" {
+		return rate
+	}
+	if v, err := commondecimal.New(cfg.PriceLimitRate); err == nil && v.Cmp(commondecimal.Zero) > 0 {
+		return *v
+	}
+	return rate
 }
 
 // OrderMessage 发送到撮合的消息

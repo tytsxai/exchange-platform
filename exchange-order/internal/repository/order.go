@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	ErrOrderNotFound       = errors.New("order not found")
+	ErrOrderNotFound          = errors.New("order not found")
 	ErrDuplicateClientOrderID = errors.New("duplicate client order id")
 )
 
@@ -199,6 +199,24 @@ func (r *OrderRepository) CancelOrder(ctx context.Context, orderID int64, reason
 	result, err := r.db.ExecContext(ctx, query, StatusCanceled, reason, updateTimeMs, orderID)
 	if err != nil {
 		return fmt.Errorf("cancel order: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrOrderNotFound
+	}
+	return nil
+}
+
+// RejectOrder 拒绝订单
+func (r *OrderRepository) RejectOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error {
+	query := `
+		UPDATE exchange_order.orders
+		SET status = $1, reject_reason = $2, update_time_ms = $3
+		WHERE order_id = $4 AND status IN (1, 2)
+	`
+	result, err := r.db.ExecContext(ctx, query, StatusRejected, reason, updateTimeMs, orderID)
+	if err != nil {
+		return fmt.Errorf("reject order: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {

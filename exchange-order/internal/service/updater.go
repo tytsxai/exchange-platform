@@ -39,6 +39,7 @@ type OrderUpdater struct {
 type OrderUpdaterStore interface {
 	UpdateOrderStatus(ctx context.Context, orderID int64, status int, executedQty, cumulativeQuoteQty, updateTimeMs int64) error
 	CancelOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error
+	RejectOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error
 	GetOrder(ctx context.Context, orderID int64) (*repository.Order, error)
 	GetSymbolConfig(ctx context.Context, symbol string) (*repository.SymbolConfig, error)
 	AddOrderCumulativeQuoteQty(ctx context.Context, orderID int64, delta int64, updateTimeMs int64) error
@@ -191,6 +192,8 @@ func (u *OrderUpdater) processMessage(ctx context.Context, msg redis.XMessage) e
 	switch event.Type {
 	case "ORDER_ACCEPTED":
 		return u.handleOrderAccepted(ctx, &event)
+	case "ORDER_REJECTED":
+		return u.handleOrderRejected(ctx, &event)
 	case "ORDER_PARTIALLY_FILLED":
 		return u.handleOrderPartiallyFilled(ctx, &event)
 	case "ORDER_FILLED":
@@ -236,6 +239,13 @@ type OrderCanceledData struct {
 	UserID    int64  `json:"UserID"`
 	LeavesQty int64  `json:"LeavesQty"`
 	Reason    string `json:"Reason"`
+}
+
+// OrderRejectedData 订单拒绝数据
+type OrderRejectedData struct {
+	OrderID int64  `json:"OrderID"`
+	UserID  int64  `json:"UserID"`
+	Reason  string `json:"Reason"`
 }
 
 // TradeData 成交数据
@@ -301,6 +311,9 @@ func (u *OrderUpdater) handleOrderFilled(ctx context.Context, event *MatchingEve
 	if u.metrics != nil {
 		u.metrics.DecActiveOrders()
 	}
+	if err := u.unfreezeForFilled(ctx, data.OrderID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -327,7 +340,7 @@ func (u *OrderUpdater) handleOrderCanceled(ctx context.Context, event *MatchingE
 		return err
 	}
 
-	amount, asset, err := u.calculateUnfreeze(order, cfg, data.LeavesQty)
+	amount, asset, err := u.calculateCancelUnfreeze(order, cfg, data.LeavesQty)
 	if err != nil {
 		return err
 	}
@@ -336,6 +349,46 @@ func (u *OrderUpdater) handleOrderCanceled(ctx context.Context, event *MatchingE
 	}
 
 	unfreezeKey := fmt.Sprintf("unfreeze:order:%d", order.OrderID)
+	resp, err := u.clearing.UnfreezeBalance(ctx, order.UserID, asset, amount, unfreezeKey)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("unfreeze failed: %s", resp.ErrorCode)
+	}
+
+	return nil
+}
+
+func (u *OrderUpdater) handleOrderRejected(ctx context.Context, event *MatchingEvent) error {
+	var data OrderRejectedData
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		return fmt.Errorf("unmarshal order rejected: %w", err)
+	}
+
+	if err := u.orderStore.RejectOrder(ctx, data.OrderID, data.Reason, time.Now().UnixMilli()); err != nil && err != repository.ErrOrderNotFound {
+		return err
+	}
+
+	order, err := u.orderStore.GetOrder(ctx, data.OrderID)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := u.orderStore.GetSymbolConfig(ctx, order.Symbol)
+	if err != nil {
+		return err
+	}
+
+	amount, asset, err := u.calculateRejectUnfreeze(order, cfg)
+	if err != nil {
+		return err
+	}
+	if amount <= 0 {
+		return nil
+	}
+
+	unfreezeKey := fmt.Sprintf("unfreeze:order:%d:reject", order.OrderID)
 	resp, err := u.clearing.UnfreezeBalance(ctx, order.UserID, asset, amount, unfreezeKey)
 	if err != nil {
 		return err
@@ -401,15 +454,7 @@ func (u *OrderUpdater) getCumulativeQuoteQty(ctx context.Context, orderID int64)
 	if err != nil {
 		return 0, err
 	}
-	if order.CumulativeQuoteQty == "" {
-		return 0, nil
-	}
-	// 数据库存储为 DECIMAL，需要先解析为 float 再转换
-	value, err := strconv.ParseInt(order.CumulativeQuoteQty, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("parse cumulative_quote_qty: %w", err)
-	}
-	return value, nil
+	return parseInt64(order.CumulativeQuoteQty, "cumulative_quote_qty")
 }
 
 func (u *OrderUpdater) calculateUnfreeze(order *repository.Order, cfg *repository.SymbolConfig, leavesQty int64) (int64, string, error) {
@@ -423,4 +468,99 @@ func (u *OrderUpdater) calculateUnfreeze(order *repository.Order, cfg *repositor
 	}
 
 	return quoteQty(price, leavesQty, cfg.QtyPrecision), cfg.QuoteAsset, nil
+}
+
+func (u *OrderUpdater) calculateCancelUnfreeze(order *repository.Order, cfg *repository.SymbolConfig, leavesQty int64) (int64, string, error) {
+	if order.Side == repository.SideSell {
+		return leavesQty, cfg.BaseAsset, nil
+	}
+	amount, err := u.buyUnfreezeAmount(order, cfg)
+	if err != nil {
+		return 0, "", err
+	}
+	return amount, cfg.QuoteAsset, nil
+}
+
+func (u *OrderUpdater) calculateRejectUnfreeze(order *repository.Order, cfg *repository.SymbolConfig) (int64, string, error) {
+	if order.Side == repository.SideSell {
+		qty, err := parseInt64(order.OrigQty, "orig_qty")
+		if err != nil {
+			return 0, "", err
+		}
+		return qty, cfg.BaseAsset, nil
+	}
+	amount, err := u.buyUnfreezeAmount(order, cfg)
+	if err != nil {
+		return 0, "", err
+	}
+	return amount, cfg.QuoteAsset, nil
+}
+
+func (u *OrderUpdater) buyUnfreezeAmount(order *repository.Order, cfg *repository.SymbolConfig) (int64, error) {
+	total, err := totalFrozenQuote(order, cfg)
+	if err != nil {
+		return 0, err
+	}
+	spent, err := parseInt64(order.CumulativeQuoteQty, "cumulative_quote_qty")
+	if err != nil {
+		return 0, err
+	}
+	amount := total - spent
+	if amount < 0 {
+		amount = 0
+	}
+	return amount, nil
+}
+
+func (u *OrderUpdater) unfreezeForFilled(ctx context.Context, orderID int64) error {
+	order, err := u.orderStore.GetOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order.Side != repository.SideBuy {
+		return nil
+	}
+	cfg, err := u.orderStore.GetSymbolConfig(ctx, order.Symbol)
+	if err != nil {
+		return err
+	}
+	amount, err := u.buyUnfreezeAmount(order, cfg)
+	if err != nil {
+		return err
+	}
+	if amount <= 0 {
+		return nil
+	}
+	unfreezeKey := fmt.Sprintf("unfreeze:order:%d:filled", order.OrderID)
+	resp, err := u.clearing.UnfreezeBalance(ctx, order.UserID, cfg.QuoteAsset, amount, unfreezeKey)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("unfreeze failed: %s", resp.ErrorCode)
+	}
+	return nil
+}
+
+func totalFrozenQuote(order *repository.Order, cfg *repository.SymbolConfig) (int64, error) {
+	price, err := parseInt64(order.Price, "price")
+	if err != nil {
+		return 0, err
+	}
+	qty, err := parseInt64(order.OrigQty, "orig_qty")
+	if err != nil {
+		return 0, err
+	}
+	return quoteQty(price, qty, cfg.QtyPrecision), nil
+}
+
+func parseInt64(value string, field string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", field, err)
+	}
+	return parsed, nil
 }

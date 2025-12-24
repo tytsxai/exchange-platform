@@ -981,7 +981,7 @@ func TestPriceCreateOrder_DisabledSkipsCheck(t *testing.T) {
 		},
 	}
 
-	matching := &mockMatchingClient{err: errors.New("should not be called")}
+	matching := &mockMatchingClient{price: int64(100 * 1e8)}
 	validator := NewPriceValidator(store, matching, PriceValidatorConfig{
 		Enabled:          false,
 		DefaultLimitRate: *commondecimal.MustNew("0.1"),
@@ -1029,7 +1029,7 @@ func TestPriceCreateOrder_MarketSkipsCheck(t *testing.T) {
 		},
 	}
 
-	matching := &mockMatchingClient{err: errors.New("should not be called")}
+	matching := &mockMatchingClient{price: int64(100 * 1e8)}
 	validator := NewPriceValidator(store, matching, PriceValidatorConfig{
 		Enabled:          true,
 		DefaultLimitRate: *commondecimal.MustNew("0.1"),
@@ -1056,8 +1056,8 @@ func TestPriceCreateOrder_MarketSkipsCheck(t *testing.T) {
 	if !store.created {
 		t.Fatal("expected order created when market order")
 	}
-	if matching.calls != 0 {
-		t.Fatalf("expected matching not called for market order, got %d", matching.calls)
+	if matching.calls != 1 {
+		t.Fatalf("expected matching called once for market order, got %d", matching.calls)
 	}
 }
 

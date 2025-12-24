@@ -385,7 +385,6 @@ func (e *Engine) emit(eventType EventType, data interface{}) {
 
 	select {
 	case e.eventCh <- event:
-	default:
-		// 事件队列满，丢弃（生产环境应该告警）
+	case <-e.ctx.Done():
 	}
 }
