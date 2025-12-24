@@ -12,12 +12,12 @@ const (
 	epoch int64 = 1704067200000
 
 	// 位数分配
-	workerIDBits     = 10 // 机器 ID 位数
-	sequenceBits     = 12 // 序列号位数
+	workerIDBits = 10 // 机器 ID 位数
+	sequenceBits = 12 // 序列号位数
 
 	// 最大值
-	maxWorkerID   = -1 ^ (-1 << workerIDBits) // 1023
-	maxSequence   = -1 ^ (-1 << sequenceBits) // 4095
+	maxWorkerID = -1 ^ (-1 << workerIDBits) // 1023
+	maxSequence = -1 ^ (-1 << sequenceBits) // 4095
 
 	// 位移
 	workerIDShift  = sequenceBits
@@ -31,10 +31,10 @@ var (
 
 // Generator 雪花 ID 生成器
 type Generator struct {
-	mu        sync.Mutex
-	workerID  int64
-	sequence  int64
-	lastTime  int64
+	mu       sync.Mutex
+	workerID int64
+	sequence int64
+	lastTime int64
 }
 
 // New 创建生成器
@@ -55,16 +55,16 @@ func (g *Generator) Generate() (int64, error) {
 	now := time.Now().UnixMilli()
 
 	if now < g.lastTime {
-		return 0, ErrClockMovedBack
+		// 避免因时钟回拨导致服务崩溃：使用逻辑时间保证单调递增与唯一性
+		now = g.lastTime
 	}
 
 	if now == g.lastTime {
 		g.sequence = (g.sequence + 1) & maxSequence
 		if g.sequence == 0 {
-			// 序列号用尽，等待下一毫秒
-			for now <= g.lastTime {
-				now = time.Now().UnixMilli()
-			}
+			// 序列号用尽：推进逻辑时间，避免依赖真实时间前进（防止时钟回拨导致死等）
+			g.lastTime++
+			now = g.lastTime
 		}
 	} else {
 		g.sequence = 0

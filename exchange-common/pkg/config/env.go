@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+var insecureDevSecrets = map[string]struct{}{
+	"dev-internal-token-change-me":           {},
+	"dev-admin-token-change-me":              {},
+	"dev-auth-token-secret-32-bytes-minimum": {},
+}
+
+// IsInsecureDevSecret returns true when the value matches a known dev placeholder secret.
+// It is intended to prevent accidental production deployments with default credentials.
+func IsInsecureDevSecret(value string) bool {
+	_, ok := insecureDevSecrets[value]
+	return ok
+}
+
 // GetEnv 获取环境变量，如果不存在则返回默认值
 func GetEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {

@@ -153,7 +153,8 @@ func (d *Decimal) Mul(other *Decimal) *Decimal {
 // Div 除法（指定精度，向下截断）
 func (d *Decimal) Div(other *Decimal, scale int) *Decimal {
 	if other.value.Sign() == 0 {
-		panic("division by zero")
+		// 避免生产环境 panic：返回 0（指定精度），由调用方自行处理业务含义
+		return &Decimal{value: big.NewInt(0), scale: scale}
 	}
 
 	// 扩展被除数精度
