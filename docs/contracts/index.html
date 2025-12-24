@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contract Docs</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="hero">
+        <span class="badge">Versioned Contracts</span>
+        <h1>Contract Documentation</h1>
+        <p>
+          Browse the current and historical REST/WS contracts with packaged OpenAPI and
+          Proto sources. Each version keeps its own documentation, changelog, and error
+          code reference.
+        </p>
+      </div>
+    </header>
+    <main>
+      <section>
+        <h2 class="section-title">Current Release</h2>
+        <div class="card">
+          <h3>v1.0.0</h3>
+          <p>Status: stable · Released: 2025-01-01</p>
+          <div class="links">
+            <a class="link-pill" href="/contracts/versions/v1.0.0/openapi/">OpenAPI bundle</a>
+            <a class="link-pill" href="/contracts/versions/v1.0.0/proto/">Proto bundle</a>
+            <a class="link-pill" href="/contracts/versions/v1.0.0/errors.md">Error codes</a>
+          </div>
+        </div>
+      </section>
+      <section>
+        <h2 class="section-title">Quick Links</h2>
+        <div class="card-grid">
+          <div class="card">
+            <h3>Release Notes</h3>
+            <p>Track release narratives and compatibility guidance for every version.</p>
+          </div>
+          <div class="card">
+            <h3>Compatibility</h3>
+            <p>Breaking-change checks run in CI before a version is published.</p>
+          </div>
+          <div class="card">
+            <h3>SDKs & Samples</h3>
+            <p>SDK generation stays aligned with the published contract packages.</p>
+          </div>
+        </div>
+      </section>
+      <section>
+        <h2 class="section-title">Version History</h2>
+        <table class="version-table">
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Released</th>
+              <th>Status</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><a href="/contracts/versions/v1.0.0/">v1.0.0</a></td>
+              <td>2025-01-01</td>
+              <td>stable</td>
+              <td>Initial contract release.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <footer>
+      Generated from the contract version manifest. Documentation links resolve to the
+      published contract bundles under /contracts/versions/.
+    </footer>
+  </body>
+</html>

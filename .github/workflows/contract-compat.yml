@@ -1,0 +1,21 @@
+name: Contract Compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'exchange-common/proto/**'
+      - 'exchange-*/api/openapi.yaml'
+      - 'contracts/**'
+      - 'exchange-common/scripts/check-contract-compat.sh'
+      - '.github/workflows/contract-compat.yml'
+  workflow_dispatch:
+
+jobs:
+  contract-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run compatibility check
+        run: bash exchange-common/scripts/check-contract-compat.sh

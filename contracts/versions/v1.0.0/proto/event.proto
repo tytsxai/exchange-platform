@@ -1,0 +1,154 @@
+syntax = "proto3";
+
+package exchange.event.v1;
+
+option go_package = "github.com/exchange/common/gen/event/v1;eventv1";
+
+import "order.proto";
+import "account.proto";
+
+// 事件类型
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+
+  // 订单事件
+  EVENT_TYPE_ORDER_ACCEPTED = 1;
+  EVENT_TYPE_ORDER_REJECTED = 2;
+  EVENT_TYPE_ORDER_CANCELED = 3;
+  EVENT_TYPE_ORDER_EXPIRED = 4;
+  EVENT_TYPE_ORDER_FILLED = 5;
+  EVENT_TYPE_ORDER_PARTIALLY_FILLED = 6;
+
+  // 成交事件
+  EVENT_TYPE_TRADE_CREATED = 10;
+
+  // 行情事件
+  EVENT_TYPE_BOOK_SNAPSHOT = 20;
+  EVENT_TYPE_BOOK_DELTA = 21;
+
+  // 账户事件
+  EVENT_TYPE_BALANCE_CHANGED = 30;
+}
+
+// 统一事件封装
+message Event {
+  string event_id = 1;
+  EventType type = 2;
+  string symbol = 3;
+  int64 seq = 4;           // 序列号（按 symbol 递增）
+  int64 timestamp_ms = 5;
+
+  oneof payload {
+    OrderEvent order_event = 10;
+    TradeEvent trade_event = 11;
+    BookEvent book_event = 12;
+    BalanceEvent balance_event = 13;
+  }
+}
+
+// 订单事件
+message OrderEvent {
+  exchange.order.v1.Order order = 1;
+  string reject_reason = 2;
+  string cancel_reason = 3;
+}
+
+// 成交事件
+message TradeEvent {
+  string trade_id = 1;
+  string symbol = 2;
+
+  string maker_order_id = 3;
+  string taker_order_id = 4;
+  string maker_user_id = 5;
+  string taker_user_id = 6;
+
+  string price = 7;
+  string qty = 8;
+  string quote_qty = 9;
+
+  exchange.order.v1.Side taker_side = 10;
+
+  int64 timestamp_ms = 11;
+}
+
+// 盘口事件
+message BookEvent {
+  string symbol = 1;
+  bool is_snapshot = 2;
+  int64 seq = 3;
+  int64 prev_seq = 4;  // 增量时用于检测 gap
+
+  repeated PriceLevelDelta bids = 5;
+  repeated PriceLevelDelta asks = 6;
+
+  int64 timestamp_ms = 7;
+}
+
+// 盘口档位变动
+message PriceLevelDelta {
+  string price = 1;
+  string qty = 2;  // 0 表示删除该档位
+}
+
+// 余额变动事件
+message BalanceEvent {
+  string user_id = 1;
+  string asset = 2;
+  string available = 3;
+  string frozen = 4;
+  exchange.account.v1.LedgerReason reason = 5;
+  string ref_id = 6;
+  int64 timestamp_ms = 7;
+}
+
+// ========== WebSocket 消息封装 ==========
+
+// WS 操作类型
+enum WsOp {
+  WS_OP_UNSPECIFIED = 0;
+  WS_OP_SUBSCRIBE = 1;
+  WS_OP_UNSUBSCRIBE = 2;
+  WS_OP_AUTH = 3;
+  WS_OP_PING = 4;
+  WS_OP_PONG = 5;
+}
+
+// WS 请求
+message WsRequest {
+  WsOp op = 1;
+  string channel = 2;
+
+  // 鉴权字段
+  string api_key = 3;
+  int64 timestamp_ms = 4;
+  string nonce = 5;
+  string signature = 6;
+}
+
+// WS 响应/推送
+message WsMessage {
+  string channel = 1;
+  int64 seq = 2;
+  int64 timestamp_ms = 3;
+
+  oneof data {
+    Event event = 10;
+    WsError error = 11;
+    WsAck ack = 12;
+  }
+}
+
+// WS 错误
+message WsError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
+
+// WS 确认
+message WsAck {
+  WsOp op = 1;
+  string channel = 2;
+  bool success = 3;
+}

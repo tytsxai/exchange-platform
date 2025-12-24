@@ -1,0 +1,11 @@
+{
+  "current": "v1.0.0",
+  "history": [
+    {
+      "version": "v1.0.0",
+      "released_at": "2025-01-01",
+      "status": "stable",
+      "notes": "Initial contract release."
+    }
+  ]
+}
