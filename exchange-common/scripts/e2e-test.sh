@@ -23,11 +23,11 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 curl_internal() {
-    curl -sS -H "X-Internal-Token: ${INTERNAL_TOKEN}" "$@"
+    curl -sS -H "X-Internal-Token: ${INTERNAL_TOKEN}" "$@" || return 1
 }
 
 curl_wallet() {
-    curl -sS -H "Authorization: Bearer ${USER_BEARER_TOKEN}" "$@"
+    curl -sS -H "Authorization: Bearer ${USER_BEARER_TOKEN}" "$@" || return 1
 }
 
 sign_request() {
@@ -103,7 +103,7 @@ PY
       -H "X-API-TIMESTAMP: ${ts}" \
       -H "X-API-NONCE: ${nonce}" \
       -H "X-API-SIGNATURE: ${sig}" \
-      "${@:3}"
+      "${@:3}" || return 1
 }
 
 SYMBOL_PRECISION_SYMBOL=""
@@ -215,7 +215,7 @@ credit_balance() {
     local key="credit_${user_id}_${asset}_$(date +%s)_$$"
     curl_internal -X POST "${CLEARING_URL}/internal/credit" \
         -H "Content-Type: application/json" \
-        -d "{\"IdempotencyKey\":\"${key}\",\"UserID\":${user_id},\"Asset\":\"${asset}\",\"Amount\":${amount},\"RefType\":\"E2E\",\"RefID\":\"${key}\"}" >/dev/null
+        -d "{\"IdempotencyKey\":\"${key}\",\"UserID\":${user_id},\"Asset\":\"${asset}\",\"Amount\":${amount},\"RefType\":\"E2E\",\"RefID\":\"${key}\"}" >/dev/null || return 1
 }
 
 # ========== 测试用例 ==========
