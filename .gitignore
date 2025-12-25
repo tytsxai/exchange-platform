@@ -16,3 +16,5 @@
 
 # Production env (secrets)
 deploy/prod/prod.env
+deploy/prod/monitoring.env
+deploy/prod/metrics.token

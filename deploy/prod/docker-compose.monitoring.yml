@@ -1,0 +1,45 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: exchange-prod-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      # Optional: if you enable METRICS_TOKEN on services, mount a token file and
+      # use `bearer_token_file` in prometheus.yml.
+      # - ./metrics.token:/etc/prometheus/metrics.token:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    # Keep it internal by default; expose only if you know what you're doing.
+    # ports:
+    #   - "9090:9090"
+    restart: unless-stopped
+    networks: [exchange-net]
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: exchange-prod-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in deploy/prod/monitoring.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    # Keep it internal by default; expose only if you know what you're doing.
+    # ports:
+    #   - "3000:3000"
+    restart: unless-stopped
+    networks: [exchange-net]
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  exchange-net:
+    external: true
+    name: exchange-prod-net

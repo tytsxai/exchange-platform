@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldfl
 
 FROM alpine:3.19
 
-RUN apk add --no-cache ca-certificates tzdata && adduser -D -H -u 10001 app
+RUN apk add --no-cache ca-certificates tzdata curl && adduser -D -H -u 10001 app
 
 USER app
 WORKDIR /app

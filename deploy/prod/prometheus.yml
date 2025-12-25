@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# Production-oriented scrape example:
+# - Targets use compose service DNS names on `exchange-prod-net`.
+# - If you set `METRICS_TOKEN` on services, mount a token file and enable `bearer_token_file` below.
+scrape_configs:
+  - job_name: "exchange-gateway"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["gateway:8080"]
+
+  - job_name: "exchange-order"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["order:8081"]
+
+  - job_name: "exchange-matching"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["matching:8082"]
+
+  - job_name: "exchange-clearing"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["clearing:8083"]
+
+  - job_name: "exchange-marketdata"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["marketdata:8084"]
+
+  - job_name: "exchange-user"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["user:8085"]
+
+  - job_name: "exchange-wallet"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["wallet:8086"]
+
+  - job_name: "exchange-admin"
+    metrics_path: /metrics
+    # bearer_token_file: /etc/prometheus/metrics.token
+    static_configs:
+      - targets: ["admin:8087"]

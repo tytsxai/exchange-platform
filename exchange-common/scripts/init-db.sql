@@ -8,8 +8,15 @@ CREATE SCHEMA IF NOT EXISTS exchange_market;
 CREATE SCHEMA IF NOT EXISTS exchange_wallet;
 CREATE SCHEMA IF NOT EXISTS exchange_admin;
 
--- 启用扩展
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- 启用扩展（可选）
+-- 注意：托管 Postgres 可能禁止普通用户创建 extension；这里忽略权限不足错误，避免阻塞初始化。
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'Skipping extension uuid-ossp (insufficient privilege)';
+END $$;
 
 -- ========== exchange_user schema ==========
 

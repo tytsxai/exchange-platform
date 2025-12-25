@@ -33,6 +33,42 @@
 - 所有服务间 HTTP 调用必须设置超时。
 - 调用匹配/清算等内部接口必须携带 `X-Internal-Token`，否则某些路径在生产上会“默默失效”。
 
+### 1.4 Streams 消费循环的“活性”必须进入 /ready
+
+只靠 `Redis/Pg Ping` 的 readiness 不够：消费者后台 goroutine 如果卡死/退出，服务可能仍对外返回 `200`，但异步链路已中断（订单不更新/撮合不消费/行情不推进）。
+
+落地方式（已实现）：
+- `matching/order/clearing/marketdata` 的 `/ready` 会额外检查 **Stream 消费循环是否在最近 45s 内 tick**；否则返回 `degraded`/`503`，触发容器编排的重启与告警。
+
+### 1.5 数据库 schema 初始化/迁移必须纳入发布流程
+
+本项目服务启动不会自动建表；如果生产库未初始化，服务会在运行期报错（缺 schema/缺表），并且可能产生“部分服务可用、部分链路不可用”的灰色状态。
+
+落地方式（必须执行一次）：
+- 设置 `DB_URL=postgres://...` 后运行：`bash exchange-common/scripts/migrate.sh`
+- 或使用临时容器执行（无 `psql` 环境）：见 `docs/ops/runbook.md`
+
+### 1.6 反代/负载均衡下的真实客户端 IP（X-Forwarded-For）必须“可信”
+
+风险：如果服务直接暴露在公网且无可信反代，客户端可以伪造 `X-Forwarded-For`，导致：
+- 基于 IP 的限流/封禁失效，甚至造成内存型 DoS（大量伪造 IP 产生大量 key）
+- 审计/日志里的“客户端 IP”被污染，影响追查
+
+落地方式（已实现）：
+- 网关只在**上游为 loopback 或 RFC1918 私网**时才信任 `X-Forwarded-For`；否则忽略并使用 `RemoteAddr`。
+- 推荐生产网关前置反代/LB，并确保反代会覆盖/清理客户端传入的 XFF。
+
+### 1.7 Public WebSocket 必须防滥用（Origin + 订阅上限 + 频道校验）
+
+风险：如果 `marketdata` 的 public WS（8094）对公网暴露且不做限制，容易出现：
+- 任意网站跨站建立 WS（浏览器会带 Origin），造成资源滥用
+- 恶意订阅大量随机频道，导致服务内存持续增长
+
+落地方式（已实现）：
+- `marketdata` WS 默认只允许 `Origin` 在 `MARKETDATA_WS_ALLOW_ORIGINS` 白名单内（非 dev 禁止 `*`）；无 `Origin` 的非浏览器客户端不受影响
+- 单连接订阅数上限：`MARKETDATA_WS_MAX_SUBSCRIPTIONS`（默认 50）
+- 只允许订阅 `market.<SYMBOL>.(book|trades|ticker)`，并校验 SYMBOL（A-Z/0-9，长度<=32）
+
 ## 2. P1（不修会导致长期不稳定/难运维）
 
 ### 2.1 Redis Streams 消费稳定性
@@ -55,6 +91,7 @@
 - CI：`go test ./...` + `go vet ./...` + `gofmt -w` 作为合并门槛。
 - Runbook：部署、扩容、故障排查、备份恢复、告警处理步骤。
 - 安全基线：最小权限原则、密钥轮换流程、日志脱敏要求。
+- 版本与回滚：生产建议使用 `APP_VERSION` 镜像 tag（见 `deploy/prod/prod.env.example`），确保回滚是“改 tag → 重启”。
 
 ## 4. 上线前建议的最小流程（可执行）
 
