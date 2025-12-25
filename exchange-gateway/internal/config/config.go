@@ -53,8 +53,8 @@ func Load() *Config {
 	}
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-gateway"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8080),
-		WSPort:      envconfig.GetEnvInt("WS_PORT", 8090),
+		HTTPPort:    envconfig.GetEnvInt("GATEWAY_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8080)),
+		WSPort:      envconfig.GetEnvInt("GATEWAY_WS_PORT", envconfig.GetEnvInt("WS_PORT", 8090)),
 		AppEnv:      appEnv,
 
 		OrderServiceURL:      envconfig.GetEnv("ORDER_SERVICE_URL", "http://localhost:8081"),

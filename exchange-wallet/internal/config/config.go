@@ -64,7 +64,7 @@ func Load() *Config {
 	appEnv := strings.ToLower(envconfig.GetEnv("APP_ENV", "dev"))
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-wallet"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8086),
+		HTTPPort:    envconfig.GetEnvInt("WALLET_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8086)),
 		AppEnv:      appEnv,
 
 		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),

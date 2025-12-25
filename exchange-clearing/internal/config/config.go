@@ -55,8 +55,8 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-clearing"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8083),
-		GRPCPort:    envconfig.GetEnvInt("GRPC_PORT", 9083),
+		HTTPPort:    envconfig.GetEnvInt("CLEARING_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8083)),
+		GRPCPort:    envconfig.GetEnvInt("CLEARING_GRPC_PORT", envconfig.GetEnvInt("GRPC_PORT", 9083)),
 		AppEnv:      strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")),
 
 		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),

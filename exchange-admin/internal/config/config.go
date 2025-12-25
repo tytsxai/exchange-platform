@@ -50,7 +50,7 @@ func Load() *Config {
 	appEnv := strings.ToLower(envconfig.GetEnv("APP_ENV", "dev"))
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-admin"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8087),
+		HTTPPort:    envconfig.GetEnvInt("ADMIN_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8087)),
 		AppEnv:      appEnv,
 
 		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),

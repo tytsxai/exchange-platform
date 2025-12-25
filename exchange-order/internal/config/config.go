@@ -69,7 +69,7 @@ func Load() *Config {
 	defaultLimitRate := *commondecimal.MustNew("0.05")
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-order"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8081),
+		HTTPPort:    envconfig.GetEnvInt("ORDER_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8081)),
 		AppEnv:      strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")),
 
 		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),

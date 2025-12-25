@@ -41,8 +41,8 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-matching"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8082),
-		MetricsPort: envconfig.GetEnvInt("METRICS_PORT", 9082),
+		HTTPPort:    envconfig.GetEnvInt("MATCHING_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8082)),
+		MetricsPort: envconfig.GetEnvInt("MATCHING_METRICS_PORT", envconfig.GetEnvInt("METRICS_PORT", 9082)),
 		AppEnv:      strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")),
 
 		RedisAddr:     envconfig.GetEnv("REDIS_ADDR", "localhost:6380"), // 默认使用6380避免与本地Redis冲突

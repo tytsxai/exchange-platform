@@ -51,7 +51,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: envconfig.GetEnv("SERVICE_NAME", "exchange-user"),
-		HTTPPort:    envconfig.GetEnvInt("HTTP_PORT", 8085),
+		HTTPPort:    envconfig.GetEnvInt("USER_HTTP_PORT", envconfig.GetEnvInt("HTTP_PORT", 8085)),
 		AppEnv:      strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")),
 
 		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),
