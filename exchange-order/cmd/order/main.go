@@ -119,6 +119,7 @@ func main() {
 			checkRedis(r.Context(), redisClient),
 			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
 			checkHTTP(r.Context(), "clearing", cfg.ClearingBaseURL, healthHTTPClient),
+			checkConsumeLoop(updater),
 		}
 		writeHealth(w, deps)
 	})
@@ -128,6 +129,7 @@ func main() {
 			checkRedis(r.Context(), redisClient),
 			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
 			checkHTTP(r.Context(), "clearing", cfg.ClearingBaseURL, healthHTTPClient),
+			checkConsumeLoop(updater),
 		}
 		writeHealth(w, deps)
 	})
@@ -347,6 +349,20 @@ func checkHTTP(ctx context.Context, name, baseURL string, client *http.Client) d
 		Name:    name,
 		Status:  status,
 		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkConsumeLoop(updater *service.OrderUpdater) dependencyStatus {
+	now := time.Now()
+	ok, age, _ := updater.ConsumeLoopHealthy(now, 45*time.Second)
+	status := "ok"
+	if !ok {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "eventStreamConsumer",
+		Status:  status,
+		Latency: age.Milliseconds(),
 	}
 }
 

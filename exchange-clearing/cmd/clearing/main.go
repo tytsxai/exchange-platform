@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/exchange/clearing/internal/config"
 	"github.com/exchange/clearing/internal/metrics"
 	"github.com/exchange/clearing/internal/service"
+	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
@@ -99,7 +101,20 @@ func main() {
 	svc := service.NewClearingService(db, idGen)
 
 	// 启动事件消费
-	go consumeEvents(ctx, redisClient, svc, cfg)
+	var eventLoop health.LoopMonitor
+	eventLoop.Tick()
+	if err := ensureConsumerGroup(ctx, redisClient, cfg.EventStream, cfg.ConsumerGroup); err != nil {
+		log.Fatalf("Failed to create consumer group: %v", err)
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				eventLoop.SetError(fmt.Errorf("panic: %v", r))
+				log.Printf("consumeEvents panic: %v\n%s", r, string(debug.Stack()))
+			}
+		}()
+		consumeEvents(ctx, redisClient, svc, cfg, &eventLoop)
+	}()
 
 	// HTTP 服务
 	metricsCollector := metrics.NewDefault()
@@ -130,6 +145,7 @@ func main() {
 			checkPostgres(r.Context(), db),
 			checkRedis(r.Context(), redisClient),
 			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
+			checkConsumeLoop(&eventLoop),
 		}
 		writeHealth(w, deps)
 	})
@@ -138,6 +154,7 @@ func main() {
 			checkPostgres(r.Context(), db),
 			checkRedis(r.Context(), redisClient),
 			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
+			checkConsumeLoop(&eventLoop),
 		}
 		writeHealth(w, deps)
 	})
@@ -407,28 +424,53 @@ type TradeData struct {
 	TakerSide    int   `json:"TakerSide"` // 1=BUY, 2=SELL
 }
 
-func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config) {
-	// 创建消费者组
-	err := redisClient.XGroupCreateMkStream(ctx, cfg.EventStream, cfg.ConsumerGroup, "0").Err()
+func ensureConsumerGroup(ctx context.Context, redisClient *redis.Client, stream, group string) error {
+	err := redisClient.XGroupCreateMkStream(ctx, stream, group, "0").Err()
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-		log.Printf("Failed to create consumer group: %v", err)
+		return err
 	}
+	return nil
+}
 
+func checkConsumeLoop(loop *health.LoopMonitor) dependencyStatus {
+	now := time.Now()
+	ok, age, _ := loop.Healthy(now, 45*time.Second)
+	status := "ok"
+	if !ok {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "eventStreamConsumer",
+		Status:  status,
+		Latency: age.Milliseconds(),
+	}
+}
+
+func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, loop *health.LoopMonitor) {
 	log.Printf("Consuming events from %s", cfg.EventStream)
 
 	pendingTicker := time.NewTicker(30 * time.Second)
 	defer pendingTicker.Stop()
 
 	if err := processPendingEvents(ctx, redisClient, svc, cfg); err != nil {
+		if loop != nil {
+			loop.SetError(err)
+		}
 		log.Printf("Process pending error: %v", err)
 	}
 
 	for {
+		if loop != nil {
+			loop.Tick()
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-pendingTicker.C:
 			if err := processPendingEvents(ctx, redisClient, svc, cfg); err != nil {
+				if loop != nil {
+					loop.SetError(err)
+				}
 				log.Printf("Process pending error: %v", err)
 			}
 			continue
@@ -440,12 +482,15 @@ func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.
 			Consumer: cfg.ConsumerName,
 			Streams:  []string{cfg.EventStream, ">"},
 			Count:    100,
-			Block:    1000,
+			Block:    1000 * time.Millisecond,
 		}).Result()
 
 		if err != nil {
 			if err == redis.Nil {
 				continue
+			}
+			if loop != nil {
+				loop.SetError(err)
 			}
 			log.Printf("Read stream error: %v", err)
 			continue

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/common/pkg/logger"
 	"github.com/exchange/gateway/internal/config"
 	"github.com/exchange/gateway/internal/middleware"
@@ -70,6 +72,16 @@ func main() {
 	}
 	l.Info("Connected to Redis")
 
+	// Private events (pub/sub) consumer (powers private websocket push).
+	hub := ws.NewHub()
+	consumer := ws.NewConsumer(redisClient, hub, cfg.PrivateUserEventChannel)
+	var privateEventLoop health.LoopMonitor
+	go func() {
+		if err := consumer.RunWithMonitor(ctx, &privateEventLoop); err != nil && err != context.Canceled {
+			l.Error(fmt.Sprintf("private consumer stopped: %v", err))
+		}
+	}()
+
 	// 创建路由
 	mux := http.NewServeMux()
 	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
@@ -78,6 +90,7 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
+			checkConsumeLoop(&privateEventLoop, "privateEventsConsumer"),
 			checkHTTP(r.Context(), "order", cfg.OrderServiceURL, healthHTTPClient),
 			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
 			checkHTTP(r.Context(), "user", cfg.UserServiceURL, healthHTTPClient),
@@ -99,6 +112,7 @@ func main() {
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
+			checkConsumeLoop(&privateEventLoop, "privateEventsConsumer"),
 			checkHTTP(r.Context(), "order", cfg.OrderServiceURL, healthHTTPClient),
 			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
 			checkHTTP(r.Context(), "user", cfg.UserServiceURL, healthHTTPClient),
@@ -230,8 +244,11 @@ func main() {
 				return 0, 0, fmt.Errorf("marshal payload: %w", err)
 			}
 
+			verifyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+
 			verifyURL := strings.TrimRight(cfg.UserServiceURL, "/") + "/internal/verify-signature"
-			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, verifyURL, bytes.NewReader(body))
+			httpReq, err := http.NewRequestWithContext(verifyCtx, http.MethodPost, verifyURL, bytes.NewReader(body))
 			if err != nil {
 				return 0, 0, fmt.Errorf("create validation request: %w", err)
 			}
@@ -268,13 +285,6 @@ func main() {
 	}
 
 	// Private WebSocket
-	hub := ws.NewHub()
-	consumer := ws.NewConsumer(redisClient, hub, cfg.PrivateUserEventChannel)
-	go func() {
-		if err := consumer.Run(ctx); err != nil && err != context.Canceled {
-			l.Error(fmt.Sprintf("private consumer stopped: %v", err))
-		}
-	}()
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -404,6 +414,23 @@ func checkHTTP(ctx context.Context, name, baseURL string, client *http.Client) d
 	}
 }
 
+func checkConsumeLoop(loop *health.LoopMonitor, name string) dependencyStatus {
+	now := time.Now()
+	ok, age, _ := loop.Healthy(now, 45*time.Second)
+	status := "ok"
+	if !ok {
+		status = "down"
+	}
+	if name == "" {
+		name = "consumerLoop"
+	}
+	return dependencyStatus{
+		Name:    name,
+		Status:  status,
+		Latency: age.Milliseconds(),
+	}
+}
+
 func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 	status := "ok"
 	for _, dep := range deps {
@@ -454,7 +481,18 @@ func proxyHandler(targetURL string, internalToken string) http.HandlerFunc {
 		proxyReq.Header.Del("X-User-Id")
 		proxyReq.Header.Del("X-User-ID")
 
-		proxyReq.Header.Set("X-Forwarded-For", r.RemoteAddr)
+		// Preserve/append X-Forwarded-For chain for downstream logging/auditing.
+		// Security: only trust the incoming XFF chain when our immediate peer is a trusted proxy.
+		clientIP := r.RemoteAddr
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+			clientIP = host
+		}
+		xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+		if xff == "" || !isLikelyTrustedProxyIP(clientIP) {
+			proxyReq.Header.Set("X-Forwarded-For", clientIP)
+		} else {
+			proxyReq.Header.Set("X-Forwarded-For", xff+", "+clientIP)
+		}
 		proxyReq.Header.Set("X-Request-ID", r.Header.Get("X-Request-ID"))
 
 		// 内部服务鉴权：统一携带 INTERNAL_TOKEN
@@ -597,4 +635,12 @@ func metricsAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return false
+}
+
+func isLikelyTrustedProxyIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }

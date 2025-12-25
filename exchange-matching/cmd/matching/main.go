@@ -78,12 +78,14 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
+			checkConsumeLoop(h),
 		}
 		writeHealth(w, deps)
 	})
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
+			checkConsumeLoop(h),
 		}
 		writeHealth(w, deps)
 	})
@@ -174,6 +176,20 @@ func checkRedis(ctx context.Context, client *redis.Client) dependencyStatus {
 		Name:    "redis",
 		Status:  status,
 		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkConsumeLoop(h *handler.Handler) dependencyStatus {
+	now := time.Now()
+	ok, age, _ := h.ConsumeLoopHealthy(now, 45*time.Second)
+	status := "ok"
+	if !ok {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "orderStreamConsumer",
+		Status:  status,
+		Latency: age.Milliseconds(),
 	}
 }
 

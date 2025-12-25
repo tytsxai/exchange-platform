@@ -4,10 +4,13 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/exchange/common/pkg/health"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -34,6 +37,16 @@ func NewConsumer(client *redis.Client, hub *Hub, channel string) *Consumer {
 
 // Run starts the pub/sub loop.
 func (c *Consumer) Run(ctx context.Context) error {
+	return c.run(ctx, nil)
+}
+
+// RunWithMonitor starts the pub/sub loop and updates monitor periodically.
+// It is used for production readiness checks (consumer loop liveness).
+func (c *Consumer) RunWithMonitor(ctx context.Context, monitor *health.LoopMonitor) error {
+	return c.run(ctx, monitor)
+}
+
+func (c *Consumer) run(ctx context.Context, monitor *health.LoopMonitor) error {
 	pattern, hasUserID := toUserPattern(c.channelTemplate)
 	var pubsub *redis.PubSub
 	if hasUserID {
@@ -44,13 +57,33 @@ func (c *Consumer) Run(ctx context.Context) error {
 	defer pubsub.Close()
 
 	ch := pubsub.Channel()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	if monitor != nil {
+		monitor.Tick()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			if monitor != nil {
+				monitor.SetError(ctx.Err())
+			}
 			return ctx.Err()
+		case <-ticker.C:
+			if monitor != nil {
+				monitor.Tick()
+			}
 		case msg, ok := <-ch:
 			if !ok {
+				if monitor != nil {
+					monitor.SetError(errors.New("pubsub channel closed"))
+				}
 				return nil
+			}
+			if monitor != nil {
+				monitor.Tick()
 			}
 			c.handleMessage(msg.Channel, msg.Payload)
 		}

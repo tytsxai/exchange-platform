@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strconv"
 	"time"
 
+	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/order/internal/client"
 	"github.com/exchange/order/internal/metrics"
 	"github.com/exchange/order/internal/repository"
@@ -34,6 +36,8 @@ type OrderUpdater struct {
 	eventStream string
 	group       string
 	consumer    string
+
+	loop health.LoopMonitor
 }
 
 const (
@@ -81,26 +85,42 @@ func (u *OrderUpdater) Start(ctx context.Context) error {
 		return fmt.Errorf("create consumer group: %w", err)
 	}
 
+	u.loop.Tick()
 	go u.consumeLoop(ctx)
 	return nil
 }
 
+func (u *OrderUpdater) ConsumeLoopHealthy(now time.Time, maxAge time.Duration) (bool, time.Duration, string) {
+	return u.loop.Healthy(now, maxAge)
+}
+
 func (u *OrderUpdater) consumeLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			u.loop.SetError(fmt.Errorf("panic: %v", r))
+			log.Printf("consumeLoop panic: %v\n%s", r, string(debug.Stack()))
+		}
+	}()
+
 	log.Printf("Order updater consuming %s", u.eventStream)
 
 	pendingTicker := time.NewTicker(30 * time.Second)
 	defer pendingTicker.Stop()
 
 	if err := u.processPending(ctx); err != nil {
+		u.loop.SetError(err)
 		log.Printf("process pending error: %v", err)
 	}
 
 	for {
+		u.loop.Tick()
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-pendingTicker.C:
 			if err := u.processPending(ctx); err != nil {
+				u.loop.SetError(err)
 				log.Printf("process pending error: %v", err)
 			}
 			continue
@@ -108,6 +128,7 @@ func (u *OrderUpdater) consumeLoop(ctx context.Context) {
 		}
 
 		if err := u.consumeOnce(ctx); err != nil {
+			u.loop.SetError(err)
 			log.Printf("read stream error: %v", err)
 		}
 	}

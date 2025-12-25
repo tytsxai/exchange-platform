@@ -63,7 +63,10 @@ func main() {
 	}
 
 	// 创建 WebSocket 服务器
-	wsServer := ws.NewServer(svc)
+	wsServer := ws.NewServer(svc, &ws.Config{
+		AllowedOrigins:          cfg.WSAllowOrigins,
+		MaxSubscriptionsPerConn: cfg.WSMaxSubscriptions,
+	})
 
 	// 启动 WebSocket 服务
 	go func() {
@@ -89,6 +92,7 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
+			checkConsumeLoop(svc),
 		}
 		writeHealth(w, deps)
 	})
@@ -106,6 +110,7 @@ func main() {
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),
+			checkConsumeLoop(svc),
 		}
 		writeHealth(w, deps)
 	})
@@ -220,6 +225,20 @@ func checkRedis(ctx context.Context, client *redis.Client) dependencyStatus {
 		Name:    "redis",
 		Status:  status,
 		Latency: time.Since(start).Milliseconds(),
+	}
+}
+
+func checkConsumeLoop(svc *service.MarketDataService) dependencyStatus {
+	now := time.Now()
+	ok, age, _ := svc.ConsumeLoopHealthy(now, 45*time.Second)
+	status := "ok"
+	if !ok {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "eventStreamConsumer",
+		Status:  status,
+		Latency: age.Milliseconds(),
 	}
 }
 

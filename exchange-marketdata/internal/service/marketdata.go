@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/exchange/common/pkg/health"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -19,6 +21,8 @@ type MarketDataService struct {
 	group       string
 	consumer    string
 	replayCount int
+
+	loop health.LoopMonitor
 
 	// 内存盘口
 	depths map[string]*Depth
@@ -121,8 +125,13 @@ func (s *MarketDataService) Start(ctx context.Context) error {
 		}
 	}
 
+	s.loop.Tick()
 	go s.consumeEvents(ctx)
 	return nil
+}
+
+func (s *MarketDataService) ConsumeLoopHealthy(now time.Time, maxAge time.Duration) (bool, time.Duration, string) {
+	return s.loop.Healthy(now, maxAge)
 }
 
 // GetDepth 获取盘口
@@ -223,21 +232,32 @@ func (s *MarketDataService) Unsubscribe(channel string, ch chan *Event) {
 }
 
 func (s *MarketDataService) consumeEvents(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.loop.SetError(fmt.Errorf("panic: %v", r))
+			log.Printf("consumeEvents panic: %v\n%s", r, string(debug.Stack()))
+		}
+	}()
+
 	log.Printf("Consuming events from %s", s.eventStream)
 
 	pendingTicker := time.NewTicker(30 * time.Second)
 	defer pendingTicker.Stop()
 
 	if err := s.processPending(ctx); err != nil {
+		s.loop.SetError(err)
 		log.Printf("Process pending error: %v", err)
 	}
 
 	for {
+		s.loop.Tick()
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-pendingTicker.C:
 			if err := s.processPending(ctx); err != nil {
+				s.loop.SetError(err)
 				log.Printf("Process pending error: %v", err)
 			}
 			continue
@@ -249,13 +269,14 @@ func (s *MarketDataService) consumeEvents(ctx context.Context) {
 			Consumer: s.consumer,
 			Streams:  []string{s.eventStream, ">"},
 			Count:    100,
-			Block:    1000,
+			Block:    1000 * time.Millisecond,
 		}).Result()
 
 		if err != nil {
 			if err == redis.Nil {
 				continue
 			}
+			s.loop.SetError(err)
 			log.Printf("Read stream error: %v", err)
 			continue
 		}

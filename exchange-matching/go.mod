@@ -2,7 +2,12 @@ module github.com/exchange/matching
 
 go 1.21
 
-require github.com/redis/go-redis/v9 v9.17.2
+require (
+	github.com/exchange/common v0.0.0
+	github.com/redis/go-redis/v9 v9.17.2
+)
+
+replace github.com/exchange/common => ../exchange-common
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

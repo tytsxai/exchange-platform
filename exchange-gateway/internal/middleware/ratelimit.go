@@ -93,17 +93,24 @@ func RateLimit(rl *RateLimiter, keyFunc func(*http.Request) string) func(http.Ha
 
 // IPKeyFunc 使用 IP 作为限流 key
 func IPKeyFunc(r *http.Request) string {
-	// 优先使用 X-Forwarded-For
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// 取第一个 IP
-		if idx := strings.IndexByte(xff, ','); idx >= 0 {
-			return strings.TrimSpace(xff[:idx])
+	remoteIP := remoteIPFromAddr(r.RemoteAddr)
+
+	// Security: only trust X-Forwarded-For when the immediate peer is likely a trusted proxy.
+	// This prevents direct clients from spoofing XFF and creating unbounded rate-limit keys.
+	if remoteIP != "" && isLikelyTrustedProxyIP(remoteIP) {
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			// Take the first IP in the chain.
+			if idx := strings.IndexByte(xff, ','); idx >= 0 {
+				if ip := strings.TrimSpace(xff[:idx]); ip != "" {
+					return ip
+				}
+			}
+			return xff
 		}
-		return strings.TrimSpace(xff)
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && host != "" {
-		return host
+
+	if remoteIP != "" {
+		return remoteIP
 	}
 	return r.RemoteAddr
 }
@@ -115,4 +122,23 @@ func UserKeyFunc(r *http.Request) string {
 		return strconv.FormatInt(userID, 10)
 	}
 	return IPKeyFunc(r)
+}
+
+func remoteIPFromAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return strings.TrimSpace(remoteAddr)
+}
+
+// isLikelyTrustedProxyIP is a conservative default: loopback or private ranges.
+// If your LB/proxy uses public IPs, you should terminate it on a private network
+// or add an explicit trust mechanism at the edge.
+func isLikelyTrustedProxyIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/matching/internal/engine"
 	"github.com/exchange/matching/internal/metrics"
 	"github.com/exchange/matching/internal/orderbook"
@@ -50,6 +52,8 @@ type Handler struct {
 	consumer    string // 消费者名称
 
 	ctx context.Context
+
+	loop health.LoopMonitor
 }
 
 const (
@@ -86,6 +90,7 @@ func (h *Handler) Start(ctx context.Context) error {
 	}
 
 	h.ctx = ctx
+	h.loop.Tick()
 
 	// 启动消费循环
 	go h.consumeLoop(ctx)
@@ -93,20 +98,35 @@ func (h *Handler) Start(ctx context.Context) error {
 	return nil
 }
 
+func (h *Handler) ConsumeLoopHealthy(now time.Time, maxAge time.Duration) (bool, time.Duration, string) {
+	return h.loop.Healthy(now, maxAge)
+}
+
 func (h *Handler) consumeLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.loop.SetError(fmt.Errorf("panic: %v", r))
+			log.Printf("consumeLoop panic: %v\n%s", r, string(debug.Stack()))
+		}
+	}()
+
 	pendingTicker := time.NewTicker(30 * time.Second)
 	defer pendingTicker.Stop()
 
 	if err := h.processPending(ctx); err != nil {
+		h.loop.SetError(err)
 		log.Printf("process pending error: %v", err)
 	}
 
 	for {
+		h.loop.Tick()
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-pendingTicker.C:
 			if err := h.processPending(ctx); err != nil {
+				h.loop.SetError(err)
 				log.Printf("process pending error: %v", err)
 			}
 			continue
@@ -119,13 +139,14 @@ func (h *Handler) consumeLoop(ctx context.Context) {
 			Consumer: h.consumer,
 			Streams:  []string{h.orderStream, ">"},
 			Count:    100,
-			Block:    1000, // 1秒超时
+			Block:    1000 * time.Millisecond,
 		}).Result()
 
 		if err != nil {
 			if err == redis.Nil {
 				continue
 			}
+			h.loop.SetError(err)
 			log.Printf("read stream error: %v", err)
 			continue
 		}

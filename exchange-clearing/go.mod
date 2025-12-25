@@ -4,10 +4,13 @@ go 1.21
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/exchange/common v0.0.0
 	github.com/lib/pq v1.10.9
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/robfig/cron/v3 v3.0.1
 )
+
+replace github.com/exchange/common => ../exchange-common
 
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0 // indirect
