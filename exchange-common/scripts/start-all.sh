@@ -1,7 +1,7 @@
 #!/bin/bash
 # 启动所有服务脚本
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -25,6 +25,10 @@ ADMIN_TOKEN=${ADMIN_TOKEN:-"dev-admin-token-change-me"}
 
 export APP_ENV INTERNAL_TOKEN AUTH_TOKEN_SECRET AUTH_TOKEN_TTL ADMIN_TOKEN
 
+# Strict-by-default: do not silently ignore failures.
+ALLOW_PARTIAL_START=${ALLOW_PARTIAL_START:-0}
+ALLOW_MIGRATE_FAIL=${ALLOW_MIGRATE_FAIL:-0}
+
 # 服务列表
 SERVICES=(
     "exchange-user:8085"
@@ -37,10 +41,34 @@ SERVICES=(
     "exchange-gateway:8080"
 )
 
+compose() {
+    if command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+        return
+    fi
+    if docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+        return
+    fi
+    log_error "Neither docker-compose nor docker compose is available"
+    return 1
+}
+
+STARTING=0
+on_start_error() {
+    if [ "${STARTING}" = "1" ]; then
+        set +e
+        log_error "Start failed; cleaning up (set ALLOW_PARTIAL_START=1 to keep partial services running)."
+        stop_all
+    fi
+}
+
+trap on_start_error ERR
+
 start_infra() {
     log_info "Starting infrastructure (PostgreSQL, Redis)..."
     cd "$PROJECT_ROOT"
-    docker-compose up -d postgres redis
+    compose up -d postgres redis
 
     log_info "Waiting for PostgreSQL to be ready..."
     sleep 5
@@ -48,8 +76,15 @@ start_infra() {
     # 初始化数据库/迁移
     if [ -f "scripts/migrate.sh" ]; then
         log_info "Applying database migrations..."
-        DB_URL=${DB_URL:-"postgres://exchange:exchange123@localhost:5436/exchange?sslmode=disable"} \
-            bash scripts/migrate.sh 2>/dev/null || true
+        if ! DB_URL=${DB_URL:-"postgres://exchange:exchange123@localhost:5436/exchange?sslmode=disable"} \
+            bash scripts/migrate.sh; then
+            if [ "${ALLOW_MIGRATE_FAIL}" = "1" ]; then
+                log_warn "Database migrations failed, continuing due to ALLOW_MIGRATE_FAIL=1"
+            else
+                log_error "Database migrations failed (set ALLOW_MIGRATE_FAIL=1 to ignore)"
+                return 1
+            fi
+        fi
     fi
 }
 
@@ -60,10 +95,7 @@ build_service() {
     if [ -d "$service_dir" ]; then
         log_info "Building ${service}..."
         cd "$service_dir"
-        go build -o "bin/${service##*-}" "./cmd/${service##*-}" 2>/dev/null || {
-            log_warn "Failed to build ${service}, skipping..."
-            return 1
-        }
+        go build -o "bin/${service##*-}" "./cmd/${service##*-}"
         return 0
     else
         log_warn "Service directory not found: ${service_dir}"
@@ -166,7 +198,7 @@ stop_all() {
 
     log_info "Stopping infrastructure..."
     cd "$PROJECT_ROOT"
-    docker-compose down 2>/dev/null || true
+    compose down 2>/dev/null || true
 }
 
 status() {
@@ -186,6 +218,7 @@ status() {
 main() {
     case "${1:-start}" in
         start)
+            STARTING=1
             # 创建必要目录
             for entry in "${SERVICES[@]}"; do
                 local service="${entry%%:*}"
@@ -200,10 +233,23 @@ main() {
                 local service="${entry%%:*}"
                 local port="${entry##*:}"
 
-                if build_service "$service"; then
-                    start_service "$service" "$port"
+                if ! build_service "$service"; then
+                    if [ "${ALLOW_PARTIAL_START}" = "1" ]; then
+                        log_warn "Build failed for ${service}, continuing due to ALLOW_PARTIAL_START=1"
+                        continue
+                    fi
+                    return 1
+                fi
+                if ! start_service "$service" "$port"; then
+                    if [ "${ALLOW_PARTIAL_START}" = "1" ]; then
+                        log_warn "Start failed for ${service}, continuing due to ALLOW_PARTIAL_START=1"
+                        continue
+                    fi
+                    return 1
                 fi
             done
+
+            STARTING=0
 
             echo ""
             status
@@ -220,10 +266,18 @@ main() {
             status
             ;;
         build)
+            STARTING=1
             for entry in "${SERVICES[@]}"; do
                 local service="${entry%%:*}"
-                build_service "$service"
+                if ! build_service "$service"; then
+                    if [ "${ALLOW_PARTIAL_START}" = "1" ]; then
+                        log_warn "Build failed for ${service}, continuing due to ALLOW_PARTIAL_START=1"
+                        continue
+                    fi
+                    return 1
+                fi
             done
+            STARTING=0
             ;;
         *)
             echo "Usage: $0 {start|stop|restart|status|build}"

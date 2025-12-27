@@ -36,7 +36,8 @@ exchange-common/
 ### 1. 启动开发环境
 
 ```bash
-docker-compose up -d
+docker compose up -d
+# 如你的环境仍使用 v1：docker-compose up -d
 ```
 
 服务端口：
@@ -143,7 +144,9 @@ sig := signer.Sign(canonicalString)
 
 ## API 文档 (Swagger UI)
 
-各服务提供在线 API 文档，前端人员可直接在浏览器中查看接口定义并进行测试。
+各服务提供在线 API 文档（Swagger UI），用于接口查看与联调测试。
+
+说明：本仓库**不包含独立的 Web 前端/管理后台前端 UI 项目**；`/docs` 仅为 API 文档与在线调试界面。
 
 ### 访问地址
 
@@ -178,12 +181,16 @@ canonicalQuery = sorted query string (exclude `signature` if present); request b
 
 如果历史 API Key 使用 bcrypt 存储 secret，需要重新生成（可用 `scripts/disable-bcrypt-api-keys.sql` 批量禁用旧 key）。
 
-**管理接口 (Admin/Wallet)**: Bearer Token
+**管理接口 (Admin/Wallet)**: Bearer Token +（部分路径）额外 Admin Token
 ```
 Headers:
   Authorization: Bearer v1.<payload>.<signature>
 ```
 Token 由 `AUTH_TOKEN_SECRET` 签名，包含过期时间（`AUTH_TOKEN_TTL`）。
+
+对高风险管理路径额外要求：
+- Admin：所有 `/admin/*` 需要 `X-Admin-Token: <ADMIN_TOKEN>`
+- Wallet：所有 `/wallet/admin/*` 需要 `X-Admin-Token: <ADMIN_TOKEN>`
 
 **内部接口**: 服务间调用需要 `X-Internal-Token`（与 `INTERNAL_TOKEN` 环境变量一致）。
 
@@ -195,6 +202,7 @@ Token 由 `AUTH_TOKEN_SECRET` 签名，包含过期时间（`AUTH_TOKEN_TTL`）�
 
 ## 生产配置要点
 - `INTERNAL_TOKEN`：服务间调用鉴权必配
-- `AUTH_TOKEN_SECRET` + `AUTH_TOKEN_TTL`：管理端 Bearer Token 签名与过期
+- `AUTH_TOKEN_SECRET` + `AUTH_TOKEN_TTL`：用户/管理/钱包 Bearer Token 签名与过期
+- `ADMIN_TOKEN`：高风险管理接口额外保护（`X-Admin-Token`）
 - `DB_SSL_MODE=require`：生产数据库强制 TLS
 - `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME`：连接池基线

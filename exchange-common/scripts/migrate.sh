@@ -26,10 +26,20 @@ if [ -f "$INIT_SQL" ]; then
   applied=$(psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -t -A -c \
     "SELECT 1 FROM public.schema_migrations WHERE version = 'init-db.sql' LIMIT 1;")
   if [ -z "$applied" ]; then
-    echo "Applying ${INIT_SQL}..."
-    psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -f "$INIT_SQL"
-    psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -c \
-      "INSERT INTO public.schema_migrations (version) VALUES ('init-db.sql');"
+    # If the DB was initialized before schema_migrations existed (e.g. via docker-entrypoint-initdb.d),
+    # record init-db.sql as applied to avoid re-applying non-idempotent DDL.
+    already_inited=$(psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -t -A -c \
+      "SELECT 1 FROM information_schema.tables WHERE table_schema='exchange_user' AND table_name='users' LIMIT 1;")
+    if [ -n "$already_inited" ]; then
+      echo "${INIT_SQL} appears already applied; recording in schema_migrations..."
+      psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -c \
+        "INSERT INTO public.schema_migrations (version) VALUES ('init-db.sql') ON CONFLICT DO NOTHING;"
+    else
+      echo "Applying ${INIT_SQL}..."
+      psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -f "$INIT_SQL"
+      psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -c \
+        "INSERT INTO public.schema_migrations (version) VALUES ('init-db.sql') ON CONFLICT DO NOTHING;"
+    fi
   fi
 fi
 
