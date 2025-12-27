@@ -9,6 +9,7 @@ import (
 	"log"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/exchange/common/pkg/health"
@@ -32,12 +33,18 @@ type OrderUpdater struct {
 	tradeStore TradeStore
 	clearing   ClearingUnfreezer
 	metrics    *metrics.Metrics
+	publisher  privateEventPublisher
 
 	eventStream string
 	group       string
 	consumer    string
 
 	loop health.LoopMonitor
+}
+
+type privateEventPublisher interface {
+	PublishOrderEvent(ctx context.Context, userID int64, event string, order interface{}) error
+	PublishTradeEvent(ctx context.Context, userID int64, trade interface{}) error
 }
 
 const (
@@ -76,6 +83,10 @@ func NewOrderUpdater(redisClient *redis.Client, orderStore OrderUpdaterStore, tr
 		group:       cfg.Group,
 		consumer:    cfg.Consumer,
 	}
+}
+
+func (u *OrderUpdater) SetPublisher(publisher privateEventPublisher) {
+	u.publisher = publisher
 }
 
 // Start 启动消费
@@ -364,7 +375,18 @@ func (u *OrderUpdater) handleOrderPartiallyFilled(ctx context.Context, event *Ma
 		return err
 	}
 
-	return u.orderStore.UpdateOrderStatus(ctx, data.OrderID, repository.StatusPartiallyFilled, data.ExecutedQty, cumulative, time.Now().UnixMilli())
+	if err := u.orderStore.UpdateOrderStatus(ctx, data.OrderID, repository.StatusPartiallyFilled, data.ExecutedQty, cumulative, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	if u.publisher != nil {
+		order, err := u.orderStore.GetOrder(ctx, data.OrderID)
+		if err == nil && order != nil {
+			if pubErr := u.publisher.PublishOrderEvent(ctx, order.UserID, "partially_filled", order); pubErr != nil {
+				log.Printf("publish order partially_filled error: %v", pubErr)
+			}
+		}
+	}
+	return nil
 }
 
 func (u *OrderUpdater) handleOrderFilled(ctx context.Context, event *MatchingEvent) error {
@@ -386,6 +408,14 @@ func (u *OrderUpdater) handleOrderFilled(ctx context.Context, event *MatchingEve
 	}
 	if err := u.unfreezeForFilled(ctx, data.OrderID); err != nil {
 		return err
+	}
+	if u.publisher != nil {
+		order, err := u.orderStore.GetOrder(ctx, data.OrderID)
+		if err == nil && order != nil {
+			if pubErr := u.publisher.PublishOrderEvent(ctx, order.UserID, "filled", order); pubErr != nil {
+				log.Printf("publish order filled error: %v", pubErr)
+			}
+		}
 	}
 	return nil
 }
@@ -429,6 +459,11 @@ func (u *OrderUpdater) handleOrderCanceled(ctx context.Context, event *MatchingE
 	if !resp.Success {
 		return fmt.Errorf("unfreeze failed: %s", resp.ErrorCode)
 	}
+	if u.publisher != nil {
+		if pubErr := u.publisher.PublishOrderEvent(ctx, order.UserID, "canceled", order); pubErr != nil {
+			log.Printf("publish order canceled error: %v", pubErr)
+		}
+	}
 
 	return nil
 }
@@ -468,6 +503,11 @@ func (u *OrderUpdater) handleOrderRejected(ctx context.Context, event *MatchingE
 	}
 	if !resp.Success {
 		return fmt.Errorf("unfreeze failed: %s", resp.ErrorCode)
+	}
+	if u.publisher != nil {
+		if pubErr := u.publisher.PublishOrderEvent(ctx, order.UserID, "rejected", order); pubErr != nil {
+			log.Printf("publish order rejected error: %v", pubErr)
+		}
 	}
 
 	return nil
@@ -522,6 +562,15 @@ func (u *OrderUpdater) handleTradeCreated(ctx context.Context, event *MatchingEv
 		return err
 	}
 
+	if u.publisher != nil {
+		if pubErr := u.publisher.PublishTradeEvent(ctx, trade.MakerUserID, trade); pubErr != nil {
+			log.Printf("publish trade maker error: %v", pubErr)
+		}
+		if pubErr := u.publisher.PublishTradeEvent(ctx, trade.TakerUserID, trade); pubErr != nil {
+			log.Printf("publish trade taker error: %v", pubErr)
+		}
+	}
+
 	return nil
 }
 
@@ -538,9 +587,9 @@ func (u *OrderUpdater) calculateUnfreeze(order *repository.Order, cfg *repositor
 		return leavesQty, cfg.BaseAsset, nil
 	}
 
-	price, err := strconv.ParseInt(order.Price, 10, 64)
+	price, err := parseInt64(order.Price, "price")
 	if err != nil {
-		return 0, "", fmt.Errorf("parse order price: %w", err)
+		return 0, "", err
 	}
 
 	return quoteQty(price, leavesQty, cfg.QtyPrecision), cfg.QuoteAsset, nil
@@ -633,6 +682,17 @@ func totalFrozenQuote(order *repository.Order, cfg *repository.SymbolConfig) (in
 func parseInt64(value string, field string) (int64, error) {
 	if value == "" {
 		return 0, nil
+	}
+	value = strings.TrimSpace(value)
+	if strings.Contains(value, ".") {
+		parts := strings.SplitN(value, ".", 2)
+		if len(parts) == 2 {
+			frac := strings.TrimRight(parts[1], "0")
+			if frac != "" {
+				return 0, fmt.Errorf("parse %s: has fractional part %q", field, parts[1])
+			}
+			value = parts[0]
+		}
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {

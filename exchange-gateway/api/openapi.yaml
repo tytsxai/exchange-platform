@@ -54,11 +54,12 @@ info:
 
     ## WebSocket
 
-    Base URL: `wss://api.example.com/ws`
+    Private push (user events): `ws://localhost:8090/ws/private`
 
-    Authentication: public streams do not require auth; private streams require
-    the same signature headers in the initial connection query string:
-    `apiKey`, `timestamp`, `nonce`, `signature`.
+    Authentication: the private stream requires the same signature parameters
+    in the initial connection query string: `apiKey`, `timestamp`, `nonce`, `signature`.
+
+    Note: public marketdata WebSocket is provided by `exchange-marketdata` (default: `ws://localhost:8094/ws`).
 
   contact:
     name: API Support

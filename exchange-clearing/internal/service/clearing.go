@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/exchange/clearing/internal/repository"
@@ -12,9 +13,16 @@ import (
 
 // ClearingService 清算服务
 type ClearingService struct {
-	db      *sql.DB
-	balRepo *repository.BalanceRepository
-	idGen   IDGenerator
+	db        *sql.DB
+	balRepo   *repository.BalanceRepository
+	idGen     IDGenerator
+	publisher balancePublisher
+}
+
+type balancePublisher interface {
+	PublishFrozenEvent(ctx context.Context, userID int64, asset string, amount int64) error
+	PublishUnfrozenEvent(ctx context.Context, userID int64, asset string, amount int64) error
+	PublishSettledEvent(ctx context.Context, userID int64, data interface{}) error
 }
 
 // IDGenerator ID 生成器接口
@@ -29,6 +37,10 @@ func NewClearingService(db *sql.DB, idGen IDGenerator) *ClearingService {
 		balRepo: repository.NewBalanceRepository(db),
 		idGen:   idGen,
 	}
+}
+
+func (s *ClearingService) SetPublisher(publisher balancePublisher) {
+	s.publisher = publisher
 }
 
 // FreezeRequest 冻结请求
@@ -85,6 +97,11 @@ func (s *ClearingService) Freeze(ctx context.Context, req *FreezeRequest) (*Free
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
+	if s.publisher != nil {
+		if pubErr := s.publisher.PublishFrozenEvent(ctx, req.UserID, req.Asset, req.Amount); pubErr != nil {
+			log.Printf("publish frozen event error: %v", pubErr)
+		}
+	}
 
 	balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
 	return &FreezeResponse{Success: true, Balance: balance}, nil
@@ -139,6 +156,11 @@ func (s *ClearingService) Unfreeze(ctx context.Context, req *UnfreezeRequest) (*
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
+	}
+	if s.publisher != nil {
+		if pubErr := s.publisher.PublishUnfrozenEvent(ctx, req.UserID, req.Asset, req.Amount); pubErr != nil {
+			log.Printf("publish unfrozen event error: %v", pubErr)
+		}
 	}
 
 	balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
@@ -405,6 +427,15 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
+	}
+	if s.publisher != nil {
+		payload := map[string]any{"tradeId": req.TradeID, "symbol": req.Symbol}
+		if pubErr := s.publisher.PublishSettledEvent(ctx, req.MakerUserID, payload); pubErr != nil {
+			log.Printf("publish settled maker event error: %v", pubErr)
+		}
+		if pubErr := s.publisher.PublishSettledEvent(ctx, req.TakerUserID, payload); pubErr != nil {
+			log.Printf("publish settled taker event error: %v", pubErr)
+		}
 	}
 
 	return &SettleTradeResponse{Success: true}, nil

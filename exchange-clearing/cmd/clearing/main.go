@@ -18,6 +18,7 @@ import (
 	"github.com/exchange/clearing/internal/config"
 	"github.com/exchange/clearing/internal/metrics"
 	"github.com/exchange/clearing/internal/service"
+	clearingws "github.com/exchange/clearing/internal/ws"
 	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
@@ -99,6 +100,7 @@ func main() {
 	// 创建服务
 	idGen := snowflakeIDGen{}
 	svc := service.NewClearingService(db, idGen)
+	svc.SetPublisher(clearingws.NewPublisher(redisClient, cfg.PrivateUserEventChannel))
 
 	// 启动事件消费
 	var eventLoop health.LoopMonitor

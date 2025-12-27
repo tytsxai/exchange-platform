@@ -20,6 +20,7 @@ import (
 	"github.com/exchange/order/internal/metrics"
 	"github.com/exchange/order/internal/repository"
 	"github.com/exchange/order/internal/service"
+	orderws "github.com/exchange/order/internal/ws"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
@@ -88,6 +89,8 @@ func main() {
 		DefaultLimitRate: cfg.PriceProtection.DefaultLimitRate,
 	})
 	svc := service.NewOrderService(repo, redisClient, idGen, cfg.OrderStream, validator, clearingClient, metricsClient)
+	wsPublisher := orderws.NewPublisher(redisClient, cfg.PrivateUserEventChannel)
+	svc.SetPublisher(wsPublisher)
 
 	tradeRepo := repository.NewTradeRepository(db)
 	updater := service.NewOrderUpdater(redisClient, repo, tradeRepo, clearingClient, metricsClient, &service.UpdaterConfig{
@@ -95,6 +98,7 @@ func main() {
 		Group:       cfg.MatchingConsumerGroup,
 		Consumer:    cfg.MatchingConsumerName,
 	})
+	updater.SetPublisher(wsPublisher)
 	if err := updater.Start(ctx); err != nil {
 		log.Fatalf("Failed to start order updater: %v", err)
 	}

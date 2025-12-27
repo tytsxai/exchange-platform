@@ -37,7 +37,7 @@ func TestAuthPrivateHandlerPingAndRead(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(PrivateHandler(hub, authCfg))
+	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
 	defer server.Close()
 
 	timestamp := time.Now().UnixMilli()

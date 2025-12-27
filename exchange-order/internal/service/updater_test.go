@@ -228,6 +228,21 @@ func (f *failingUnfreezer) UnfreezeBalance(_ context.Context, _ int64, _ string,
 	return f.resp, nil
 }
 
+type fakePrivateEventPublisher struct {
+	orderEvents []string
+	tradeUsers  []int64
+}
+
+func (f *fakePrivateEventPublisher) PublishOrderEvent(_ context.Context, _ int64, event string, _ interface{}) error {
+	f.orderEvents = append(f.orderEvents, event)
+	return nil
+}
+
+func (f *fakePrivateEventPublisher) PublishTradeEvent(_ context.Context, userID int64, _ interface{}) error {
+	f.tradeUsers = append(f.tradeUsers, userID)
+	return nil
+}
+
 func TestOrderUpdater_ConsumeOnce_OrderCanceled(t *testing.T) {
 	redisClient, mock := redismock.NewClientMock()
 
@@ -253,6 +268,8 @@ func TestOrderUpdater_ConsumeOnce_OrderCanceled(t *testing.T) {
 		Group:       "order-updater-group",
 		Consumer:    "order-updater-1",
 	})
+	pub := &fakePrivateEventPublisher{}
+	updater.SetPublisher(pub)
 
 	payload := MatchingEvent{
 		Type:   "ORDER_CANCELED",
@@ -298,6 +315,9 @@ func TestOrderUpdater_ConsumeOnce_OrderCanceled(t *testing.T) {
 	if unfreezer.asset != "USDT" || unfreezer.amount != 2*1e8 {
 		t.Fatalf("unexpected unfreeze: %s %d", unfreezer.asset, unfreezer.amount)
 	}
+	if len(pub.orderEvents) != 1 || pub.orderEvents[0] != "canceled" {
+		t.Fatalf("expected publish order event canceled, got %+v", pub.orderEvents)
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
@@ -322,6 +342,8 @@ func TestOrderUpdater_ConsumeOnce_TradeCreated(t *testing.T) {
 		Group:       "order-updater-group",
 		Consumer:    "order-updater-1",
 	})
+	pub := &fakePrivateEventPublisher{}
+	updater.SetPublisher(pub)
 
 	payload := MatchingEvent{
 		Type:      "TRADE_CREATED",
@@ -369,10 +391,25 @@ func TestOrderUpdater_ConsumeOnce_TradeCreated(t *testing.T) {
 	if len(store.addCalls) != 2 {
 		t.Fatalf("expected 2 cumulative updates, got %d", len(store.addCalls))
 	}
+	if len(pub.tradeUsers) != 2 {
+		t.Fatalf("expected 2 trade publish calls, got %+v", pub.tradeUsers)
+	}
+	if !containsInt64(pub.tradeUsers, 10) || !containsInt64(pub.tradeUsers, 11) {
+		t.Fatalf("expected maker/taker users published, got %+v", pub.tradeUsers)
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
 	}
+}
+
+func containsInt64(values []int64, target int64) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOrderUpdater_StartError(t *testing.T) {

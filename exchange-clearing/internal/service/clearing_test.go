@@ -176,6 +176,29 @@ func (m *mockIDGen) NextID() int64 {
 	return m.id
 }
 
+type fakeBalancePublisher struct {
+	frozenCalls int
+	userID      int64
+	asset       string
+	amount      int64
+}
+
+func (f *fakeBalancePublisher) PublishFrozenEvent(_ context.Context, userID int64, asset string, amount int64) error {
+	f.frozenCalls++
+	f.userID = userID
+	f.asset = asset
+	f.amount = amount
+	return nil
+}
+
+func (f *fakeBalancePublisher) PublishUnfrozenEvent(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
+func (f *fakeBalancePublisher) PublishSettledEvent(_ context.Context, _ int64, _ interface{}) error {
+	return nil
+}
+
 func TestNewClearingService(t *testing.T) {
 	gen := &mockIDGen{}
 	svc := NewClearingService(nil, gen)
@@ -678,6 +701,8 @@ func TestClearingServiceFreeze_OptimisticLockConflict(t *testing.T) {
 func TestClearingServiceFreeze_LedgerIntegrity(t *testing.T) {
 	svc, mock, closeFn := newMockService(t, &mockIDGen{})
 	defer closeFn()
+	pub := &fakeBalancePublisher{}
+	svc.SetPublisher(pub)
 
 	req := &FreezeRequest{
 		IdempotencyKey: "freeze:ledger",
@@ -719,6 +744,9 @@ func TestClearingServiceFreeze_LedgerIntegrity(t *testing.T) {
 	}
 	if resp.Balance == nil || resp.Balance.Available != 900 || resp.Balance.Frozen != 100 {
 		t.Fatalf("unexpected balance: %+v", resp.Balance)
+	}
+	if pub.frozenCalls != 1 || pub.userID != req.UserID || pub.asset != req.Asset || pub.amount != req.Amount {
+		t.Fatalf("unexpected publish frozen calls=%d user=%d asset=%s amount=%d", pub.frozenCalls, pub.userID, pub.asset, pub.amount)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)

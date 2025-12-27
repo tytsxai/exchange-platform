@@ -28,7 +28,7 @@ func TestAuthPrivateHandlerAuthAndBroadcast(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(PrivateHandler(hub, authCfg))
+	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
 	defer server.Close()
 
 	timestamp := time.Now().UnixMilli()
@@ -83,7 +83,7 @@ func TestAuthPrivateHandlerAuthFailure(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(PrivateHandler(hub, authCfg))
+	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
 	defer server.Close()
 
 	values := url.Values{}
@@ -118,7 +118,7 @@ func TestAuthPrivateHandlerUnauthorizedResponse(t *testing.T) {
 			return 1, 0, nil
 		},
 	}
-	server := httptest.NewServer(PrivateHandler(hub, authCfg))
+	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/private"
@@ -150,7 +150,7 @@ func TestAuthPrivateHandlerConnectionLimit(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(PrivateHandler(hub, authCfg))
+	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
 	defer server.Close()
 
 	conn1 := dialPrivate(t, server.URL, "limit-key", "limit-secret")
@@ -179,7 +179,7 @@ func TestAuthHubCloseAll(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(PrivateHandler(hub, authCfg))
+	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
 	defer server.Close()
 
 	conn := dialPrivate(t, server.URL, "close-key", "close-secret")

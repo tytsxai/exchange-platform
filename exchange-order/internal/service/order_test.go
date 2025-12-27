@@ -274,6 +274,89 @@ func (g *mockIDGen) NextID() int64 {
 	return 1
 }
 
+type fakeOrderPublisher struct {
+	createdCalled bool
+	createdUserID int64
+	createdOrder  *repository.Order
+}
+
+func (f *fakeOrderPublisher) PublishOrderCreated(_ context.Context, userID int64, order interface{}) error {
+	f.createdCalled = true
+	f.createdUserID = userID
+	if o, ok := order.(*repository.Order); ok {
+		f.createdOrder = o
+	}
+	return nil
+}
+
+func (f *fakeOrderPublisher) PublishOrderEvent(_ context.Context, _ int64, _ string, _ interface{}) error {
+	return nil
+}
+
+func TestCreateOrder_PublishesOrderCreated(t *testing.T) {
+	store := &mockOrderStore{
+		cfg: &repository.SymbolConfig{
+			Symbol:      "BTCUSDT",
+			BaseAsset:   "BTC",
+			QuoteAsset:  "USDT",
+			MinQty:      "0.001",
+			MaxQty:      "10.0",
+			MinNotional: "10.0",
+			PriceTick:   "0.01",
+			QtyStep:     "0.001",
+			Status:      1,
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := client.FreezeResponse{Success: true}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis run: %v", err)
+	}
+	defer mr.Close()
+
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer redisClient.Close()
+
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
+	svc := NewOrderService(store, redisClient, &mockIDGen{}, "orders", nil, clearingClient, nil)
+	pub := &fakeOrderPublisher{}
+	svc.SetPublisher(pub)
+
+	resp, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
+		UserID:      1,
+		Symbol:      "BTCUSDT",
+		Side:        "BUY",
+		Type:        "LIMIT",
+		TimeInForce: "GTC",
+		Price:       int64(100 * 1e8),
+		Quantity:    int64(1 * 1e8),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ErrorCode != "" {
+		t.Fatalf("expected empty error code, got %s", resp.ErrorCode)
+	}
+	if resp.Order == nil {
+		t.Fatal("expected order")
+	}
+	if !pub.createdCalled {
+		t.Fatal("expected publisher to be called")
+	}
+	if pub.createdUserID != 1 {
+		t.Fatalf("expected published userID=1, got %d", pub.createdUserID)
+	}
+	if pub.createdOrder == nil || pub.createdOrder.OrderID != resp.Order.OrderID {
+		t.Fatal("expected published order to match created order")
+	}
+}
+
 func TestPriceCreateOrder_OutOfRange(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{

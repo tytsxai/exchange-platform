@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	commondecimal "github.com/exchange/common/pkg/decimal"
@@ -25,6 +27,12 @@ type OrderService struct {
 	validator   *PriceValidator
 	clearing    *client.ClearingClient
 	metrics     *metrics.Metrics
+	publisher   orderPublisher
+}
+
+type orderPublisher interface {
+	PublishOrderCreated(ctx context.Context, userID int64, order interface{}) error
+	PublishOrderEvent(ctx context.Context, userID int64, event string, order interface{}) error
 }
 
 // OrderStore 订单数据接口
@@ -58,6 +66,10 @@ func NewOrderService(repo OrderStore, redisClient *redis.Client, idGen IDGenerat
 		clearing:    clearingClient,
 		metrics:     metricsClient,
 	}
+}
+
+func (s *OrderService) SetPublisher(publisher orderPublisher) {
+	s.publisher = publisher
 }
 
 // CreateOrderRequest 下单请求
@@ -212,6 +224,11 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 
 	if s.metrics != nil {
 		s.metrics.IncOrderCreated(order.Symbol, sideToString(order.Side))
+	}
+	if s.publisher != nil {
+		if err := s.publisher.PublishOrderCreated(ctx, order.UserID, order); err != nil {
+			log.Printf("publish order created error: %v", err)
+		}
 	}
 
 	return &CreateOrderResponse{Order: order}, nil
@@ -470,8 +487,14 @@ type OrderMessage struct {
 }
 
 func (s *OrderService) sendToMatching(ctx context.Context, order *repository.Order) error {
-	price, _ := strconv.ParseInt(order.Price, 10, 64)
-	qty, _ := strconv.ParseInt(order.OrigQty, 10, 64)
+	price, err := parseInt64Compat(order.Price, "price")
+	if err != nil {
+		return err
+	}
+	qty, err := parseInt64Compat(order.OrigQty, "orig_qty")
+	if err != nil {
+		return err
+	}
 	msg := &OrderMessage{
 		Type:          "NEW",
 		OrderID:       order.OrderID,
@@ -498,6 +521,28 @@ func (s *OrderService) sendToMatching(ctx context.Context, order *repository.Ord
 	}).Result()
 
 	return err
+}
+
+func parseInt64Compat(value string, field string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	if strings.Contains(value, ".") {
+		parts := strings.SplitN(value, ".", 2)
+		if len(parts) == 2 {
+			frac := strings.TrimRight(parts[1], "0")
+			if frac != "" {
+				return 0, fmt.Errorf("parse %s: has fractional part %q", field, parts[1])
+			}
+			value = parts[0]
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", field, err)
+	}
+	return parsed, nil
 }
 
 func (s *OrderService) sendCancelToMatching(ctx context.Context, order *repository.Order) error {

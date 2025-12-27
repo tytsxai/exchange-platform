@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -297,7 +298,12 @@ func main() {
 			}
 		}
 	}()
-	mux.HandleFunc("/ws/private", ws.PrivateHandler(hub, authCfg))
+	wsHandler := ws.PrivateHandler(hub, authCfg, cfg.CORSAllowOrigins)
+
+	// Serve private WS on both HTTP port (backward-compatible) and WS port.
+	mux.HandleFunc("/ws/private", wsHandler)
+	wsMux := http.NewServeMux()
+	wsMux.HandleFunc("/ws/private", wsHandler)
 
 	// 私有接口（需要鉴权）
 	privateMux := http.NewServeMux()
@@ -338,10 +344,28 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
+	wsServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.WSPort),
+		Handler:           wsMux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
 	go func() {
 		l.Info(fmt.Sprintf("HTTP server listening on :%d", cfg.HTTPPort))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			l.Error(fmt.Sprintf("HTTP server error: %v", err))
+			os.Exit(1)
+		}
+	}()
+
+	go func() {
+		l.Info(fmt.Sprintf("WS server listening on :%d", cfg.WSPort))
+		if err := wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			l.Error(fmt.Sprintf("WS server error: %v", err))
 			os.Exit(1)
 		}
 	}()
@@ -356,6 +380,7 @@ func main() {
 	hub.CloseAll()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
+	wsServer.Shutdown(shutdownCtx)
 	server.Shutdown(shutdownCtx)
 	l.Info("Shutdown complete")
 }
@@ -586,10 +611,36 @@ type responseWriter struct {
 	wroteHeader bool
 }
 
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.wroteHeader = true
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijacker not supported")
+	}
+	return hj.Hijack()
+}
+
+func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	p, ok := rw.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return p.Push(target, opts)
 }
 
 func requestIDFromRequest(r *http.Request) string {

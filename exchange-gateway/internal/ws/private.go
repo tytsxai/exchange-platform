@@ -42,9 +42,17 @@ var (
 )
 
 // PrivateHandler handles /ws/private connections.
-func PrivateHandler(hub *Hub, authCfg *middleware.AuthConfig) http.HandlerFunc {
+func PrivateHandler(hub *Hub, authCfg *middleware.AuthConfig, allowedOrigins []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		localUpgrader := websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(r *http.Request) bool {
+				return allowOrigin(r, allowedOrigins)
+			},
+		}
+
+		conn, err := localUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("private ws upgrade error: %v", err)
 			return
@@ -67,6 +75,24 @@ func PrivateHandler(hub *Hub, authCfg *middleware.AuthConfig) http.HandlerFunc {
 		go writePump(client, userID, hub)
 		go readPump(client, userID, hub)
 	}
+}
+
+func allowOrigin(r *http.Request, allowed []string) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Non-browser clients usually don't send Origin.
+		return true
+	}
+	for _, o := range allowed {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		if o == "*" || o == origin {
+			return true
+		}
+	}
+	return false
 }
 
 func readPump(client *Client, userID int64, hub *Hub) {
