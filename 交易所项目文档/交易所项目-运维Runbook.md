@@ -9,7 +9,7 @@ tags:
 summary: >
   交易所项目的运维与应急手册：SLO、关键指标、告警、降级开关、回滚与事故处理流程。
 created: 2025-12-21
-updated: 2025-12-21
+updated: 2025-12-26
 stage: draft
 visibility: internal
 owner: me
@@ -18,6 +18,8 @@ source: ""
 ---
 
 # 交易所项目-运维Runbook
+
+> 可执行部署/运行命令参考：`docs/ops/runbook.md`。
 
 ## 0 目录
 - [[#1 SLO 与告警目标]]
@@ -143,5 +145,5 @@ source: ""
 - PostgreSQL 备份：`exchange-common/scripts/backup-db.sh`（依赖 `DB_URL`，产出 `.dump` 文件）
 - PostgreSQL 恢复：`exchange-common/scripts/restore-db.sh <backup-file>`（恢复后需全量对账）
 - Redis 备份：`exchange-common/scripts/backup-redis.sh`（依赖 `REDIS_ADDR`，产出 `.rdb` 文件）
-- 数据库迁移：`exchange-common/scripts/migrate.sh`（执行 `init-db.sql` 并记录 `schema_migrations`）
+- 数据库迁移：`exchange-common/scripts/migrate.sh`（执行 `init-db.sql`/增量迁移并记录 `schema_migrations`；如检测到 DB 已初始化但未记录，会自动补记避免重复执行非幂等 DDL）
 - 频率建议：数据库每日全量 + 关键变更前手动备份；恢复后必须跑健康检查与资金对账

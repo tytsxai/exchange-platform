@@ -10,8 +10,8 @@
 | M0 基础设施 | ✅ 完成 | Proto、共享工具、Docker Compose |
 | M1 现货交易 | ✅ 完成 | 6 个核心服务全部编译通过 |
 | M2 行情服务 | ✅ 完成 | REST + WebSocket 推送 |
-| M3 运营后台 | 🔲 待开发 | RBAC、配置管理、Kill Switch |
-| M4 钱包出入金 | 🔲 待开发 | 充值/提现/链上对账 |
+| M3 运营后台 | 🟡 部分完成 | 已有基础服务与接口；RBAC/审计等持续补齐 |
+| M4 钱包出入金 | 🟡 部分完成 | 已有基础服务与接口；链上监听/风控/对账持续补齐 |
 | M5 合规安全 | 🔲 待开发 | KYC/AML 预留 |
 
 ---
@@ -27,8 +27,8 @@
 | `exchange-matching` | 8082 | ✅ | 内存订单簿、撮合引擎 |
 | `exchange-clearing` | 8083 | ✅ | 资金冻结/解冻、账本 |
 | `exchange-marketdata` | 8084/8094(WS) | ✅ | 盘口/成交/Ticker/WS推送 |
-| `exchange-admin` | 8087 | 🔲 | 运营后台 |
-| `exchange-wallet` | 8086 | 🔲 | 钱包/出入金 |
+| `exchange-admin` | 8087 | 🟡 | 运营后台（基础能力已实现，持续完善） |
+| `exchange-wallet` | 8086 | 🟡 | 钱包/出入金（基础能力已实现，持续完善） |
 
 ---
 
@@ -154,16 +154,11 @@
 ## 启动方式
 
 ```bash
-# 1. 启动基础设施
-cd exchange-common && docker-compose up -d
+# 1. 一键启动（包含：启动 dev infra、跑迁移、编译并启动全部服务）
+bash exchange-common/scripts/start-all.sh start
 
-# 2. 启动各服务
-cd exchange-user && go run cmd/user/main.go          # :8085
-cd exchange-clearing && go run cmd/clearing/main.go  # :8083
-cd exchange-order && go run cmd/order/main.go        # :8081
-cd exchange-matching && go run cmd/matching/main.go  # :8082
-cd exchange-marketdata && go run cmd/marketdata/main.go  # :8084, WS:8094
-cd exchange-gateway && go run cmd/gateway/main.go    # :8080
+# 2. 单独调试某个服务（可选）
+cd exchange-user && go run ./cmd/user          # :8085
 ```
 
 ---
@@ -171,13 +166,13 @@ cd exchange-gateway && go run cmd/gateway/main.go    # :8080
 ## 数据流
 
 ```
-Client -> Gateway(8080) -> Order(8081) -> Redis Stream(orders)
+Client -> Gateway(8080) -> Order(8081) -> Redis Stream(exchange:orders)
                                               |
                                               v
                                     Matching(8082)
                                               |
                                               v
-                                    Redis Stream(events)
+                                    Redis Stream(exchange:events)
                                               |
                     +-------------------------+-------------------------+
                     |                         |                         |

@@ -54,7 +54,7 @@
 
 建议使用云 LB / Nginx / Caddy 做 TLS 终止与限流：
 - `api.example.com` → `gateway:8080`
-- `ws.example.com` → `gateway:8090`
+- `ws.example.com` → `gateway:8090`（私有推送：`/ws/private`）
 -（可选）`mdws.example.com` → `marketdata:8094`
 
 如果你暴露 `marketdata` 的 public WS（浏览器会带 `Origin`）：
