@@ -19,9 +19,27 @@ require_cmd() {
     fi
 }
 
+redis_publish() {
+    local channel=$1
+    local payload=$2
+
+    if command -v docker >/dev/null 2>&1; then
+        docker exec exchange-redis redis-cli PUBLISH "$channel" "$payload" >/dev/null
+        return 0
+    fi
+
+    require_cmd redis-cli || return 1
+    redis-cli PUBLISH "$channel" "$payload" >/dev/null
+}
+
 now_ms() {
     # macOS 不支持 %N，使用 python 获取毫秒时间戳
     python3 -c "import time; print(int(time.time() * 1000))"
+}
+
+nonce_str() {
+    # Portable nonce generation across macOS/Linux (bash 3.2 compatible).
+    python3 -c "import time,uuid; print(f'{int(time.time()*1000)}-{uuid.uuid4()}')"
 }
 
 wait_for_services() {
@@ -58,42 +76,43 @@ psql_exec() {
     psql -X "${DB_URL}" -v ON_ERROR_STOP=1 -q -t -A -c "$1"
 }
 
-declare -A SYMBOL_PRICE_PRECISION
-declare -A SYMBOL_QTY_PRECISION
-declare -A ASSET_PRECISION
-
 symbol_precisions() {
     local symbol=$1
-    if [ -n "${SYMBOL_PRICE_PRECISION[$symbol]:-}" ] && [ -n "${SYMBOL_QTY_PRECISION[$symbol]:-}" ]; then
-        echo "${SYMBOL_PRICE_PRECISION[$symbol]} ${SYMBOL_QTY_PRECISION[$symbol]}"
-        return 0
-    fi
-
     local row
-    row=$(psql_exec "SELECT price_precision, qty_precision FROM exchange_order.symbol_configs WHERE symbol = '${symbol}' LIMIT 1;" | tr -d ' ')
+    row=$(psql_exec "SELECT price_precision, qty_precision FROM exchange_order.symbol_configs WHERE symbol = '${symbol}' LIMIT 1;" | tr -d ' ' || true)
     local price_precision=${row%%|*}
     local qty_precision=${row##*|}
     if [ -z "$price_precision" ] || [ -z "$qty_precision" ]; then
         price_precision=8
         qty_precision=8
     fi
-    SYMBOL_PRICE_PRECISION[$symbol]=$price_precision
-    SYMBOL_QTY_PRECISION[$symbol]=$qty_precision
     echo "$price_precision $qty_precision"
+}
+
+symbol_price_tick() {
+    local symbol=$1
+    local precisions
+    precisions=$(symbol_precisions "$symbol")
+    local price_precision=${precisions%% *}
+
+    python3 - "$price_precision" <<'PY'
+from decimal import Decimal
+import sys
+
+p = int(sys.argv[1])
+tick = Decimal(1) / (Decimal(10) ** p)
+s = format(tick, "f")
+print(s)
+PY
 }
 
 asset_precision() {
     local asset=$1
-    if [ -n "${ASSET_PRECISION[$asset]:-}" ]; then
-        echo "${ASSET_PRECISION[$asset]}"
-        return 0
-    fi
     local precision
-    precision=$(psql_exec "SELECT precision FROM exchange_wallet.assets WHERE asset = '${asset}' LIMIT 1;" | tr -d ' ')
+    precision=$(psql_exec "SELECT precision FROM exchange_wallet.assets WHERE asset = '${asset}' LIMIT 1;" | tr -d ' ' || true)
     if [ -z "$precision" ]; then
         precision=8
     fi
-    ASSET_PRECISION[$asset]=$precision
     echo "$precision"
 }
 
@@ -122,6 +141,125 @@ except (InvalidOperation, ValueError):
     sys.exit(1)
 print(scaled)
 PY
+}
+
+unscale_int64() {
+    local value=$1
+    local precision=${2:-8}
+
+    python3 - "$value" "$precision" <<'PY'
+from decimal import Decimal
+import sys
+
+value = sys.argv[1].strip()
+precision = int(sys.argv[2])
+if value == "":
+    print("")
+    sys.exit(0)
+
+scaled = (Decimal(value) / (Decimal(10) ** precision)).quantize(Decimal(1) / (Decimal(10) ** precision))
+s = format(scaled, "f")
+if "." in s:
+    s = s.rstrip("0").rstrip(".")
+print(s)
+PY
+}
+
+reference_symbol_price() {
+    local symbol=$1
+    local depth
+    depth=$(http_request "GET" "${MATCHING_URL}/depth?symbol=${symbol}&limit=1" "") || return 1
+
+    local ref_int
+    ref_int=$(python3 - "$depth" <<'PY'
+import json,sys
+payload=json.loads(sys.argv[1])
+bids=payload.get("bids") or []
+asks=payload.get("asks") or []
+def get_price(x):
+    try:
+        return int(x.get("price"))
+    except Exception:
+        return None
+
+ref=None
+if bids and asks:
+    b=get_price(bids[0])
+    a=get_price(asks[0])
+    if b is not None and a is not None:
+        ref=(b+a)//2
+elif bids:
+    ref=get_price(bids[0])
+elif asks:
+    ref=get_price(asks[0])
+
+print(ref if ref is not None else "")
+PY
+)
+
+    if [ -z "$ref_int" ]; then
+        echo ""
+        return 0
+    fi
+
+    local precisions
+    precisions=$(symbol_precisions "$symbol")
+    local price_precision=${precisions%% *}
+    unscale_int64 "$ref_int" "$price_precision"
+}
+
+maker_symbol_price() {
+    local symbol=$1
+    local side=$2
+    local depth
+    depth=$(http_request "GET" "${MATCHING_URL}/depth?symbol=${symbol}&limit=1" "") || return 1
+
+    local out
+    out=$(python3 - "$depth" "$side" <<'PY'
+import json,sys
+
+payload=json.loads(sys.argv[1])
+side=sys.argv[2].upper()
+
+bids=payload.get("bids") or []
+asks=payload.get("asks") or []
+
+def p0(arr):
+    if not arr:
+        return None
+    try:
+        return int(arr[0].get("price"))
+    except Exception:
+        return None
+
+bid=p0(bids)
+ask=p0(asks)
+
+price=None
+if side == "BUY":
+    if ask is not None:
+        price = max(1, ask - 1)
+    elif bid is not None:
+        price = bid
+elif side == "SELL":
+    if bid is not None:
+        price = bid + 1
+    elif ask is not None:
+        price = ask
+
+print(price if price is not None else "")
+PY
+)
+
+    if [ -z "$out" ]; then
+        echo ""
+        return 0
+    fi
+
+    local precisions
+    precisions=$(symbol_precisions "$symbol")
+    local price_precision=${precisions%% *}
+    unscale_int64 "$out" "$price_precision"
 }
 
 scale_symbol_price() {
@@ -282,7 +420,7 @@ gateway_request() {
     local timestamp
     timestamp=$(now_ms)
     local nonce
-    nonce=$(date +%s%N)
+    nonce=$(nonce_str)
     local sig
     sig=$(canonical_signature "$method" "$path" "$query" "$timestamp" "$nonce" "$GATEWAY_API_SECRET")
 
@@ -291,21 +429,104 @@ gateway_request() {
         url+="?${query}"
     fi
 
+    local tmp
+    tmp=$(mktemp)
+    local code
+
     if [ -n "$body" ]; then
-        curl -sf -X "$method" "$url" \
+        code=$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
             -H "Content-Type: application/json" \
             -H "X-API-KEY: ${GATEWAY_API_KEY}" \
             -H "X-API-TIMESTAMP: ${timestamp}" \
             -H "X-API-NONCE: ${nonce}" \
             -H "X-API-SIGNATURE: ${sig}" \
-            -d "$body"
+            -d "$body") || {
+            rm -f "$tmp"
+            log_error "Gateway request failed to execute: ${method} ${path}"
+            return 1
+        }
     else
-        curl -sf -X "$method" "$url" \
+        code=$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
             -H "X-API-KEY: ${GATEWAY_API_KEY}" \
             -H "X-API-TIMESTAMP: ${timestamp}" \
             -H "X-API-NONCE: ${nonce}" \
-            -H "X-API-SIGNATURE: ${sig}"
+            -H "X-API-SIGNATURE: ${sig}") || {
+            rm -f "$tmp"
+            log_error "Gateway request failed to execute: ${method} ${path}"
+            return 1
+        }
     fi
+
+    if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+        log_error "Gateway request failed: ${method} ${path} (HTTP ${code})"
+        cat "$tmp" >&2 || true
+        rm -f "$tmp"
+        return 1
+    fi
+
+    cat "$tmp"
+    rm -f "$tmp"
+}
+
+http_request() {
+    local method=$1
+    local url=$2
+    local body=${3:-""}
+    local user_id=${4:-""}
+
+    local tmp
+    tmp=$(mktemp)
+    local code
+
+    if [ -n "$body" ]; then
+        if [ -n "$user_id" ]; then
+            code=$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
+                -H "Content-Type: application/json" \
+                -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
+                -H "X-User-Id: ${user_id}" \
+                -d "$body") || {
+                rm -f "$tmp"
+                log_error "HTTP request failed to execute: ${method} ${url}"
+                return 1
+            }
+        else
+            code=$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
+                -H "Content-Type: application/json" \
+                -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
+                -d "$body") || {
+                rm -f "$tmp"
+                log_error "HTTP request failed to execute: ${method} ${url}"
+                return 1
+            }
+        fi
+    else
+        if [ -n "$user_id" ]; then
+            code=$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
+                -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
+                -H "X-User-Id: ${user_id}") || {
+                rm -f "$tmp"
+                log_error "HTTP request failed to execute: ${method} ${url}"
+                return 1
+            }
+        else
+            code=$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
+                -H "X-Internal-Token: ${INTERNAL_TOKEN}") || {
+                rm -f "$tmp"
+                log_error "HTTP request failed to execute: ${method} ${url}"
+                return 1
+            }
+        fi
+    fi
+
+    if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+        log_error "HTTP request failed: ${method} ${url} (HTTP ${code})"
+        cat "$tmp" >&2 || true
+        rm -f "$tmp"
+        return 1
+    fi
+
+    cat "$tmp"
+    rm -f "$tmp"
 }
 
 place_order() {
@@ -317,6 +538,7 @@ place_order() {
     local price=$6
     local quantity=$7
     local client_order_id=$8
+    local time_in_force=${9:-"GTC"}
     local price_int
     local qty_int
     price_int=$(scale_symbol_price "$symbol" "$price")
@@ -328,16 +550,14 @@ place_order() {
 
     local payload
     payload=$(cat <<JSON
-{"symbol":"${symbol}","side":"${side}","type":"${type}","price":${price_int},"quantity":${qty_int},"clientOrderId":"${client_order_id}"}
+{"symbol":"${symbol}","side":"${side}","type":"${type}","timeInForce":"${time_in_force}","price":${price_int},"quantity":${qty_int},"clientOrderId":"${client_order_id}"}
 JSON
 )
 
     if [ "$mode" = "gateway" ]; then
         gateway_request "POST" "/v1/order" "userId=${user_id}" "$payload"
     else
-        curl -sf -X POST "${ORDER_URL}/v1/order?userId=${user_id}" \
-            -H "Content-Type: application/json" \
-            -d "$payload"
+        http_request "POST" "${ORDER_URL}/v1/order" "$payload" "$user_id"
     fi
 }
 
@@ -350,7 +570,7 @@ cancel_order() {
     if [ "$mode" = "gateway" ]; then
         gateway_request "DELETE" "/v1/order" "userId=${user_id}&symbol=${symbol}&orderId=${order_id}" ""
     else
-        curl -sf -X DELETE "${ORDER_URL}/v1/order?userId=${user_id}&symbol=${symbol}&orderId=${order_id}"
+        http_request "DELETE" "${ORDER_URL}/v1/order?symbol=${symbol}&orderId=${order_id}" "" "$user_id"
     fi
 }
 
@@ -362,9 +582,9 @@ check_balance() {
 
     local resp
     if [ "$mode" = "gateway" ]; then
-        resp=$(gateway_request "GET" "/v1/account" "" "")
+        resp=$(gateway_request "GET" "/v1/account" "" "") || return 1
     else
-        resp=$(curl -sf "${CLEARING_URL}/v1/account?userId=${user_id}")
+        resp=$(http_request "GET" "${CLEARING_URL}/v1/account" "" "$user_id") || return 1
     fi
 
     python3 - "$resp" "$asset" "$field" <<'PY'
@@ -389,9 +609,9 @@ check_order_status() {
 
     local resp
     if [ "$mode" = "gateway" ]; then
-        resp=$(gateway_request "GET" "/v1/order" "userId=${user_id}&orderId=${order_id}" "")
+        resp=$(gateway_request "GET" "/v1/order" "userId=${user_id}&orderId=${order_id}" "") || return 1
     else
-        resp=$(curl -sf "${ORDER_URL}/v1/order?userId=${user_id}&orderId=${order_id}")
+        resp=$(http_request "GET" "${ORDER_URL}/v1/order?orderId=${order_id}" "" "$user_id") || return 1
     fi
 
     python3 - "$resp" <<'PY'
@@ -423,7 +643,7 @@ ws_auth_url() {
     local timestamp
     timestamp=$(now_ms)
     local nonce
-    nonce=$(date +%s%N)
+    nonce=$(nonce_str)
     local query="apiKey=${GATEWAY_API_KEY}&timestamp=${timestamp}&nonce=${nonce}"
     local sig
     sig=$(canonical_signature "GET" "/ws/private" "$query" "$timestamp" "$nonce" "$GATEWAY_API_SECRET")
@@ -436,7 +656,7 @@ start_ws_listener() {
     local ws_url
     ws_url=$(ws_auth_url)
 
-    python3 - "$ws_url" "$timeout_seconds" >"$output_file" 2>/dev/null <<'PY' &
+    python3 - "$ws_url" "$timeout_seconds" >"$output_file" 2>"${output_file}.err" <<'PY' &
 import base64
 import os
 import socket
@@ -470,6 +690,9 @@ sock.sendall(request.encode())
 resp = sock.recv(4096).decode(errors="ignore")
 if " 101 " not in resp:
     sys.exit(1)
+
+sys.stdout.write("WS_CONNECTED\n")
+sys.stdout.flush()
 
 sock.settimeout(0.5)
 end = time.time() + timeout
@@ -508,5 +731,7 @@ while time.time() < end:
 
 sock.close()
 PY
-    echo $!
+
+    WS_LISTENER_PID=$!
+    return 0
 }

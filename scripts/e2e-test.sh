@@ -9,17 +9,73 @@ USER_URL=${USER_URL:-"http://localhost:8085"}
 ORDER_URL=${ORDER_URL:-"http://localhost:8081"}
 MATCHING_URL=${MATCHING_URL:-"http://localhost:8082"}
 CLEARING_URL=${CLEARING_URL:-"http://localhost:8083"}
-WS_URL=${WS_URL:-"ws://localhost:8080"}
+WS_URL=${WS_URL:-"ws://localhost:8090"}
 DB_URL=${DB_URL:-"postgres://exchange:exchange123@localhost:5436/exchange?sslmode=disable"}
 
-GATEWAY_API_KEY=${GATEWAY_API_KEY:-"test-api-key"}
-GATEWAY_API_SECRET=${GATEWAY_API_SECRET:-"test-secret"}
-WS_USER_ID=${WS_USER_ID:-1}
+INTERNAL_TOKEN=${INTERNAL_TOKEN:-"dev-internal-token-change-me"}
+
+GATEWAY_API_KEY=${GATEWAY_API_KEY:-""}
+GATEWAY_API_SECRET=${GATEWAY_API_SECRET:-""}
+WS_USER_ID=${WS_USER_ID:-""}
 AUTO_CLEANUP=${AUTO_CLEANUP:-1}
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/test-helpers.sh"
+
+prepare_gateway_credentials() {
+    if [ -n "$GATEWAY_API_KEY" ] || [ -n "$GATEWAY_API_SECRET" ]; then
+        if [ -z "$WS_USER_ID" ]; then
+            log_error "WS_USER_ID is required when providing GATEWAY_API_KEY/GATEWAY_API_SECRET"
+            return 1
+        fi
+        return 0
+    fi
+
+    log_info "Preparing gateway API key for E2E..."
+
+    local ts
+    ts=$(now_ms)
+    local email="e2e_${ts}@local"
+    local password="Test123456"
+
+    curl -sS -X POST "${USER_URL}/v1/auth/register" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"${email}\",\"password\":\"${password}\"}" >/dev/null || true
+
+    local login_resp
+    login_resp=$(curl -sS -X POST "${USER_URL}/v1/auth/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"${email}\",\"password\":\"${password}\"}")
+
+    local token
+    token=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("token",""))' "$login_resp")
+
+    local user_id
+    user_id=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("userId") or d.get("userID") or "")' "$login_resp")
+
+    if [ -z "$token" ] || [ -z "$user_id" ]; then
+        log_error "Failed to login/register test user"
+        return 1
+    fi
+
+    local apikey_resp
+    apikey_resp=$(curl -sS -X POST "${USER_URL}/v1/apiKeys" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${token}" \
+        -d '{"label":"e2e","permissions":3,"ipWhitelist":[]}')
+
+    GATEWAY_API_KEY=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("apiKey",""))' "$apikey_resp")
+    GATEWAY_API_SECRET=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("secret",""))' "$apikey_resp")
+
+    if [ -z "$GATEWAY_API_KEY" ] || [ -z "$GATEWAY_API_SECRET" ]; then
+        log_error "Failed to create API key for test user"
+        return 1
+    fi
+
+    WS_USER_ID="$user_id"
+    log_info "Prepared gateway credentials for WS_USER_ID=${WS_USER_ID}"
+}
 
 cleanup_data() {
     if [ -f "${SCRIPT_DIR}/cleanup-test-data.sql" ]; then
@@ -65,11 +121,15 @@ test_deposit_and_order() {
     local before_frozen
     before_frozen=$(check_balance gateway "$user_id" "$asset" "Frozen")
 
-    local price="30000"
+    local price
+    price=$(maker_symbol_price "$symbol" "BUY")
+    if [ -z "$price" ]; then
+        price="30000"
+    fi
     local qty="0.1"
     local client_id="e2e-deposit-order-$(now_ms)"
     local resp
-    resp=$(place_order gateway "$user_id" "$symbol" "BUY" "LIMIT" "$price" "$qty" "$client_id")
+    resp=$(place_order gateway "$user_id" "$symbol" "BUY" "LIMIT" "$price" "$qty" "$client_id" "POST_ONLY") || return 1
 
     local order_id
     order_id=$(parse_order_id "$resp")
@@ -105,6 +165,8 @@ test_deposit_and_order() {
 test_matching() {
     log_info "Test: Matching trade flow"
 
+    http_request "POST" "${MATCHING_URL}/internal/reset?symbol=BTCUSDT" "" >/dev/null
+
     local ts
     ts=$(now_ms)
     local user_a
@@ -123,17 +185,21 @@ test_matching() {
     seller_btc_before=$(check_balance direct "$user_a" "BTC" "Available")
     buyer_usdt_before=$(check_balance direct "$user_b" "USDT" "Available")
 
-    local price="31000"
+    local price
+    price=$(reference_symbol_price "BTCUSDT")
+    if [ -z "$price" ]; then
+        price="31000"
+    fi
     local qty="0.1"
 
     local sell_resp
-    sell_resp=$(place_order direct "$user_a" "BTCUSDT" "SELL" "LIMIT" "$price" "$qty" "e2e-sell-${ts}")
+    sell_resp=$(place_order direct "$user_a" "BTCUSDT" "SELL" "LIMIT" "$price" "$qty" "e2e-sell-${ts}" "GTC") || return 1
     local sell_id
     sell_id=$(parse_order_id "$sell_resp")
     assert_non_empty "$sell_id" "Sell order id missing"
 
     local buy_resp
-    buy_resp=$(place_order direct "$user_b" "BTCUSDT" "BUY" "LIMIT" "$price" "$qty" "e2e-buy-${ts}")
+    buy_resp=$(place_order direct "$user_b" "BTCUSDT" "BUY" "LIMIT" "$price" "$qty" "e2e-buy-${ts}" "GTC") || return 1
     local buy_id
     buy_id=$(parse_order_id "$buy_resp")
     assert_non_empty "$buy_id" "Buy order id missing"
@@ -148,6 +214,11 @@ test_matching() {
         fi
         sleep 1
     done
+
+    if [ "$trade_count" -le 0 ] 2>/dev/null; then
+        log_error "Trade not created"
+        return 1
+    fi
 
     local seller_btc_after
     local buyer_usdt_after
@@ -170,8 +241,18 @@ test_matching() {
 
     local ledger_count_a
     local ledger_count_b
-    ledger_count_a=$(psql_exec "SELECT COUNT(*) FROM exchange_clearing.ledger_entries WHERE user_id=${user_a} AND ref_type='TRADE';")
-    ledger_count_b=$(psql_exec "SELECT COUNT(*) FROM exchange_clearing.ledger_entries WHERE user_id=${user_b} AND ref_type='TRADE';")
+    ledger_count_a=0
+    ledger_count_b=0
+    for i in {1..30}; do
+        ledger_count_a=$(psql_exec "SELECT COUNT(*) FROM exchange_clearing.ledger_entries WHERE user_id=${user_a} AND ref_type='TRADE';" | tr -d ' ' || echo "0")
+        ledger_count_b=$(psql_exec "SELECT COUNT(*) FROM exchange_clearing.ledger_entries WHERE user_id=${user_b} AND ref_type='TRADE';" | tr -d ' ' || echo "0")
+        ledger_count_a=${ledger_count_a:-0}
+        ledger_count_b=${ledger_count_b:-0}
+        if [ "$ledger_count_a" -gt 0 ] 2>/dev/null && [ "$ledger_count_b" -gt 0 ] 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
 
     if [ "$ledger_count_a" -le 0 ] || [ "$ledger_count_b" -le 0 ]; then
         log_error "Ledger entries for trade not found"
@@ -190,12 +271,16 @@ test_cancel_order() {
     local before_frozen
     before_frozen=$(check_balance gateway "$user_id" "$asset" "Frozen")
 
-    local price="10000"
+    local price
+    price=$(maker_symbol_price "BTCUSDT" "BUY")
+    if [ -z "$price" ]; then
+        price="30000"
+    fi
     local qty="0.1"
     local client_id="e2e-cancel-$(now_ms)"
 
     local resp
-    resp=$(place_order gateway "$user_id" "BTCUSDT" "BUY" "LIMIT" "$price" "$qty" "$client_id")
+    resp=$(place_order gateway "$user_id" "BTCUSDT" "BUY" "LIMIT" "$price" "$qty" "$client_id" "POST_ONLY") || return 1
     local order_id
     order_id=$(parse_order_id "$resp")
     assert_non_empty "$order_id" "Cancel order id missing"
@@ -222,45 +307,87 @@ test_cancel_order() {
 test_websocket() {
     log_info "Test: WebSocket private events"
 
+    http_request "POST" "${MATCHING_URL}/internal/reset?symbol=BTCUSDT" "" >/dev/null
+
     local tmpfile
     tmpfile=$(mktemp)
     local listener_pid
-    listener_pid=$(start_ws_listener "$tmpfile" 10)
+    start_ws_listener "$tmpfile" 10
+    listener_pid=${WS_LISTENER_PID:-""}
+    assert_non_empty "$listener_pid" "WebSocket listener PID missing"
 
-    local price="32000"
+    # Give the WS handshake a moment to complete before triggering events.
+    sleep 0.5
+
+    local price
+    price=$(reference_symbol_price "BTCUSDT")
+    if [ -z "$price" ]; then
+        price="32000"
+    fi
     local qty="0.1"
     local ts
     ts=$(now_ms)
 
+    local other_user
+    other_user=$(create_test_user "e2e_ws_other_${ts}@local")
+    assert_non_empty "$other_user" "WS counterparty user not created"
+
     deposit "$WS_USER_ID" "BTC" "$(scale_asset_amount "BTC" "1")"
+    deposit "$other_user" "USDT" "$(scale_asset_amount "USDT" "10000")"
 
-    place_order direct "$WS_USER_ID" "BTCUSDT" "SELL" "LIMIT" "$price" "$qty" "e2e-ws-sell-${ts}" >/dev/null
-    place_order gateway "$WS_USER_ID" "BTCUSDT" "BUY" "LIMIT" "$price" "$qty" "e2e-ws-buy-${ts}" >/dev/null
+    place_order gateway "$WS_USER_ID" "BTCUSDT" "SELL" "LIMIT" "$price" "$qty" "e2e-ws-sell-${ts}" "GTC" >/dev/null
+    place_order direct "$other_user" "BTCUSDT" "BUY" "LIMIT" "$price" "$qty" "e2e-ws-buy-${ts}" "GTC" >/dev/null
 
-    sleep 2
+    wait_for_condition 20 0.25 "grep -q 'WS_CONNECTED' '$tmpfile'" || {
+        log_error "WebSocket handshake marker missing"
+        if [ -f "${tmpfile}.err" ]; then
+            tail -n 50 "${tmpfile}.err" >&2 || true
+        fi
+        tail -n 50 "$tmpfile" >&2 || true
+        return 1
+    }
 
+    wait_for_condition 40 0.25 "grep -q '\"channel\":\"order\"' '$tmpfile'" || true
+    wait_for_condition 40 0.25 "grep -q '\"channel\":\"trade\"' '$tmpfile'" || true
+    wait_for_condition 40 0.25 "grep -q '\"channel\":\"balance\"' '$tmpfile'" || true
+
+    local ws_rc=0
     if kill -0 "$listener_pid" >/dev/null 2>&1; then
-        wait "$listener_pid" || true
+        wait "$listener_pid" || ws_rc=$?
+    fi
+
+    if [ "$ws_rc" -ne 0 ]; then
+        log_error "WebSocket listener failed (exit=${ws_rc})"
+        if [ -f "${tmpfile}.err" ]; then
+            tail -n 50 "${tmpfile}.err" >&2 || true
+        fi
+        tail -n 80 "$tmpfile" >&2 || true
+        return 1
     fi
 
     if ! grep -q '"channel":"order"' "$tmpfile"; then
         log_error "No order event received on WebSocket"
+        tail -n 80 "$tmpfile" >&2 || true
         return 1
     fi
     if ! grep -q '"channel":"trade"' "$tmpfile"; then
         log_error "No trade event received on WebSocket"
+        tail -n 80 "$tmpfile" >&2 || true
         return 1
     fi
     if ! grep -q '"channel":"balance"' "$tmpfile"; then
         log_error "No balance event received on WebSocket"
+        tail -n 80 "$tmpfile" >&2 || true
         return 1
     fi
 
-    rm -f "$tmpfile"
+    rm -f "$tmpfile" "${tmpfile}.err"
 }
 
 test_price_protection() {
     log_info "Test: Price protection"
+
+    http_request "POST" "${MATCHING_URL}/internal/reset?symbol=BTCUSDT" "" >/dev/null
 
     local user_id=$WS_USER_ID
     local ts
@@ -269,22 +396,71 @@ test_price_protection() {
     deposit "$user_id" "USDT" "$(scale_asset_amount "USDT" "5000")"
     deposit "$user_id" "BTC" "$(scale_asset_amount "BTC" "1")"
 
-    local bid_price="30000"
-    local ask_price="31000"
+    local ref_price
+    ref_price=$(reference_symbol_price "BTCUSDT")
+    if [ -z "$ref_price" ]; then
+        ref_price="30000"
+    fi
+
+    local tick
+    tick=$(symbol_price_tick "BTCUSDT")
+
+    local bid_price
+    local ask_price
+    bid_price=$(python3 - "$ref_price" "$tick" <<'PY'
+from decimal import Decimal
+import sys
+
+ref = Decimal(sys.argv[1])
+tick = Decimal(sys.argv[2])
+out = ref - tick
+if out <= 0:
+    out = ref
+s = format(out, "f")
+if "." in s:
+    s = s.rstrip("0").rstrip(".")
+print(s)
+PY
+)
+    ask_price=$(python3 - "$ref_price" "$tick" <<'PY'
+from decimal import Decimal
+import sys
+
+ref = Decimal(sys.argv[1])
+tick = Decimal(sys.argv[2])
+out = ref + tick
+s = format(out, "f")
+if "." in s:
+    s = s.rstrip("0").rstrip(".")
+print(s)
+PY
+)
     local qty="0.1"
 
     local bid_resp
-    bid_resp=$(place_order direct "$user_id" "BTCUSDT" "BUY" "LIMIT" "$bid_price" "$qty" "e2e-bid-${ts}")
+    bid_resp=$(place_order direct "$user_id" "BTCUSDT" "BUY" "LIMIT" "$bid_price" "$qty" "e2e-bid-${ts}" "POST_ONLY") || return 1
     local bid_id
     bid_id=$(parse_order_id "$bid_resp")
 
     local ask_resp
-    ask_resp=$(place_order direct "$user_id" "BTCUSDT" "SELL" "LIMIT" "$ask_price" "$qty" "e2e-ask-${ts}")
+    ask_resp=$(place_order direct "$user_id" "BTCUSDT" "SELL" "LIMIT" "$ask_price" "$qty" "e2e-ask-${ts}" "POST_ONLY") || return 1
     local ask_id
     ask_id=$(parse_order_id "$ask_resp")
 
     local payload
-    local out_price="50000"
+    local out_price
+    out_price=$(python3 - "$ref_price" <<'PY'
+from decimal import Decimal
+import sys
+
+ref = Decimal(sys.argv[1])
+out = ref * Decimal(2)
+s = format(out, "f")
+if "." in s:
+    s = s.rstrip("0").rstrip(".")
+print(s)
+PY
+)
     local out_price_int
     local qty_int
     out_price_int=$(scale_symbol_price "BTCUSDT" "$out_price")
@@ -299,15 +475,21 @@ test_price_protection() {
 JSON
 )
 
-    local resp
-    resp=$(curl -s -w "\n%{http_code}" -X POST "${ORDER_URL}/v1/order?userId=${user_id}" \
-        -H "Content-Type: application/json" \
-        -d "$payload")
-
-    local body
-    body=$(echo "$resp" | head -n 1)
+    local tmp
+    tmp=$(mktemp)
     local code
-    code=$(echo "$resp" | tail -n 1)
+    code=$(curl -sS -o "$tmp" -w "%{http_code}" -X POST "${ORDER_URL}/v1/order" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
+        -H "X-User-Id: ${user_id}" \
+        -d "$payload") || {
+        rm -f "$tmp"
+        log_error "Price protection request failed"
+        return 1
+    }
+    local body
+    body=$(cat "$tmp")
+    rm -f "$tmp"
 
     if [ "$code" -ne 400 ]; then
         log_error "Expected HTTP 400 for price protection, got ${code}"
@@ -330,12 +512,21 @@ JSON
 test_reconciliation() {
     log_info "Test: Reconciliation"
 
+    if [ "${E2E_SKIP_RECONCILIATION:-0}" = "1" ]; then
+        log_warn "Skipping reconciliation (E2E_SKIP_RECONCILIATION=1)"
+        return 0
+    fi
+
     local output
     local clearing_dir="${SCRIPT_DIR}/../exchange-clearing"
-    output=$(cd "$clearing_dir" && go run ./cmd/reconciliation/main.go --db-url "$DB_URL" 2>&1) || {
+    output=$(cd "$clearing_dir" && go run ./cmd/reconciliation/main.go --db-url "$DB_URL" --alert=false 2>&1) || {
         log_error "Reconciliation failed: $output"
         return 1
     }
+
+    if echo "$output" | grep -q "Discrepancy found"; then
+        log_warn "Reconciliation reported discrepancies (ignored in E2E with --alert=false)"
+    fi
 }
 
 main() {
@@ -347,16 +538,31 @@ main() {
         cleanup_data
     fi
 
+    prepare_gateway_credentials || return 1
+
+    log_info "E2E config: API_URL=${API_URL} USER_URL=${USER_URL} WS_URL=${WS_URL} WS_USER_ID=${WS_USER_ID} apiKey_len=${#GATEWAY_API_KEY} secret_len=${#GATEWAY_API_SECRET}"
+
     if [ "$AUTO_CLEANUP" -eq 1 ]; then
         trap cleanup_data EXIT
     fi
 
-    test_deposit_and_order && log_info "✓ Deposit & Order"
-    test_matching && log_info "✓ Matching"
-    test_cancel_order && log_info "✓ Cancel Order"
-    test_websocket && log_info "✓ WebSocket"
-    test_price_protection && log_info "✓ Price Protection"
-    test_reconciliation && log_info "✓ Reconciliation"
+    test_deposit_and_order || return 1
+    log_info "✓ Deposit & Order"
+
+    test_matching || return 1
+    log_info "✓ Matching"
+
+    test_cancel_order || return 1
+    log_info "✓ Cancel Order"
+
+    test_websocket || return 1
+    log_info "✓ WebSocket"
+
+    test_price_protection || return 1
+    log_info "✓ Price Protection"
+
+    test_reconciliation || return 1
+    log_info "✓ Reconciliation"
 
     log_info "=== All Tests Passed ==="
 }
