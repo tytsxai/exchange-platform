@@ -9,6 +9,7 @@ info:
 
     ## Authentication
     All endpoints (except /health, /docs) require Bearer token authentication.
+    All `/admin/*` endpoints also require `X-Admin-Token` header.
     Token format: `Bearer <signed-token>` (HMAC, versioned).
 
     ## Permissions
@@ -57,6 +58,7 @@ paths:
       operationId: getSystemStatus
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       responses:
         '200':
           description: System status
@@ -76,6 +78,7 @@ paths:
       operationId: listSymbols
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       responses:
         '200':
           description: List of symbols
@@ -93,6 +96,7 @@ paths:
       operationId: createSymbol
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       requestBody:
         required: true
         content:
@@ -119,6 +123,7 @@ paths:
       operationId: getSymbol
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       parameters:
         - name: symbol
           in: path
@@ -143,6 +148,7 @@ paths:
       operationId: updateSymbol
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       parameters:
         - name: symbol
           in: path
@@ -182,6 +188,7 @@ paths:
       operationId: killSwitch
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       requestBody:
         required: true
         content:
@@ -209,6 +216,7 @@ paths:
       operationId: listAuditLogs
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       parameters:
         - name: targetType
           in: query
@@ -242,6 +250,7 @@ paths:
       operationId: listRoles
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       responses:
         '200':
           description: List of roles
@@ -260,6 +269,7 @@ paths:
       operationId: getUserRoles
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       parameters:
         - name: userId
           in: query
@@ -284,6 +294,7 @@ paths:
       operationId: assignRole
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       requestBody:
         required: true
         content:
@@ -305,6 +316,7 @@ paths:
       operationId: removeRole
       security:
         - BearerAuth: []
+          AdminTokenAuth: []
       requestBody:
         required: true
         content:
@@ -325,6 +337,12 @@ components:
       type: http
       scheme: bearer
       description: "Bearer token from login (format: v1.<payload>.<signature>)"
+
+    AdminTokenAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: "Additional admin token for /admin/* (ADMIN_TOKEN)"
 
   schemas:
     # ==================== Request Schemas ====================
