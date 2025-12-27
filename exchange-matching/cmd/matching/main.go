@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/matching/internal/config"
 	"github.com/exchange/matching/internal/handler"
 	"github.com/exchange/matching/internal/metrics"
@@ -25,6 +26,9 @@ func main() {
 	log.Printf("Starting %s...", cfg.ServiceName)
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid config: %v", err)
+	}
+	if err := snowflake.Init(cfg.WorkerID); err != nil {
+		log.Fatalf("Failed to init snowflake: %v", err)
 	}
 
 	// 连接 Redis
@@ -120,6 +124,23 @@ func main() {
 	})
 	mux.HandleFunc("/depth", depthHandler)
 	mux.HandleFunc("/v1/depth", depthHandler)
+
+	if cfg.AppEnv == "dev" || os.Getenv("ALLOW_INTERNAL_RESET") == "1" {
+		resetHandler := requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			symbol := r.URL.Query().Get("symbol")
+			reset := h.ResetEngines(symbol)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"reset":  reset,
+				"symbol": symbol,
+			})
+		})
+		mux.HandleFunc("/internal/reset", resetHandler)
+	}
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),

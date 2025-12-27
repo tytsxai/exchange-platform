@@ -172,6 +172,10 @@ func (e *Engine) Events() <-chan *Event {
 	return e.eventCh
 }
 
+func (e *Engine) Done() <-chan struct{} {
+	return e.ctx.Done()
+}
+
 // Depth 获取深度
 func (e *Engine) Depth(limit int) (bids, asks []orderbook.PriceQty) {
 	return e.book.Depth(limit)

@@ -5,6 +5,8 @@ import (
 	"container/list"
 	"sync"
 	"time"
+
+	"github.com/exchange/common/pkg/snowflake"
 )
 
 // Side 订单方向
@@ -54,9 +56,6 @@ type OrderBook struct {
 	askPrices []int64
 
 	mu sync.RWMutex
-
-	// 序列号
-	seq int64
 }
 
 // NewOrderBook 创建订单簿
@@ -311,7 +310,7 @@ func (ob *OrderBook) Match(taker *Order) *MatchResult {
 
 			// 创建成交
 			trade := &Trade{
-				TradeID:      ob.nextSeq(),
+				TradeID:      snowflake.MustNextID(),
 				Symbol:       ob.Symbol,
 				MakerOrderID: maker.OrderID,
 				TakerOrderID: taker.OrderID,
@@ -354,11 +353,6 @@ func (ob *OrderBook) Match(taker *Order) *MatchResult {
 
 	result.TakerFilled = taker.LeavesQty <= 0
 	return result
-}
-
-func (ob *OrderBook) nextSeq() int64 {
-	ob.seq++
-	return ob.seq
 }
 
 // insertPrice 插入价格并保持排序

@@ -299,6 +299,8 @@ func (h *Handler) forwardEvents(ctx context.Context, eng *engine.Engine) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-eng.Done():
+			return
 		case event := <-eng.Events():
 			if event == nil {
 				continue
@@ -441,4 +443,30 @@ func (h *Handler) GetDepth(symbol string, limit int) (bids, asks []orderbook.Pri
 	eng := h.getOrCreateEngine(symbol)
 	bids, asks = eng.Depth(limit)
 	return bids, asks, true
+}
+
+func (h *Handler) ResetEngines(symbol string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	resetOne := func(key string, eng *engine.Engine) {
+		eng.Stop()
+		delete(h.engines, key)
+	}
+
+	if symbol != "" {
+		eng, ok := h.engines[symbol]
+		if !ok {
+			return 0
+		}
+		resetOne(symbol, eng)
+		return 1
+	}
+
+	count := 0
+	for key, eng := range h.engines {
+		resetOne(key, eng)
+		count++
+	}
+	return count
 }
