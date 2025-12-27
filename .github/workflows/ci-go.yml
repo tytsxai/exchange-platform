@@ -14,6 +14,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bash Syntax Check
+        run: |
+          set -euo pipefail
+          bash -n scripts/test-helpers.sh
+          bash -n scripts/e2e-test.sh
+          bash -n exchange-common/scripts/start-all.sh
+          bash -n exchange-common/scripts/migrate.sh
+          bash -n exchange-common/scripts/prod-preflight.sh
+
   fmt:
     runs-on: ubuntu-latest
     steps:
@@ -23,7 +38,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21.x"
+          go-version: "1.25.x"
           cache: true
 
       - name: Gofmt Check
@@ -58,7 +73,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21.x"
+          go-version: "1.25.x"
           cache: true
 
       - name: Go Test

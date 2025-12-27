@@ -1,6 +1,6 @@
 module github.com/exchange/order
 
-go 1.21
+go 1.25
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.0

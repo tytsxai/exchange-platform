@@ -1,6 +1,6 @@
 module github.com/exchange/wallet
 
-go 1.21
+go 1.25
 
 require (
 	github.com/exchange/common v0.0.0
