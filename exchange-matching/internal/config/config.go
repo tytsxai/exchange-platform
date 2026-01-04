@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	envconfig "github.com/exchange/common/pkg/config"
 )
@@ -22,10 +23,11 @@ type Config struct {
 	RedisDB       int
 
 	// Streams
-	OrderStream   string
-	EventStream   string
-	ConsumerGroup string
-	ConsumerName  string
+	OrderStream    string
+	EventStream    string
+	ConsumerGroup  string
+	ConsumerName   string
+	OrderDedupeTTL time.Duration
 
 	// Private events (pub/sub)
 	PrivateUserEventChannel string
@@ -49,10 +51,11 @@ func Load() *Config {
 		RedisPassword: envconfig.GetEnv("REDIS_PASSWORD", ""),
 		RedisDB:       envconfig.GetEnvInt("REDIS_DB", 0),
 
-		OrderStream:   envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
-		EventStream:   envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
-		ConsumerGroup: envconfig.GetEnv("CONSUMER_GROUP", "matching-group"),
-		ConsumerName:  envconfig.GetEnv("CONSUMER_NAME", "matching-1"),
+		OrderStream:    envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
+		EventStream:    envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
+		ConsumerGroup:  envconfig.GetEnv("CONSUMER_GROUP", "matching-group"),
+		ConsumerName:   envconfig.GetEnv("CONSUMER_NAME", "matching-1"),
+		OrderDedupeTTL: envconfig.GetEnvDuration("MATCHING_ORDER_DEDUP_TTL", 24*time.Hour),
 
 		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
@@ -76,6 +79,9 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.ConsumerGroup) == "" || strings.TrimSpace(c.ConsumerName) == "" {
 			return fmt.Errorf("CONSUMER_GROUP and CONSUMER_NAME are required (APP_ENV=%s)", c.AppEnv)
 		}
+	}
+	if c.OrderDedupeTTL <= 0 {
+		return fmt.Errorf("MATCHING_ORDER_DEDUP_TTL must be positive")
 	}
 	return nil
 }

@@ -75,6 +75,10 @@ func (ob *OrderBook) AddOrder(order *Order) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
 
+	if _, exists := ob.orders[order.OrderID]; exists {
+		return
+	}
+
 	order.Timestamp = time.Now().UnixNano()
 
 	var levels map[int64]*PriceLevel

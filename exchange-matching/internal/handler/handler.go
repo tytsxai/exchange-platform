@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,7 @@ type Handler struct {
 	eventStream string // 输出流名称
 	group       string // 消费者组
 	consumer    string // 消费者名称
+	dedupeTTL   time.Duration
 
 	ctx context.Context
 
@@ -67,10 +69,15 @@ type Config struct {
 	EventStream string
 	Group       string
 	Consumer    string
+	DedupeTTL   time.Duration
 }
 
 // NewHandler 创建处理器
 func NewHandler(redisClient *redis.Client, cfg *Config) *Handler {
+	dedupeTTL := cfg.DedupeTTL
+	if dedupeTTL <= 0 {
+		dedupeTTL = 24 * time.Hour
+	}
 	return &Handler{
 		redis:       redisClient,
 		engines:     make(map[string]*engine.Engine),
@@ -78,6 +85,7 @@ func NewHandler(redisClient *redis.Client, cfg *Config) *Handler {
 		eventStream: cfg.EventStream,
 		group:       cfg.Group,
 		consumer:    cfg.Consumer,
+		dedupeTTL:   dedupeTTL,
 	}
 }
 
@@ -173,6 +181,11 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 		return
 	}
 
+	if !h.shouldProcess(ctx, &orderMsg) {
+		h.ack(ctx, msg.ID)
+		return
+	}
+
 	// 获取或创建引擎
 	eng := h.getOrCreateEngine(orderMsg.Symbol)
 
@@ -187,6 +200,21 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 	}
 
 	h.ack(ctx, msg.ID)
+}
+
+func (h *Handler) shouldProcess(ctx context.Context, msg *OrderMessage) bool {
+	if h.dedupeTTL <= 0 || msg == nil || msg.OrderID <= 0 {
+		return true
+	}
+	key := fmt.Sprintf("dedupe:%s:%d", strings.ToLower(msg.Type), msg.OrderID)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ok, err := h.redis.SetNX(timeoutCtx, key, "1", h.dedupeTTL).Result()
+	if err != nil {
+		log.Printf("dedupe check error: %v", err)
+		return true
+	}
+	return ok
 }
 
 func (h *Handler) processPending(ctx context.Context) error {

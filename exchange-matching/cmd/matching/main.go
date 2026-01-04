@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/matching/internal/config"
 	"github.com/exchange/matching/internal/handler"
@@ -60,6 +62,7 @@ func main() {
 		EventStream: cfg.EventStream,
 		Group:       cfg.ConsumerGroup,
 		Consumer:    cfg.ConsumerName,
+		DedupeTTL:   cfg.OrderDedupeTTL,
 	})
 
 	// 启动处理器
@@ -73,7 +76,7 @@ func main() {
 	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			next(w, r)
@@ -97,7 +100,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			metrics.Handler().ServeHTTP(w, r)
@@ -107,12 +110,12 @@ func main() {
 	depthHandler := requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 		if symbol == "" {
-			http.Error(w, "symbol required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "symbol required")
 			return
 		}
 		bids, asks, ok := h.GetDepth(symbol, 20)
 		if !ok {
-			http.Error(w, "symbol not found", http.StatusNotFound)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeSymbolNotFound, "symbol not found")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -128,7 +131,7 @@ func main() {
 	if cfg.AppEnv == "dev" || os.Getenv("ALLOW_INTERNAL_RESET") == "1" {
 		resetHandler := requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 				return
 			}
 			symbol := r.URL.Query().Get("symbol")
@@ -142,9 +145,11 @@ func main() {
 		mux.HandleFunc("/internal/reset", resetHandler)
 	}
 
+	handler := commonresp.RequestIDMiddleware(mux)
+	handler = commonresp.RecoveryMiddleware(handler)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
