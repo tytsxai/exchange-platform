@@ -92,10 +92,11 @@ func TestTOTPAPIKeyVerifySignatureSuccess(t *testing.T) {
 	svc.now = func() time.Time { return now }
 
 	payload := SignaturePayload{
-		Method: "POST",
-		Path:   "/orders",
-		Nonce:  "nonce-1",
-		Query:  url.Values{},
+		Method:   "POST",
+		Path:     "/orders",
+		Nonce:    "nonce-1",
+		Query:    url.Values{},
+		BodyHash: computeBodyHash([]byte("{}")),
 	}
 	timestamp := now.UnixMilli()
 	sig := signWithSecret("secret-key", buildSignaturePayload(timestamp, payload))
@@ -168,10 +169,11 @@ func TestTOTPAPIKeyVerifySignatureInvalidSignature(t *testing.T) {
 	svc.now = func() time.Time { return time.UnixMilli(1000) }
 
 	_, err := svc.VerifySignature("api-key", 1000, "bad", SignaturePayload{
-		Method: "GET",
-		Path:   "/orders",
-		Nonce:  "nonce-1",
-		Query:  url.Values{},
+		Method:   "GET",
+		Path:     "/orders",
+		Nonce:    "nonce-1",
+		Query:    url.Values{},
+		BodyHash: computeBodyHash(nil),
 	})
 	if !errors.Is(err, ErrInvalidSignature) {
 		t.Fatalf("expected ErrInvalidSignature, got %v", err)
@@ -296,7 +298,7 @@ func TestTOTPUserServiceApiKeyOps(t *testing.T) {
 			}, nil
 		},
 		getUserByIDFn: func(ctx context.Context, userID int64) (*repository.User, error) {
-			return &repository.User{UserID: userID}, nil
+			return &repository.User{UserID: userID, Status: repository.UserStatusActive}, nil
 		},
 	}
 	svc := NewUserService(repo, &mockIDGen{}, &stubTokenIssuer{token: "token_test"})
@@ -319,9 +321,9 @@ func TestTOTPUserServiceApiKeyOps(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	secret, userID, perms, err := svc.GetApiKeyInfo(context.Background(), "key")
-	if err != nil || secret == "" || userID != 7 || perms != 3 {
-		t.Fatalf("unexpected api key info: err=%v secret=%s userID=%d perms=%d", err, secret, userID, perms)
+	secret, userID, perms, whitelist, err := svc.GetApiKeyInfo(context.Background(), "key")
+	if err != nil || secret == "" || userID != 7 || perms != 3 || len(whitelist) != 0 {
+		t.Fatalf("unexpected api key info: err=%v secret=%s userID=%d perms=%d whitelist=%v", err, secret, userID, perms, whitelist)
 	}
 
 	user, err := svc.GetUser(context.Background(), 9)
@@ -362,7 +364,7 @@ func TestTOTPUserServiceApiKeyErrors(t *testing.T) {
 		t.Fatal("expected delete api key error")
 	}
 
-	if _, _, _, err := svc.GetApiKeyInfo(context.Background(), "key"); err == nil {
+	if _, _, _, _, err := svc.GetApiKeyInfo(context.Background(), "key"); err == nil {
 		t.Fatal("expected get api key info error")
 	}
 

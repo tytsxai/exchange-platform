@@ -159,7 +159,10 @@ func TestTOTPUserApiKeyFlow(t *testing.T) {
 	}
 	defer db.Close()
 
-	repo := NewUserRepository(db)
+	repo, err := NewUserRepositoryWithAPIKeySecret(db, []byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatalf("new repo: %v", err)
+	}
 	apiKey := &ApiKey{
 		ApiKeyID:    10,
 		UserID:      1,

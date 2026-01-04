@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -46,7 +49,11 @@ func (l *LoginRateLimiter) Middleware(next http.Handler) http.Handler {
 		ctx := r.Context()
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "invalid request", http.StatusBadRequest)
+			if isRequestTooLarge(err) {
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+			} else {
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid request")
+			}
 			return
 		}
 		r.Body.Close()
@@ -58,33 +65,33 @@ func (l *LoginRateLimiter) Middleware(next http.Handler) http.Handler {
 		if email != "" {
 			locked, err := l.isLocked(ctx, email)
 			if err != nil {
-				http.Error(w, "internal error", http.StatusInternalServerError)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInternal, "internal error")
 				return
 			}
 			if locked {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				commonresp.WriteStatusError(w, r, http.StatusTooManyRequests, commonerrors.CodeTooManyRequests, "too many requests")
 				return
 			}
 		}
 
 		ipCount, err := l.incrementCounter(ctx, "login:rate:ip:"+ip, l.window)
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInternal, "internal error")
 			return
 		}
 		if ipCount > int64(l.ipLimit) {
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			commonresp.WriteStatusError(w, r, http.StatusTooManyRequests, commonerrors.CodeTooManyRequests, "too many requests")
 			return
 		}
 
 		if email != "" {
 			userCount, err := l.incrementCounter(ctx, "login:rate:user:"+email, l.window)
 			if err != nil {
-				http.Error(w, "internal error", http.StatusInternalServerError)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInternal, "internal error")
 				return
 			}
 			if userCount > int64(l.userLimit) {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				commonresp.WriteStatusError(w, r, http.StatusTooManyRequests, commonerrors.CodeTooManyRequests, "too many requests")
 				return
 			}
 		}
@@ -162,23 +169,45 @@ func extractEmail(body []byte) string {
 }
 
 func clientIP(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		if len(parts) > 0 {
-			ip := strings.TrimSpace(parts[0])
-			if ip != "" {
+	remoteIP := remoteIPFromAddr(r.RemoteAddr)
+	if remoteIP != "" && isLikelyTrustedProxyIP(remoteIP) {
+		if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+			if idx := strings.IndexByte(forwarded, ','); idx >= 0 {
+				forwarded = forwarded[:idx]
+			}
+			if ip := strings.TrimSpace(forwarded); ip != "" {
 				return ip
 			}
 		}
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			return realIP
+		}
 	}
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
+	if remoteIP != "" {
+		return remoteIP
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func remoteIPFromAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err == nil && host != "" {
 		return host
 	}
-	return strings.TrimSpace(r.RemoteAddr)
+	return strings.TrimSpace(remoteAddr)
+}
+
+func isLikelyTrustedProxyIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }
 
 type statusRecorder struct {

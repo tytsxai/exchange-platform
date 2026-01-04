@@ -43,6 +43,7 @@ type Config struct {
 	InternalToken   string
 	AuthTokenSecret string
 	AuthTokenTTL    time.Duration
+	APIKeySecretKey string
 
 	WorkerID int64
 }
@@ -77,6 +78,7 @@ func Load() *Config {
 		InternalToken:   envconfig.GetEnv("INTERNAL_TOKEN", ""),
 		AuthTokenSecret: envconfig.GetEnv("AUTH_TOKEN_SECRET", ""),
 		AuthTokenTTL:    envconfig.GetEnvDuration("AUTH_TOKEN_TTL", 24*time.Hour),
+		APIKeySecretKey: envconfig.GetEnv("API_KEY_SECRET_KEY", ""),
 
 		WorkerID: envconfig.GetEnvInt64("WORKER_ID", 5),
 	}
@@ -91,6 +93,12 @@ func (c *Config) Validate() error {
 	}
 	if len(c.AuthTokenSecret) < 32 {
 		return fmt.Errorf("AUTH_TOKEN_SECRET must be at least 32 characters")
+	}
+	if c.APIKeySecretKey == "" {
+		return fmt.Errorf("API_KEY_SECRET_KEY is required")
+	}
+	if len(c.APIKeySecretKey) < 32 {
+		return fmt.Errorf("API_KEY_SECRET_KEY must be at least 32 characters")
 	}
 	if c.AppEnv != "dev" {
 		if envconfig.IsInsecureDevSecret(c.InternalToken) {

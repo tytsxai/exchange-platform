@@ -29,7 +29,10 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 	}
 	defer db.Close()
 
-	repo := repository.NewUserRepository(db)
+	repo, err := repository.NewUserRepositoryWithAPIKeySecret(db, []byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatalf("new repo: %v", err)
+	}
 	idGen := &stubIDGen{next: 100}
 	tokenIssuer := &stubTokenIssuer{token: "token_test"}
 	svc := NewUserService(repo, idGen, tokenIssuer)
@@ -167,9 +170,17 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 		WithArgs("api_key2").
 		WillReturnRows(keyRows)
 
-	secretHash, apiUserID, perms, err := svc.GetApiKeyInfo(ctx, "api_key2")
-	if err != nil || secretHash != "hash2" || apiUserID != 999 || perms != 1 {
-		t.Fatalf("GetApiKeyInfo failed: secret=%s user=%d perms=%d err=%v", secretHash, apiUserID, perms, err)
+	userStatusRows := sqlmock.NewRows([]string{
+		"user_id", "email", "phone", "password_hash", "status", "kyc_status", "created_at_ms", "updated_at_ms",
+	}).AddRow(int64(999), "api@b.com", nil, string(hash), repository.UserStatusActive, 1, int64(1), int64(1))
+
+	mock.ExpectQuery("FROM exchange_user.users").
+		WithArgs(int64(999)).
+		WillReturnRows(userStatusRows)
+
+	secretHash, apiUserID, perms, whitelist, err := svc.GetApiKeyInfo(ctx, "api_key2")
+	if err != nil || secretHash != "hash2" || apiUserID != 999 || perms != 1 || len(whitelist) != 0 {
+		t.Fatalf("GetApiKeyInfo failed: secret=%s user=%d perms=%d whitelist=%v err=%v", secretHash, apiUserID, perms, whitelist, err)
 	}
 
 	userRows := sqlmock.NewRows([]string{

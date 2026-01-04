@@ -3,9 +3,13 @@ package repository
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -54,14 +58,25 @@ type ApiKey struct {
 	UpdatedAtMs int64
 }
 
-// UserRepository 用户仓储
 type UserRepository struct {
-	db *sql.DB
+	db               *sql.DB
+	apiKeySecretKey  []byte
+	encryptAPISecret bool
 }
 
-// NewUserRepository 创建仓储
+const apiKeySecretEncPrefix = "enc:v1:"
+
 func NewUserRepository(db *sql.DB) *UserRepository {
 	return &UserRepository{db: db}
+}
+
+func NewUserRepositoryWithAPIKeySecret(db *sql.DB, key []byte) (*UserRepository, error) {
+	if len(key) < 32 {
+		return nil, errors.New("api key secret key must be at least 32 bytes")
+	}
+	secretKey := make([]byte, len(key))
+	copy(secretKey, key)
+	return &UserRepository{db: db, apiKeySecretKey: secretKey, encryptAPISecret: true}, nil
 }
 
 // CreateUser 创建用户
@@ -112,15 +127,12 @@ func (r *UserRepository) GetUserByID(ctx context.Context, userID int64) (*User, 
 	return r.scanUser(r.db.QueryRowContext(ctx, query, userID))
 }
 
-// VerifyPassword 验证密码
 func (r *UserRepository) VerifyPassword(user *User, password string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
 	return err == nil
 }
 
-// CreateApiKey 创建 API Key
 func (r *UserRepository) CreateApiKey(ctx context.Context, apiKey *ApiKey) (secret string, err error) {
-	// 生成 API Key 和 Secret
 	apiKey.ApiKey, err = generateRandomString(32)
 	if err != nil {
 		return "", fmt.Errorf("generate api key: %w", err)
@@ -131,8 +143,14 @@ func (r *UserRepository) CreateApiKey(ctx context.Context, apiKey *ApiKey) (secr
 		return "", fmt.Errorf("generate secret: %w", err)
 	}
 
-	// 存储原始 secret（用于签名验证）
-	apiKey.SecretHash = secret
+	secretHash := secret
+	if r.encryptAPISecret {
+		secretHash, err = r.encryptAPIKeySecret(secret)
+		if err != nil {
+			return "", fmt.Errorf("encrypt api key secret: %w", err)
+		}
+	}
+	apiKey.SecretHash = secretHash
 
 	query := `
 		INSERT INTO exchange_user.api_keys
@@ -204,9 +222,18 @@ func (r *UserRepository) DeleteApiKey(ctx context.Context, userID, apiKeyID int6
 	return nil
 }
 
-// VerifyApiKeySecret 验证 API Key Secret
 func (r *UserRepository) VerifyApiKeySecret(apiKey *ApiKey, secret string) bool {
-	return hmac.Equal([]byte(apiKey.SecretHash), []byte(secret))
+	// Prefer direct comparison (covers encrypted secrets after decryption).
+	if hmac.Equal([]byte(apiKey.SecretHash), []byte(secret)) {
+		return true
+	}
+	if r.encryptAPISecret {
+		// Backward compatibility for legacy HMAC-hashed secrets.
+		if hmac.Equal([]byte(apiKey.SecretHash), []byte(hmacSHA256(r.apiKeySecretKey, secret))) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *UserRepository) scanUser(row *sql.Row) (*User, error) {
@@ -248,6 +275,13 @@ func (r *UserRepository) scanApiKey(row *sql.Row) (*ApiKey, error) {
 
 	k.Label = label.String
 	k.IPWhitelist = ipWhitelist
+	if r.encryptAPISecret {
+		secret, _, err := r.decryptAPIKeySecret(k.SecretHash)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt api key secret: %w", err)
+		}
+		k.SecretHash = secret
+	}
 	return &k, nil
 }
 
@@ -267,6 +301,13 @@ func (r *UserRepository) scanApiKeyRow(rows *sql.Rows) (*ApiKey, error) {
 
 	k.Label = label.String
 	k.IPWhitelist = ipWhitelist
+	if r.encryptAPISecret {
+		secret, _, err := r.decryptAPIKeySecret(k.SecretHash)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt api key secret: %w", err)
+		}
+		k.SecretHash = secret
+	}
 	return &k, nil
 }
 
@@ -276,6 +317,65 @@ func generateRandomString(length int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+func hmacSHA256(key []byte, payload string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (r *UserRepository) encryptAPIKeySecret(secret string) (string, error) {
+	key := r.derivedAPIKeySecretKey()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nil, nonce, []byte(secret), nil)
+	payload := append(nonce, ciphertext...)
+	return apiKeySecretEncPrefix + base64.RawURLEncoding.EncodeToString(payload), nil
+}
+
+func (r *UserRepository) decryptAPIKeySecret(encoded string) (string, bool, error) {
+	if !strings.HasPrefix(encoded, apiKeySecretEncPrefix) {
+		return encoded, false, nil
+	}
+	key := r.derivedAPIKeySecretKey()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", true, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", true, err
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(encoded, apiKeySecretEncPrefix))
+	if err != nil {
+		return "", true, err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return "", true, fmt.Errorf("ciphertext too short")
+	}
+	nonce := raw[:gcm.NonceSize()]
+	ciphertext := raw[gcm.NonceSize():]
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", true, err
+	}
+	return string(plain), true, nil
+}
+
+func (r *UserRepository) derivedAPIKeySecretKey() []byte {
+	sum := sha256.Sum256(r.apiKeySecretKey)
+	return sum[:]
 }
 
 func nullString(s string) sql.NullString {

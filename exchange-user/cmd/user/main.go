@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,7 +18,9 @@ import (
 	"time"
 
 	commonauth "github.com/exchange/common/pkg/auth"
+	commonerrors "github.com/exchange/common/pkg/errors"
 	commonredis "github.com/exchange/common/pkg/redis"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/signature"
 	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/user/internal/config"
@@ -65,7 +69,10 @@ func main() {
 
 	// 创建服务
 	idGen := snowflakeIDGen{}
-	repo := repository.NewUserRepository(db)
+	repo, err := repository.NewUserRepositoryWithAPIKeySecret(db, []byte(cfg.APIKeySecretKey))
+	if err != nil {
+		log.Fatalf("Invalid API key secret config: %v", err)
+	}
 	svc := service.NewUserService(repo, idGen, tokenManager)
 
 	rdb := redis.NewClient(&redis.Options{
@@ -92,7 +99,7 @@ func main() {
 	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Internal-Token") != internalToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			next(w, r)
@@ -111,7 +118,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			promhttp.Handler().ServeHTTP(w, r)
@@ -129,7 +136,7 @@ func main() {
 	// 注册
 	mux.HandleFunc("/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -137,8 +144,7 @@ func main() {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
@@ -147,14 +153,13 @@ func main() {
 			Password: req.Password,
 		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if resp.ErrorCode != "" {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"code": resp.ErrorCode})
+			commonresp.WriteErrorCode(w, r, commonerrors.Code(resp.ErrorCode), "")
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -166,7 +171,7 @@ func main() {
 	// 登录
 	loginHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -174,8 +179,7 @@ func main() {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
@@ -184,14 +188,13 @@ func main() {
 			Password: req.Password,
 		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if resp.ErrorCode != "" {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"code": resp.ErrorCode})
+			commonresp.WriteErrorCode(w, r, commonerrors.Code(resp.ErrorCode), "")
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -211,14 +214,14 @@ func main() {
 		case http.MethodGet:
 			handleListApiKeys(w, r, svc, tokenManager)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 		}
 	})
 
 	// 删除 API Key
 	mux.HandleFunc("/v1/apiKeys/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 		handleDeleteApiKey(w, r, svc, tokenManager)
@@ -228,13 +231,20 @@ func main() {
 	mux.HandleFunc("/internal/apiKey", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		apiKey := r.URL.Query().Get("apiKey")
 		if apiKey == "" {
-			http.Error(w, "apiKey required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "apiKey required")
 			return
 		}
 
-		secretHash, userID, permissions, err := svc.GetApiKeyInfo(r.Context(), apiKey)
+		secretHash, userID, permissions, ipWhitelist, err := svc.GetApiKeyInfo(r.Context(), apiKey)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			switch {
+			case errors.Is(err, service.ErrUserFrozen):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUserFrozen, "user frozen")
+			case errors.Is(err, service.ErrUserDisabled):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUserDisabled, "user disabled")
+			default:
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeNotFound, "api key not found")
+			}
 			return
 		}
 
@@ -243,13 +253,14 @@ func main() {
 			"secretHash":  secretHash,
 			"userId":      userID,
 			"permissions": permissions,
+			"ipWhitelist": ipWhitelist,
 		})
 	}))
 
 	// 内部接口：验证 API Key 签名
 	mux.HandleFunc("/internal/verify-signature", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -261,9 +272,11 @@ func main() {
 			Method    string              `json:"method"`
 			Path      string              `json:"path"`
 			Query     map[string][]string `json:"query"`
+			Body      string              `json:"body"`
+			BodyHash  string              `json:"bodyHash"`
+			ClientIP  string              `json:"clientIp"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
@@ -279,9 +292,24 @@ func main() {
 			return
 		}
 
-		secret, userID, permissions, err := svc.GetApiKeyInfo(r.Context(), req.APIKey)
+		secret, userID, permissions, ipWhitelist, err := svc.GetApiKeyInfo(r.Context(), req.APIKey)
 		if err != nil {
-			resp["error"] = "invalid api key"
+			switch {
+			case errors.Is(err, service.ErrUserFrozen):
+				resp["error"] = "user frozen"
+			case errors.Is(err, service.ErrUserDisabled):
+				resp["error"] = "user disabled"
+			default:
+				resp["error"] = "invalid api key"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		clientIP := clientIPFromRequest(r)
+		if len(ipWhitelist) > 0 && !ipAllowed(clientIP, ipWhitelist) {
+			resp["error"] = "ip not allowed"
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
 			return
@@ -298,6 +326,10 @@ func main() {
 
 		query.Del("signature")
 		verifier := signature.NewVerifier(secret, signature.WithNonceStore(nonceStore))
+		var bodyBytes []byte
+		if req.Body != "" {
+			bodyBytes = []byte(req.Body)
+		}
 		err = verifier.VerifyRequest(&signature.Request{
 			ApiKey:      req.APIKey,
 			TimestampMs: req.Timestamp,
@@ -306,7 +338,8 @@ func main() {
 			Method:      req.Method,
 			Path:        path,
 			Query:       query,
-			Body:        nil,
+			Body:        bodyBytes,
+			BodyHash:    req.BodyHash,
 		})
 		if err == nil {
 			resp["valid"] = true
@@ -330,9 +363,12 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	}))
 
+	handler := limitBodyMiddleware(maxBodyBytes, mux)
+	handler = commonresp.RequestIDMiddleware(handler)
+	handler = commonresp.RecoveryMiddleware(handler)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -445,7 +481,7 @@ func metricsAuthorized(r *http.Request, token string) bool {
 func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService, tokenManager *commonauth.TokenManager) {
 	userID, err := userIDFromBearer(r, tokenManager)
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 		return
 	}
 
@@ -454,8 +490,7 @@ func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.Use
 		Permissions int      `json:"permissions"`
 		IPWhitelist []string `json:"ipWhitelist"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -466,7 +501,7 @@ func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.Use
 		IPWhitelist: req.IPWhitelist,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -483,13 +518,13 @@ func handleCreateApiKey(w http.ResponseWriter, r *http.Request, svc *service.Use
 func handleListApiKeys(w http.ResponseWriter, r *http.Request, svc *service.UserService, tokenManager *commonauth.TokenManager) {
 	userID, err := userIDFromBearer(r, tokenManager)
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 		return
 	}
 
 	keys, err := svc.ListApiKeys(r.Context(), userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -511,7 +546,7 @@ func handleListApiKeys(w http.ResponseWriter, r *http.Request, svc *service.User
 func handleDeleteApiKey(w http.ResponseWriter, r *http.Request, svc *service.UserService, tokenManager *commonauth.TokenManager) {
 	userID, err := userIDFromBearer(r, tokenManager)
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 		return
 	}
 	// 从路径提取 apiKeyId
@@ -520,13 +555,14 @@ func handleDeleteApiKey(w http.ResponseWriter, r *http.Request, svc *service.Use
 	apiKeyID, _ := strconv.ParseInt(apiKeyIDStr, 10, 64)
 
 	if apiKeyID == 0 {
-		http.Error(w, "apiKeyId required", http.StatusBadRequest)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "apiKeyId required")
 		return
 	}
 
 	err = svc.DeleteApiKey(r.Context(), userID, apiKeyID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		log.Printf("delete api key error: %v", err)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeNotFound, "api key not found")
 		return
 	}
 
@@ -551,4 +587,105 @@ func userIDFromBearer(r *http.Request, tokenManager *commonauth.TokenManager) (i
 		return 0, fmt.Errorf("invalid token")
 	}
 	return userID, nil
+}
+
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if isRequestTooLarge(err) {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+			return false
+		}
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid request")
+		return false
+	}
+	return true
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	commonresp.WriteErrorCode(w, nil, commonerrors.CodeInternal, "internal error")
+}
+
+func ipAllowed(clientIP string, whitelist []string) bool {
+	if len(whitelist) == 0 {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(clientIP))
+	if ip == nil {
+		return false
+	}
+	for _, entry := range whitelist {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			_, cidr, err := net.ParseCIDR(entry)
+			if err != nil {
+				continue
+			}
+			if cidr.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if ip.Equal(net.ParseIP(entry)) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	remoteIP := remoteIPFromAddr(r.RemoteAddr)
+	if remoteIP != "" && isLikelyTrustedProxyIP(remoteIP) {
+		if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+			if idx := strings.IndexByte(forwarded, ','); idx >= 0 {
+				forwarded = forwarded[:idx]
+			}
+			if ip := strings.TrimSpace(forwarded); ip != "" {
+				return ip
+			}
+		}
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			return realIP
+		}
+	}
+	if remoteIP != "" {
+		return remoteIP
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func remoteIPFromAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return strings.TrimSpace(remoteAddr)
+}
+
+func isLikelyTrustedProxyIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }

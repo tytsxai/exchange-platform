@@ -9,7 +9,11 @@ import (
 	"github.com/exchange/user/internal/repository"
 )
 
-var ErrTokenIssuerNotConfigured = errors.New("token issuer not configured")
+var (
+	ErrTokenIssuerNotConfigured = errors.New("token issuer not configured")
+	ErrUserFrozen               = errors.New("user frozen")
+	ErrUserDisabled             = errors.New("user disabled")
+)
 
 // UserRepository 用户仓储接口
 type UserRepository interface {
@@ -175,12 +179,26 @@ func (s *UserService) DeleteApiKey(ctx context.Context, userID, apiKeyID int64) 
 }
 
 // GetApiKeyInfo 获取 API Key 信息（用于网关鉴权）
-func (s *UserService) GetApiKeyInfo(ctx context.Context, apiKey string) (secret string, userID int64, permissions int, err error) {
+func (s *UserService) GetApiKeyInfo(ctx context.Context, apiKey string) (secret string, userID int64, permissions int, ipWhitelist []string, err error) {
 	key, err := s.repo.GetApiKeyByKey(ctx, apiKey)
 	if err != nil {
-		return "", 0, 0, err
+		return "", 0, 0, nil, err
 	}
-	return key.SecretHash, key.UserID, key.Permissions, nil
+	user, err := s.repo.GetUserByID(ctx, key.UserID)
+	if err != nil {
+		return "", 0, 0, nil, err
+	}
+	switch user.Status {
+	case repository.UserStatusActive:
+		// ok
+	case repository.UserStatusFrozen:
+		return "", 0, 0, nil, ErrUserFrozen
+	case repository.UserStatusDisabled:
+		return "", 0, 0, nil, ErrUserDisabled
+	default:
+		return "", 0, 0, nil, ErrUserDisabled
+	}
+	return key.SecretHash, key.UserID, key.Permissions, key.IPWhitelist, nil
 }
 
 // GetUser 获取用户

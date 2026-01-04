@@ -24,26 +24,24 @@ var (
 	ErrAPIKeyDisabled   = errors.New("api key disabled")
 )
 
-// SignaturePayload contains the pieces required to build the signature payload.
 type SignaturePayload struct {
-	Method string
-	Path   string
-	Nonce  string
-	Query  url.Values
+	Method   string
+	Path     string
+	Nonce    string
+	Query    url.Values
+	BodyHash string
+	Body     []byte
 }
 
-// APIKeyRepository provides access to API keys.
 type APIKeyRepository interface {
 	GetApiKeyByKey(ctx context.Context, key string) (*repository.ApiKey, error)
 }
 
-// APIKeyService verifies API key signatures.
 type APIKeyService struct {
 	repo APIKeyRepository
 	now  func() time.Time
 }
 
-// NewAPIKeyService creates a new API key service.
 func NewAPIKeyService(repo APIKeyRepository) *APIKeyService {
 	return &APIKeyService{
 		repo: repo,
@@ -51,7 +49,6 @@ func NewAPIKeyService(repo APIKeyRepository) *APIKeyService {
 	}
 }
 
-// VerifySignature validates signature and returns the user ID when successful.
 func (s *APIKeyService) VerifySignature(apiKey string, timestamp int64, signature string, payload SignaturePayload) (int64, error) {
 	nowMs := s.now().UnixMilli()
 	diff := nowMs - timestamp
@@ -80,11 +77,23 @@ func (s *APIKeyService) VerifySignature(apiKey string, timestamp int64, signatur
 }
 
 func buildSignaturePayload(timestamp int64, payload SignaturePayload) string {
-	return signature.BuildCanonicalString(timestamp, payload.Nonce, payload.Method, payload.Path, payload.Query, nil)
+	bodyHash := payload.BodyHash
+	if bodyHash == "" && len(payload.Body) > 0 {
+		bodyHash = computeBodyHash(payload.Body)
+	}
+	return signature.BuildCanonicalStringWithBodyHash(timestamp, payload.Nonce, payload.Method, payload.Path, payload.Query, bodyHash)
 }
 
 func signWithSecret(secret, data string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func computeBodyHash(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }

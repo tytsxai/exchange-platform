@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrTOTPNotFound        = errors.New("totp secret not found")
+	ErrTOTPNotFound         = errors.New("totp secret not found")
 	ErrInvalidTOTPKeyLength = errors.New("invalid TOTP encryption key length")
 )
 
