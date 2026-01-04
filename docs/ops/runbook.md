@@ -13,7 +13,7 @@
 
 ## 1. 发布前预检（必做）
 
-- 准备生产环境变量：复制 `deploy/prod/prod.env.example` → `deploy/prod/prod.env`，填入真实值
+- 准备生产环境变量：复制 `deploy/prod/prod.env.example` → `deploy/prod/prod.env`，填入真实值（特别注意 `API_KEY_SECRET_KEY` 必填且 >=32）
 - 初始化/迁移数据库（必须做一次，避免缺表/缺 schema 导致服务启动即异常）：
   - 有 `psql`：设置 `DB_URL=postgres://...` 后运行 `bash exchange-common/scripts/migrate.sh`
   - 没有 `psql`：用临时容器执行（示例）：
@@ -21,6 +21,8 @@
 - 运行预检脚本（防止误用 dev 默认值）：
   - `bash exchange-common/scripts/prod-preflight.sh`
   - 或指定 env 文件：`PROD_ENV_FILE=deploy/prod/prod.env bash deploy/prod/deploy.sh`（脚本会读取该文件做 preflight）
+- 精度一致性校验（资金口径）：确保 `price_precision == quote asset precision` 且 `qty_precision == base asset precision`
+  - 如需修复存量数据：执行 `scripts/align-symbol-precision.sql`（务必先备份）
 
 ## 2. 部署（Docker Compose）
 
@@ -58,6 +60,8 @@
   - 私有 WS 路径：`/ws/private`（默认端口：8090）
 - 关键链路 E2E（建议复用项目自带脚本/用例）：
   - 注册/登录 → 下单 → 撮合 → 清算 → 查询资产/订单
+- 一键就绪检查（可在内网执行）：
+  - `bash scripts/prod-verify.sh`（会检查各服务 /ready；可选 `RUN_E2E=1`）
 - 指标可抓取（建议只在内网/反代后访问）：
   - `curl -sf http://<gateway-host>:8080/metrics`
   - Prometheus 抓取示例配置：`deploy/prod/prometheus.yml`（告警规则：`deploy/prod/alerts.yml`）
@@ -88,12 +92,22 @@
   - 看对应服务日志中是否有 `panic` / `read stream error`
   - 校验 `*_CONSUMER_GROUP` / `*_CONSUMER_NAME` 是否按副本唯一
   - 检查 Redis 是否慢/断连导致持续失败；必要时先扩容 Redis/降低负载再重启消费者
+- **资金对账异常**：
+  - 运行对账工具：`go run exchange-clearing/cmd/reconciliation --db-url <DB_URL> --alert=true`
 
 ## 6. 安全操作要点（最低基线）
 
 - 只允许 `exchange-gateway`（以及可选 marketdata WS）对公网暴露，其余服务仅内网可达
 - `ENABLE_DOCS=false`（除非明确需要并且有额外保护）
 - `/metrics` 建议只走内网抓取；如必须暴露，请配置 `METRICS_TOKEN`
-- 真实客户端 IP：网关仅在“可信上游代理”（loopback/私网）场景信任 `X-Forwarded-For`；生产需确保反代会覆盖/清理客户端传入的 XFF
+- 真实客户端 IP：网关仅在“可信上游代理”（loopback/私网）场景信任 `X-Forwarded-For`；若反代/LB 使用公网 IP，需配置 `TRUSTED_PROXY_CIDRS` 显式信任；生产需确保反代会覆盖/清理客户端传入的 XFF
 - 如暴露 `marketdata` public WS（8094），务必设置 `MARKETDATA_WS_ALLOW_ORIGINS`（禁止 `*`），并避免把它直接裸奔在公网
 - 定期轮换 `INTERNAL_TOKEN` / `AUTH_TOKEN_SECRET` / `ADMIN_TOKEN` 并验证回滚路径
+
+## 7. 备份与数据保鲜（必须落地）
+
+- **Postgres 备份**：`bash exchange-common/scripts/backup-db.sh`（优先提供 `DB_URL`；也可用 `DB_HOST/DB_USER/...` 组合）
+- **Redis 备份**：`bash exchange-common/scripts/backup-redis.sh`（生产通常要求 `REDIS_PASSWORD`；如需 TLS，设置 `REDIS_TLS=true` 并按需提供 `REDIS_CACERT/REDIS_CERT/REDIS_KEY`）
+- **Redis Streams 修剪**：避免 Stream 无上限增长导致 Redis 内存耗尽  
+  - 例：`STREAMS="exchange:orders,exchange:events,exchange:events:dlq" MAX_LEN=1000000 bash exchange-common/scripts/trim-streams.sh`
+  - 建议：设置定时任务（见 `exchange-common/scripts/cron.example`）

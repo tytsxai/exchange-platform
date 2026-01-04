@@ -15,9 +15,10 @@
 
 ### 1.1 默认密钥/弱配置防呆
 
-- 非 `dev` 环境禁止使用默认占位符密钥（`INTERNAL_TOKEN`、`AUTH_TOKEN_SECRET`、`ADMIN_TOKEN`）。
+- 非 `dev` 环境禁止使用默认占位符密钥（`INTERNAL_TOKEN`、`AUTH_TOKEN_SECRET`、`ADMIN_TOKEN`、`API_KEY_SECRET_KEY`）。
 - 非 `dev` 环境强制 `DB_SSL_MODE != disable`、`DB_PASSWORD != exchange123`。
 - 非 `dev` 环境强制设置 `REDIS_PASSWORD`（避免“内网裸奔”配置被错误带到公网/跨机环境）。
+ - API Key secret 以对称加密方式存储；切换加密密钥需评估已有 Key 的迁移或重置流程。
 
 落地方式：
 - 代码侧 `Config.Validate()` fast-fail（避免带病启动）。
@@ -55,7 +56,8 @@
 - 审计/日志里的“客户端 IP”被污染，影响追查
 
 落地方式（已实现）：
-- 网关只在**上游为 loopback 或 RFC1918 私网**时才信任 `X-Forwarded-For`；否则忽略并使用 `RemoteAddr`。
+- 网关默认只在**上游为 loopback 或 RFC1918 私网**时才信任 `X-Forwarded-For`；否则忽略并使用 `RemoteAddr`。
+- 若你的反代/LB 使用**公网 IP**，必须配置 `TRUSTED_PROXY_CIDRS`（逗号分隔）以显式信任该代理网段。
 - 推荐生产网关前置反代/LB，并确保反代会覆盖/清理客户端传入的 XFF。
 
 ### 1.7 Public WebSocket 必须防滥用（Origin + 订阅上限 + 频道校验）
@@ -69,12 +71,24 @@
 - 单连接订阅数上限：`MARKETDATA_WS_MAX_SUBSCRIPTIONS`（默认 50）
 - 只允许订阅 `market.<SYMBOL>.(book|trades|ticker)`，并校验 SYMBOL（A-Z/0-9，长度<=32）
 
+### 1.8 交易对精度必须与资产精度一致（资金一致性）
+
+风险：订单/撮合/清算使用的精度与钱包资产精度不一致，会导致冻结/清算金额按错误的缩放倍数计算，
+从而出现“资金凭空增减/冻结不足”等严重一致性问题。
+
+落地方式（已实现）：
+- 下单前校验：`price_precision == quote asset precision`、`qty_precision == base asset precision`；
+  不一致直接拒单并提示配置错误。
+- 默认示例数据已对齐精度（见 `exchange-common/scripts/init-db.sql`）。
+- 存量数据库可执行：`scripts/align-symbol-precision.sql`（执行前务必备份）。
+
 ## 2. P1（不修会导致长期不稳定/难运维）
 
 ### 2.1 Redis Streams 消费稳定性
 
 - 消费组重启后 pending 消息处理策略（claim/重试/DLQ）需要明确并可观测。
 - 明确每个 consumer 的命名规则与部署副本数（防止同名 consumer 互相踢）。
+- 订单去重 TTL：`MATCHING_ORDER_DEDUP_TTL`（默认 24h），用于防止 Streams 重试导致重复下单。
 
 ### 2.2 数据一致性与恢复演练
 
@@ -102,6 +116,7 @@
 4. 部署服务（先内部服务，再网关），并检查：
    - `/ready` 全绿
    - 关键链路 E2E（下单/撮合/清算/查询）
+   - 可选：`bash scripts/prod-verify.sh` 做一键就绪检查
 5. 开启告警（实例存活、stream pending/DLQ、handler errors）。
 6. 做一次备份 + 恢复演练（至少在 staging）。
 

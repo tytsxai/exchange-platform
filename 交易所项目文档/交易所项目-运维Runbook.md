@@ -9,7 +9,7 @@ tags:
 summary: >
   交易所项目的运维与应急手册：SLO、关键指标、告警、降级开关、回滚与事故处理流程。
 created: 2025-12-21
-updated: 2025-12-26
+updated: 2025-12-29
 stage: draft
 visibility: internal
 owner: me
@@ -34,7 +34,9 @@ source: ""
 ## 0.1 上线前配置校验
 - `INTERNAL_TOKEN` 必须配置且非默认值（所有内部调用需一致）
 - `AUTH_TOKEN_SECRET` 必须配置（长度不少于 32 字符），`AUTH_TOKEN_TTL` 设置合理过期
+- `API_KEY_SECRET_KEY` 必须配置（长度不少于 32 字符，用于 API Key secret 加密）
 - `ADMIN_TOKEN` 必须配置（保护后台与钱包管理接口；请求需携带 `X-Admin-Token`）
+- `REDIS_PASSWORD` 非 dev 必须配置（生产必须有认证）
 - `EVENT_REPLAY_COUNT` 建议设置（行情重启回放条数，默认 1000，可按 TPS 调整）
 - `DB_SSL_MODE=require`（生产）+ 合理的连接池参数（`DB_MAX_OPEN_CONNS` 等）
 
@@ -144,6 +146,7 @@ source: ""
 ### 5.3 备份与恢复（最小流程）
 - PostgreSQL 备份：`exchange-common/scripts/backup-db.sh`（依赖 `DB_URL`，产出 `.dump` 文件）
 - PostgreSQL 恢复：`exchange-common/scripts/restore-db.sh <backup-file>`（恢复后需全量对账）
-- Redis 备份：`exchange-common/scripts/backup-redis.sh`（依赖 `REDIS_ADDR`，产出 `.rdb` 文件）
+- Redis 备份：`exchange-common/scripts/backup-redis.sh`（依赖 `REDIS_ADDR`；生产通常需要 `REDIS_PASSWORD`，如需 TLS 设置 `REDIS_TLS=true`）
 - 数据库迁移：`exchange-common/scripts/migrate.sh`（执行 `init-db.sql`/增量迁移并记录 `schema_migrations`；如检测到 DB 已初始化但未记录，会自动补记避免重复执行非幂等 DDL）
 - 频率建议：数据库每日全量 + 关键变更前手动备份；恢复后必须跑健康检查与资金对账
+- Redis Streams 修剪：`exchange-common/scripts/trim-streams.sh`（避免 Stream 无上限增长导致 Redis 内存耗尽；建议定时任务）

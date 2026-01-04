@@ -59,3 +59,18 @@
 - 反代/TLS 配置（Nginx/Caddy/LB）
 - 发布配置（镜像 tag、compose/k8s 配置）
 
+## 5. 对账/一致性演练（强烈建议）
+
+项目已内置清算对账工具，可用于生产定期校验：
+
+```bash
+go run exchange-clearing/cmd/reconciliation \
+  --db-url "postgres://user:pass@host:5432/exchange?sslmode=require" \
+  --alert=true \
+  --report /tmp/reconciliation-report.json
+```
+
+建议：
+- 生产最少每日/每小时运行一次（按业务量调整）
+- 发现差异立刻告警（P0），先止血再修复
+- 修复原则见运行手册与资金账本 ADR

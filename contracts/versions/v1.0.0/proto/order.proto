@@ -35,7 +35,9 @@ enum TimeInForce {
 
 // 订单状态
 enum OrderStatus {
+  option allow_alias = true;
   ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_INIT = 0;
   ORDER_STATUS_NEW = 1;
   ORDER_STATUS_PARTIALLY_FILLED = 2;
   ORDER_STATUS_FILLED = 3;

@@ -26,6 +26,7 @@
      - `docker run --rm -v "$(pwd)/exchange-common:/work" -w /work postgres:16-alpine sh -lc "apk add --no-cache bash >/dev/null && DB_URL=postgres://... bash scripts/migrate.sh"`
 1. 准备生产环境变量：
    - 复制 `deploy/prod/prod.env.example` → `deploy/prod/prod.env`，填入真实值
+   - 特别注意：`API_KEY_SECRET_KEY` 必填且长度 >= 32（用于 API Key secret 加密）
    - 建议设置 `APP_VERSION=<tag>`（用于镜像打标与快速回滚）
 2. 运行预检（会 fast-fail 防止误配）：
    - `bash exchange-common/scripts/prod-preflight.sh`
