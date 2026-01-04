@@ -10,12 +10,12 @@ import (
 // mockRepository 模拟仓储实现
 type mockRepository struct {
 	// 交易对管理
-	listSymbolConfigsFunc      func(ctx context.Context) ([]*repository.SymbolConfig, error)
-	getSymbolConfigFunc        func(ctx context.Context, symbol string) (*repository.SymbolConfig, error)
-	createSymbolConfigFunc     func(ctx context.Context, cfg *repository.SymbolConfig) error
-	updateSymbolConfigFunc     func(ctx context.Context, cfg *repository.SymbolConfig) error
-	updateSymbolStatusFunc     func(ctx context.Context, symbol string, status int) error
-	updateAllSymbolStatusFunc  func(ctx context.Context, status int) error
+	listSymbolConfigsFunc     func(ctx context.Context) ([]*repository.SymbolConfig, error)
+	getSymbolConfigFunc       func(ctx context.Context, symbol string) (*repository.SymbolConfig, error)
+	createSymbolConfigFunc    func(ctx context.Context, cfg *repository.SymbolConfig) error
+	updateSymbolConfigFunc    func(ctx context.Context, cfg *repository.SymbolConfig) error
+	updateSymbolStatusFunc    func(ctx context.Context, symbol string, status int) error
+	updateAllSymbolStatusFunc func(ctx context.Context, status int) error
 
 	// 审计日志
 	createAuditLogFunc func(ctx context.Context, log *repository.AuditLog) error

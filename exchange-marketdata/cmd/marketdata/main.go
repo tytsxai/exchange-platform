@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/marketdata/internal/config"
 	"github.com/exchange/marketdata/internal/service"
 	"github.com/exchange/marketdata/internal/ws"
@@ -81,7 +83,7 @@ func main() {
 	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			next(w, r)
@@ -100,7 +102,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			promhttp.Handler().ServeHTTP(w, r)
@@ -119,7 +121,7 @@ func main() {
 	mux.HandleFunc("/v1/depth", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 		if symbol == "" {
-			http.Error(w, "symbol required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "symbol required")
 			return
 		}
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -136,7 +138,7 @@ func main() {
 	mux.HandleFunc("/v1/trades", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Query().Get("symbol")
 		if symbol == "" {
-			http.Error(w, "symbol required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "symbol required")
 			return
 		}
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -171,9 +173,12 @@ func main() {
 		})
 	}))
 
+	handler := limitBodyMiddleware(maxBodyBytes, mux)
+	handler = commonresp.RequestIDMiddleware(handler)
+	handler = commonresp.RecoveryMiddleware(handler)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -274,4 +279,15 @@ func metricsAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return false
+}
+
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }

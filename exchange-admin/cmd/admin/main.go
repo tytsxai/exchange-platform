@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 	"github.com/exchange/admin/internal/repository"
 	"github.com/exchange/admin/internal/service"
 	commonauth "github.com/exchange/common/pkg/auth"
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -77,7 +80,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			promhttp.Handler().ServeHTTP(w, r)
@@ -153,7 +156,7 @@ func main() {
 	mux.HandleFunc("/admin/status", func(w http.ResponseWriter, r *http.Request) {
 		status, err := svc.GetSystemStatus(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -166,7 +169,7 @@ func main() {
 		case http.MethodGet:
 			symbols, err := svc.ListSymbols(r.Context())
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -175,26 +178,25 @@ func main() {
 		case http.MethodPost:
 			actorID := getActorID(r)
 			var cfg repository.SymbolConfig
-			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			if !decodeJSON(w, r, &cfg) {
 				return
 			}
 			if err := svc.CreateSymbol(r.Context(), actorID, r.RemoteAddr, &cfg); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]bool{"success": true})
 
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 		}
 	})
 
 	mux.HandleFunc("/admin/symbols/", func(w http.ResponseWriter, r *http.Request) {
 		symbol := r.URL.Path[len("/admin/symbols/"):]
 		if symbol == "" {
-			http.Error(w, "symbol required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "symbol required")
 			return
 		}
 
@@ -202,11 +204,11 @@ func main() {
 		case http.MethodGet:
 			cfg, err := svc.GetSymbol(r.Context(), symbol)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			if cfg == nil {
-				http.Error(w, "not found", http.StatusNotFound)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeNotFound, "not found")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -215,27 +217,26 @@ func main() {
 		case http.MethodPatch:
 			actorID := getActorID(r)
 			var cfg repository.SymbolConfig
-			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			if !decodeJSON(w, r, &cfg) {
 				return
 			}
 			cfg.Symbol = symbol
 			if err := svc.UpdateSymbol(r.Context(), actorID, r.RemoteAddr, &cfg); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]bool{"success": true})
 
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 		}
 	})
 
 	// ========== Kill Switch ==========
 	mux.HandleFunc("/admin/killSwitch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -244,8 +245,7 @@ func main() {
 			Action string `json:"action"` // halt, cancelOnly, resume
 			Symbol string `json:"symbol"` // 可选，不传则全局
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
@@ -261,7 +261,7 @@ func main() {
 			case "resume":
 				status = service.StatusTrading
 			default:
-				http.Error(w, "invalid action", http.StatusBadRequest)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "invalid action")
 				return
 			}
 			err = svc.SetSymbolStatus(r.Context(), actorID, r.RemoteAddr, req.Symbol, status)
@@ -275,13 +275,13 @@ func main() {
 			case "resume":
 				err = svc.GlobalResume(r.Context(), actorID, r.RemoteAddr)
 			default:
-				http.Error(w, "invalid action", http.StatusBadRequest)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "invalid action")
 				return
 			}
 		}
 
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -292,7 +292,7 @@ func main() {
 	// ========== 审计日志 ==========
 	mux.HandleFunc("/admin/auditLogs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -304,7 +304,7 @@ func main() {
 
 		logs, err := svc.ListAuditLogs(r.Context(), targetType, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -315,13 +315,13 @@ func main() {
 	// ========== RBAC ==========
 	mux.HandleFunc("/admin/roles", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
 		roles, err := svc.ListRoles(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -336,12 +336,12 @@ func main() {
 		case http.MethodGet:
 			userID, _ := strconv.ParseInt(r.URL.Query().Get("userId"), 10, 64)
 			if userID == 0 {
-				http.Error(w, "userId required", http.StatusBadRequest)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "userId required")
 				return
 			}
 			roles, err := svc.GetUserRoles(r.Context(), userID)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -352,12 +352,11 @@ func main() {
 				UserID int64 `json:"userId"`
 				RoleID int64 `json:"roleId"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			if !decodeJSON(w, r, &req) {
 				return
 			}
 			if err := svc.AssignRole(r.Context(), actorID, r.RemoteAddr, req.UserID, req.RoleID); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -368,25 +367,27 @@ func main() {
 				UserID int64 `json:"userId"`
 				RoleID int64 `json:"roleId"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			if !decodeJSON(w, r, &req) {
 				return
 			}
 			if err := svc.RemoveRole(r.Context(), actorID, r.RemoteAddr, req.UserID, req.RoleID); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]bool{"success": true})
 
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 		}
 	})
 
 	// 中间件链
 	handler := authMiddleware(tokenManager, mux)
 	handler = adminTokenMiddleware(cfg.AdminToken, handler)
+	handler = limitBodyMiddleware(maxBodyBytes, handler)
+	handler = commonresp.RequestIDMiddleware(handler)
+	handler = commonresp.RecoveryMiddleware(handler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -486,13 +487,13 @@ func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) ht
 		// 2. 获取 Token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "authorization required", http.StatusUnauthorized)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "authorization required")
 			return
 		}
 
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "invalid authorization format", http.StatusUnauthorized)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "invalid authorization format")
 			return
 		}
 
@@ -500,7 +501,7 @@ func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) ht
 
 		userID, err := tokenManager.Verify(token)
 		if err != nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "invalid token")
 			return
 		}
 
@@ -514,7 +515,7 @@ func adminTokenMiddleware(adminToken string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/admin") {
 			if r.Header.Get("X-Admin-Token") != adminToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 		}
@@ -534,4 +535,38 @@ func metricsAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return false
+}
+
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if isRequestTooLarge(err) {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+			return false
+		}
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid request")
+		return false
+	}
+	return true
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	commonresp.WriteErrorCode(w, nil, commonerrors.CodeInternal, "internal error")
 }
