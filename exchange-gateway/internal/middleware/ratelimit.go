@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 )
 
 // RateLimiter 限流器
@@ -83,7 +86,7 @@ func RateLimit(rl *RateLimiter, keyFunc func(*http.Request) string) func(http.Ha
 			key := keyFunc(r)
 			if !rl.Allow(key) {
 				w.Header().Set("Retry-After", "1")
-				http.Error(w, `{"code":"RATE_LIMITED","message":"too many requests","retryable":true}`, http.StatusTooManyRequests)
+				commonresp.WriteStatusError(w, r, http.StatusTooManyRequests, commonerrors.CodeRateLimited, "too many requests")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -97,7 +100,7 @@ func IPKeyFunc(r *http.Request) string {
 
 	// Security: only trust X-Forwarded-For when the immediate peer is likely a trusted proxy.
 	// This prevents direct clients from spoofing XFF and creating unbounded rate-limit keys.
-	if remoteIP != "" && isLikelyTrustedProxyIP(remoteIP) {
+	if remoteIP != "" && IsTrustedProxyIP(remoteIP) {
 		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
 			// Take the first IP in the chain.
 			if idx := strings.IndexByte(xff, ','); idx >= 0 {
@@ -132,13 +135,4 @@ func remoteIPFromAddr(remoteAddr string) string {
 	return strings.TrimSpace(remoteAddr)
 }
 
-// isLikelyTrustedProxyIP is a conservative default: loopback or private ranges.
-// If your LB/proxy uses public IPs, you should terminate it on a private network
-// or add an explicit trust mechanism at the edge.
-func isLikelyTrustedProxyIP(ipStr string) bool {
-	ip := net.ParseIP(strings.TrimSpace(ipStr))
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback() || ip.IsPrivate()
-}
+// Trust evaluation lives in IsTrustedProxyIP (trusted_proxy.go).

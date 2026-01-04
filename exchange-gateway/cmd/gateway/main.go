@@ -17,8 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	commonerrors "github.com/exchange/common/pkg/errors"
 	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/common/pkg/logger"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/gateway/internal/config"
 	"github.com/exchange/gateway/internal/middleware"
 	"github.com/exchange/gateway/internal/ws"
@@ -43,6 +45,10 @@ func main() {
 
 	if err := cfg.Validate(); err != nil {
 		l.Error(fmt.Sprintf("Invalid config: %v", err))
+		os.Exit(1)
+	}
+	if err := middleware.SetTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
+		l.Error(fmt.Sprintf("Invalid TRUSTED_PROXY_CIDRS: %v", err))
 		os.Exit(1)
 	}
 
@@ -103,7 +109,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			promhttp.Handler().ServeHTTP(w, r)
@@ -135,16 +141,16 @@ func main() {
 	})
 
 	// 代理到 order 服务
-	mux.HandleFunc("/v1/exchangeInfo", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
-	mux.HandleFunc("/v1/depth", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken))
-	mux.HandleFunc("/v1/trades", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken))
-	mux.HandleFunc("/v1/ticker", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/exchangeInfo", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
+	mux.HandleFunc("/v1/depth", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken, l))
+	mux.HandleFunc("/v1/trades", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken, l))
+	mux.HandleFunc("/v1/ticker", proxyHandler(cfg.MarketDataServiceURL, cfg.InternalToken, l))
 
 	// 代理到 user 服务 (Auth)
-	mux.HandleFunc("/v1/auth/register", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
-	mux.HandleFunc("/v1/auth/login", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
-	mux.HandleFunc("/v1/apiKeys", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
-	mux.HandleFunc("/v1/apiKeys/", proxyHandler(cfg.UserServiceURL, cfg.InternalToken))
+	mux.HandleFunc("/v1/auth/register", proxyHandler(cfg.UserServiceURL, cfg.InternalToken, l))
+	mux.HandleFunc("/v1/auth/login", proxyHandler(cfg.UserServiceURL, cfg.InternalToken, l))
+	mux.HandleFunc("/v1/apiKeys", proxyHandler(cfg.UserServiceURL, cfg.InternalToken, l))
+	mux.HandleFunc("/v1/apiKeys/", proxyHandler(cfg.UserServiceURL, cfg.InternalToken, l))
 
 	// Swagger UI - API 文档
 	// 访问 /docs 查看交互式 API 文档，支持在线测试
@@ -219,8 +225,10 @@ func main() {
 
 	// 需要鉴权的接口
 	authCfg := &middleware.AuthConfig{
-		TimeWindow: 30 * time.Second,
-		GetSecret:  nil, // 使用 VerifySignature
+		TimeWindow:      30 * time.Second,
+		GetSecret:       nil,
+		AllowLegacyBody: true,
+
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			// 构造请求
 			payload := struct {
@@ -231,6 +239,9 @@ func main() {
 				Method    string              `json:"method"`
 				Path      string              `json:"path"`
 				Query     map[string][]string `json:"query,omitempty"`
+				Body      string              `json:"body,omitempty"`
+				BodyHash  string              `json:"bodyHash,omitempty"`
+				ClientIP  string              `json:"clientIp,omitempty"`
 			}{
 				APIKey:    req.APIKey,
 				Timestamp: req.Timestamp,
@@ -239,7 +250,11 @@ func main() {
 				Method:    req.Method,
 				Path:      req.Path,
 				Query:     req.Query,
+				Body:      string(req.Body),
+				BodyHash:  req.BodyHash,
+				ClientIP:  req.ClientIP,
 			}
+
 			body, err := json.Marshal(payload)
 			if err != nil {
 				return 0, 0, fmt.Errorf("marshal payload: %w", err)
@@ -307,12 +322,12 @@ func main() {
 
 	// 私有接口（需要鉴权）
 	privateMux := http.NewServeMux()
-	privateMux.HandleFunc("/v1/order", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
-	privateMux.HandleFunc("/v1/openOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
-	privateMux.HandleFunc("/v1/allOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
-	privateMux.HandleFunc("/v1/myTrades", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken))
-	privateMux.HandleFunc("/v1/account", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken))
-	privateMux.HandleFunc("/v1/ledger", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken))
+	privateMux.HandleFunc("/v1/order", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
+	privateMux.HandleFunc("/v1/openOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
+	privateMux.HandleFunc("/v1/allOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
+	privateMux.HandleFunc("/v1/myTrades", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
+	privateMux.HandleFunc("/v1/account", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken, l))
+	privateMux.HandleFunc("/v1/ledger", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken, l))
 
 	// 组合中间件
 	authHandler := middleware.Auth(authCfg)(privateMux)
@@ -333,6 +348,7 @@ func main() {
 	handler = corsMiddleware(cfg.CORSAllowOrigins, handler)
 	handler = requestIDMiddleware(handler)
 	handler = loggingMiddleware(l, handler)
+	handler = limitBodyMiddleware(maxBodyBytes, handler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -477,7 +493,7 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 }
 
 // proxyHandler 创建代理处理器
-func proxyHandler(targetURL string, internalToken string) http.HandlerFunc {
+func proxyHandler(targetURL string, internalToken string, l *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 构建目标 URL（禁止信任客户端 userId；由网关注入）
 		target := targetURL + r.URL.Path
@@ -491,7 +507,10 @@ func proxyHandler(targetURL string, internalToken string) http.HandlerFunc {
 		// 创建代理请求
 		proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if l != nil {
+				l.Error(fmt.Sprintf("proxy request build error: %v", err))
+			}
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInternal, "internal error")
 			return
 		}
 
@@ -513,7 +532,7 @@ func proxyHandler(targetURL string, internalToken string) http.HandlerFunc {
 			clientIP = host
 		}
 		xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-		if xff == "" || !isLikelyTrustedProxyIP(clientIP) {
+		if xff == "" || !middleware.IsTrustedProxyIP(clientIP) {
 			proxyReq.Header.Set("X-Forwarded-For", clientIP)
 		} else {
 			proxyReq.Header.Set("X-Forwarded-For", xff+", "+clientIP)
@@ -534,7 +553,10 @@ func proxyHandler(targetURL string, internalToken string) http.HandlerFunc {
 		// 发送请求
 		resp, err := httpClient.Do(proxyReq)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			if l != nil {
+				l.Error(fmt.Sprintf("proxy request error: %v", err))
+			}
+			commonresp.WriteStatusError(w, r, http.StatusBadGateway, commonerrors.CodeUnavailable, "bad gateway")
 			return
 		}
 		defer resp.Body.Close()
@@ -574,7 +596,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 			}
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-KEY, X-API-TIMESTAMP, X-API-NONCE, X-API-SIGNATURE, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-KEY, X-API-TIMESTAMP, X-API-NONCE, X-API-SIGNATURE, X-Request-ID")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -594,7 +616,7 @@ func loggingMiddleware(l *logger.Logger, next http.Handler) http.Handler {
 		defer func() {
 			if v := recover(); v != nil {
 				if !wrapped.wroteHeader {
-					http.Error(wrapped, "internal server error", http.StatusInternalServerError)
+					commonresp.WriteErrorCode(wrapped, r, commonerrors.CodeInternal, "internal server error")
 				}
 				l.Error(fmt.Sprintf("panic recovered: %v request_id=%s", v, requestIDFromRequest(r)))
 			}
@@ -688,10 +710,15 @@ func metricsAuthorized(r *http.Request, token string) bool {
 	return false
 }
 
-func isLikelyTrustedProxyIP(ipStr string) bool {
-	ip := net.ParseIP(strings.TrimSpace(ipStr))
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback() || ip.IsPrivate()
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
+
+// trusted proxy evaluation lives in middleware.IsTrustedProxyIP

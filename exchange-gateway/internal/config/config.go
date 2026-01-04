@@ -33,7 +33,8 @@ type Config struct {
 	InternalToken string
 
 	// CORS
-	CORSAllowOrigins []string
+	CORSAllowOrigins  []string
+	TrustedProxyCIDRs []string
 
 	// Docs
 	EnableDocs        bool
@@ -71,6 +72,7 @@ func Load() *Config {
 		InternalToken: envconfig.GetEnv("INTERNAL_TOKEN", ""),
 
 		CORSAllowOrigins:  envconfig.GetEnvSlice("CORS_ALLOW_ORIGINS", defaultOrigins),
+		TrustedProxyCIDRs: envconfig.GetEnvSlice("TRUSTED_PROXY_CIDRS", nil),
 		EnableDocs:        envconfig.GetEnvBool("ENABLE_DOCS", appEnv == "dev"),
 		AllowDocsInNonDev: envconfig.GetEnvBool("ALLOW_DOCS_IN_NONDEV", false),
 

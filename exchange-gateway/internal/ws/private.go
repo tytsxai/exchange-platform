@@ -197,6 +197,8 @@ func authenticateRequest(r *http.Request, cfg *middleware.AuthConfig) (int64, er
 			Method:    r.Method,
 			Path:      r.URL.Path,
 			Query:     cleanQuery,
+			BodyHash:  "",
+			ClientIP:  middleware.ClientIPFromRequest(r),
 		})
 		resultCh <- struct {
 			userID int64

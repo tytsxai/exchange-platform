@@ -19,10 +19,19 @@ info:
     **Signature Calculation:**
     ```
     canonicalQuery = sorted query string (exclude `signature` if present)
+    bodyHash = hex(sha256(body))
     canonical = timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + canonicalQuery
+    if bodyHash != "":
+        canonical = canonical + "\n" + bodyHash
     signature = HMAC-SHA256(apiSecret, canonical)
     ```
-    Note: request body is not included in the signature.
+    Note: when request body is empty, `bodyHash` should be empty string.
+    Compatibility: the gateway currently accepts legacy signatures without `bodyHash`,
+    but new clients should include `bodyHash` whenever the request body is non-empty.
+
+    **IP Whitelist:**
+    If an API key has `ipWhitelist` configured, requests must originate from allowed IPs.
+    The gateway only trusts `X-Forwarded-For` when the immediate peer is loopback or private.
 
     **Permissions:**
     - `1` = Read (query orders, balances)
@@ -31,15 +40,12 @@ info:
 
     ## Rate Limits
 
-    - Public endpoints: 1200 requests per minute per IP
-    - Private endpoints: 600 requests per minute per API key
-    - Orders: 10 requests per second per API key
+    - Public endpoints: `IP_RATE_LIMIT` requests per second per IP (default: 100/s)
+    - Private endpoints: `USER_RATE_LIMIT` requests per second per API key/user (default: 50/s)
+    - Limits are per-gateway instance and configurable via environment variables.
 
-    When rate limited, the API returns HTTP `429` with `RATE_LIMIT_EXCEEDED`.
-    Response headers include:
-    - `X-RateLimit-Limit`
-    - `X-RateLimit-Remaining`
-    - `X-RateLimit-Reset` (Unix timestamp in seconds)
+    When rate limited, the API returns HTTP `429` with `RATE_LIMITED`
+    and `Retry-After: 1`.
 
     ## Error Codes
 
@@ -50,7 +56,8 @@ info:
     - `INSUFFICIENT_BALANCE`: Not enough balance to place order
     - `ORDER_NOT_FOUND`: Order does not exist
     - `INVALID_SYMBOL`: Symbol is not supported
-    - `RATE_LIMIT_EXCEEDED`: Too many requests
+    - `RATE_LIMITED`: Too many requests
+    - `REQUEST_TOO_LARGE`: Request body exceeds size limit (HTTP 413)
 
     ## WebSocket
 
@@ -249,9 +256,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrderBook'
               example:
+                symbol: BTCUSDT
                 lastUpdateId: 12001
-                bids: [["45000.00", "1.5"], ["44999.00", "2.0"]]
-                asks: [["45001.00", "0.8"], ["45002.00", "1.2"]]
+                bids:
+                  - price: 4500000000000
+                    qty: 150000000
+                  - price: 4499900000000
+                    qty: 200000000
+                asks:
+                  - price: 4500100000000
+                    qty: 80000000
+                  - price: 4500200000000
+                    qty: 120000000
+                timestampMs: 1730000000000
         '400':
           description: Symbol required
 
@@ -346,9 +363,9 @@ paths:
                 side: BUY
                 type: LIMIT
                 timeInForce: GTC
-                price: "45000.00000000"
-                origQty: "1.00000000"
-                executedQty: "0.00000000"
+                price: "4500000000000"
+                origQty: "100000000"
+                executedQty: "0"
                 status: NEW
                 createdAt: 1703232000000
                 updatedAt: 1703232000000
@@ -584,8 +601,8 @@ paths:
                 userId: 10001
                 balances:
                   - asset: BTC
-                    available: "1.50000000"
-                    frozen: "0.50000000"
+                    available: "150000000"
+                    frozen: "50000000"
 
   /v1/ledger:
     get:
@@ -786,9 +803,9 @@ components:
           enum: [LIMIT, MARKET]
         timeInForce:
           type: string
-          enum: [GTC, IOC, FOK]
+          enum: [GTC, IOC, FOK, POST_ONLY]
           default: GTC
-          description: Good-Til-Canceled, Immediate-Or-Cancel, Fill-Or-Kill
+          description: Good-Til-Canceled, Immediate-Or-Cancel, Fill-Or-Kill, Post-Only
         price:
           type: integer
           format: int64
@@ -875,63 +892,101 @@ components:
           example: USDT
         status:
           type: integer
-          description: "1=Trading, 2=Halt"
+          description: "1=Trading, 2=Halt, 3=CancelOnly"
         basePrecision:
           type: integer
           example: 8
         quotePrecision:
           type: integer
           example: 8
+        pricePrecision:
+          type: integer
+          example: 6
+        qtyPrecision:
+          type: integer
+          example: 8
+        priceTick:
+          type: string
+          description: Price tick size in smallest unit
+          example: "10000"
+        qtyStep:
+          type: string
+          description: Quantity step in smallest unit
+          example: "10000"
         minQty:
           type: string
+          description: Min quantity in smallest unit
           example: "0.00001"
         maxQty:
           type: string
+          description: Max quantity in smallest unit
           example: "1000"
         minNotional:
           type: string
+          description: Min notional in smallest unit of quote asset
           example: "10"
+        priceLimitRate:
+          type: string
+          description: Price protection band (e.g. 0.05 means ±5%)
+        makerFeeRate:
+          type: string
+          description: Maker fee rate (decimal)
+        takerFeeRate:
+          type: string
+          description: Taker fee rate (decimal)
 
     OrderBook:
       type: object
       properties:
+        symbol:
+          type: string
         lastUpdateId:
           type: integer
           format: int64
         bids:
           type: array
-          description: "[price, quantity]"
+          description: "Price levels (price/qty in smallest unit integers)"
           items:
-            type: array
-            items:
-              type: string
-          example: [["45000.00", "1.5"], ["44999.00", "2.0"]]
+            $ref: '#/components/schemas/PriceLevel'
         asks:
           type: array
-          description: "[price, quantity]"
+          description: "Price levels (price/qty in smallest unit integers)"
           items:
-            type: array
-            items:
-              type: string
-          example: [["45001.00", "0.8"], ["45002.00", "1.2"]]
+            $ref: '#/components/schemas/PriceLevel'
+        timestampMs:
+          type: integer
+          format: int64
+
+    PriceLevel:
+      type: object
+      properties:
+        price:
+          type: integer
+          format: int64
+        qty:
+          type: integer
+          format: int64
 
     Trade:
       type: object
       properties:
-        id:
+        tradeId:
           type: integer
           format: int64
+        symbol:
+          type: string
         price:
-          type: string
-          example: "45000.00"
-        qty:
-          type: string
-          example: "0.5"
-        time:
           type: integer
           format: int64
-        isBuyerMaker:
-          type: boolean
+        qty:
+          type: integer
+          format: int64
+        takerSide:
+          type: integer
+          description: "1=BUY, 2=SELL (taker side)"
+        timestampMs:
+          type: integer
+          format: int64
 
     Ticker:
       type: object
@@ -939,23 +994,35 @@ components:
         symbol:
           type: string
         priceChange:
-          type: string
+          type: integer
+          format: int64
         priceChangePercent:
           type: string
         lastPrice:
-          type: string
-        highPrice:
-          type: string
-        lowPrice:
-          type: string
-        volume:
-          type: string
-        quoteVolume:
-          type: string
-        openTime:
           type: integer
           format: int64
-        closeTime:
+        highPrice:
+          type: integer
+          format: int64
+        lowPrice:
+          type: integer
+          format: int64
+        volume:
+          type: integer
+          format: int64
+        quoteVolume:
+          type: integer
+          format: int64
+        openPrice:
+          type: integer
+          format: int64
+        tradeCount:
+          type: integer
+          format: int64
+        openTimeMs:
+          type: integer
+          format: int64
+        closeTimeMs:
           type: integer
           format: int64
 
@@ -979,19 +1046,22 @@ components:
           enum: [LIMIT, MARKET]
         timeInForce:
           type: string
-          enum: [GTC, IOC, FOK]
+          enum: [GTC, IOC, FOK, POST_ONLY]
         price:
           type: string
-          example: "45000.00000000"
+          description: Price in smallest unit (integer string)
+          example: "4500000000000"
         origQty:
           type: string
-          example: "1.00000000"
+          description: Quantity in smallest unit (integer string)
+          example: "100000000"
         executedQty:
           type: string
-          example: "0.50000000"
+          description: Executed quantity in smallest unit (integer string)
+          example: "50000000"
         status:
           type: string
-          enum: [NEW, PARTIALLY_FILLED, FILLED, CANCELED, REJECTED]
+          enum: [INIT, NEW, PARTIALLY_FILLED, FILLED, CANCELED, REJECTED, EXPIRED]
         createdAt:
           type: integer
           format: int64
@@ -1012,10 +1082,13 @@ components:
           type: string
         price:
           type: string
+          description: Price in smallest unit (integer string)
         qty:
           type: string
+          description: Quantity in smallest unit (integer string)
         commission:
           type: string
+          description: Commission in smallest unit (integer string)
         commissionAsset:
           type: string
         time:
@@ -1045,10 +1118,12 @@ components:
           example: BTC
         available:
           type: string
-          example: "1.50000000"
+          description: Available amount in smallest unit (integer string)
+          example: "150000000"
         frozen:
           type: string
-          example: "0.50000000"
+          description: Frozen amount in smallest unit (integer string)
+          example: "50000000"
 
     LedgerEntry:
       type: object
@@ -1063,8 +1138,10 @@ components:
           enum: [TRADE, DEPOSIT, WITHDRAW, FEE]
         amount:
           type: string
+          description: Amount delta in smallest unit (integer string)
         balance:
           type: string
+          description: Balance after entry in smallest unit (integer string)
         refId:
           type: string
           description: Reference ID (order/trade/tx ID)
@@ -1119,3 +1196,9 @@ components:
         message:
           type: string
           example: "Symbol XXXUSDT is not valid"
+        retryable:
+          type: boolean
+          example: false
+        requestId:
+          type: string
+          example: req_01JH8Y2X9YF8H3K9V2Z1S1Q4AA

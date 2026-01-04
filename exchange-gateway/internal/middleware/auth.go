@@ -2,27 +2,33 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 )
 
-// AuthConfig 鉴权配置
 type AuthConfig struct {
-	TimeWindow       time.Duration // 时间窗口（用于本地验签/WS 鉴权）
-	GetSecret        func(apiKey string) (secret string, userID int64, permissions int, err error)
-	VerifySignature  func(ctx context.Context, req *VerifySignatureRequest) (userID int64, permissions int, err error)
-	WhitelistPaths   map[string]struct{}
+	TimeWindow      time.Duration
+	GetSecret       func(apiKey string) (secret string, userID int64, permissions int, err error)
+	VerifySignature func(ctx context.Context, req *VerifySignatureRequest) (userID int64, permissions int, err error)
+	WhitelistPaths  map[string]struct{}
+	AllowLegacyBody bool
 }
 
-// VerifySignatureRequest 验签请求（供 user 服务 RPC 使用）
 type VerifySignatureRequest struct {
 	APIKey    string
 	Timestamp int64
@@ -31,6 +37,9 @@ type VerifySignatureRequest struct {
 	Method    string
 	Path      string
 	Query     map[string][]string
+	Body      []byte
+	BodyHash  string
+	ClientIP  string
 }
 
 var defaultWhitelist = map[string]struct{}{
@@ -56,13 +65,13 @@ func Auth(cfg *AuthConfig) func(http.Handler) http.Handler {
 			signature := r.Header.Get("X-API-SIGNATURE")
 
 			if apiKey == "" || timestampStr == "" || nonce == "" || signature == "" {
-				http.Error(w, `{"code":"UNAUTHENTICATED","message":"missing auth headers"}`, http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "missing auth headers")
 				return
 			}
 
 			timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 			if err != nil {
-				http.Error(w, `{"code":"INVALID_TIMESTAMP","message":"invalid timestamp"}`, http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidTimestamp, "invalid timestamp")
 				return
 			}
 
@@ -71,6 +80,15 @@ func Auth(cfg *AuthConfig) func(http.Handler) http.Handler {
 
 			switch {
 			case cfg != nil && cfg.VerifySignature != nil:
+				body, bodyHash, err := readBodyForSignature(r)
+				if err != nil {
+					if isRequestTooLarge(err) {
+						commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+					} else {
+						commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid body")
+					}
+					return
+				}
 				userID, permissions, err = cfg.VerifySignature(r.Context(), &VerifySignatureRequest{
 					APIKey:    apiKey,
 					Timestamp: timestamp,
@@ -79,9 +97,27 @@ func Auth(cfg *AuthConfig) func(http.Handler) http.Handler {
 					Method:    r.Method,
 					Path:      r.URL.Path,
 					Query:     r.URL.Query(),
+					Body:      body,
+					BodyHash:  bodyHash,
+					ClientIP:  ClientIPFromRequest(r),
 				})
+				if err != nil && cfg.AllowLegacyBody && len(body) == 0 && bodyHash == "" {
+					userID, permissions, err = cfg.VerifySignature(r.Context(), &VerifySignatureRequest{
+						APIKey:    apiKey,
+						Timestamp: timestamp,
+						Nonce:     nonce,
+						Signature: signature,
+						Method:    r.Method,
+						Path:      r.URL.Path,
+						Query:     r.URL.Query(),
+						Body:      nil,
+						BodyHash:  "",
+						ClientIP:  ClientIPFromRequest(r),
+					})
+				}
 				if err != nil {
-					http.Error(w, `{"code":"INVALID_SIGNATURE","message":"invalid signature"}`, http.StatusUnauthorized)
+					code, msg := mapAuthError(err)
+					commonresp.WriteErrorCode(w, r, code, msg)
 					return
 				}
 			case cfg != nil && cfg.GetSecret != nil:
@@ -95,24 +131,24 @@ func Auth(cfg *AuthConfig) func(http.Handler) http.Handler {
 					diff = -diff
 				}
 				if diff > window.Milliseconds() {
-					http.Error(w, `{"code":"INVALID_TIMESTAMP","message":"timestamp expired"}`, http.StatusUnauthorized)
+					commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidTimestamp, "timestamp expired")
 					return
 				}
 
 				secret, id, perms, err := cfg.GetSecret(apiKey)
 				if err != nil {
-					http.Error(w, `{"code":"INVALID_API_KEY","message":"invalid api key"}`, http.StatusUnauthorized)
+					commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidApiKey, "invalid api key")
 					return
 				}
 				canonical := buildCanonicalString(timestamp, nonce, r.Method, r.URL.Path, r.URL.Query())
 				expectedSig := sign(secret, canonical)
 				if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
-					http.Error(w, `{"code":"INVALID_SIGNATURE","message":"invalid signature"}`, http.StatusUnauthorized)
+					commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidSignature, "invalid signature")
 					return
 				}
 				userID, permissions = id, perms
 			default:
-				http.Error(w, `{"code":"UNAUTHENTICATED","message":"auth not configured"}`, http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "auth not configured")
 				return
 			}
 
@@ -208,6 +244,77 @@ func sign(secret, data string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func readBodyForSignature(r *http.Request) ([]byte, string, error) {
+	if r.Body == nil {
+		return nil, "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, computeBodyHash(body), nil
+}
+
+func computeBodyHash(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func mapAuthError(err error) (commonerrors.Code, string) {
+	if err == nil {
+		return commonerrors.CodeInvalidSignature, commonerrors.DefaultMessage(commonerrors.CodeInvalidSignature)
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "invalid timestamp") || strings.Contains(msg, "timestamp expired"):
+		return commonerrors.CodeInvalidTimestamp, "invalid timestamp"
+	case strings.Contains(msg, "nonce") && strings.Contains(msg, "reused"):
+		return commonerrors.CodeInvalidNonce, "invalid nonce"
+	case strings.Contains(msg, "user disabled"):
+		return commonerrors.CodeUserDisabled, "user disabled"
+	case strings.Contains(msg, "user frozen"):
+		return commonerrors.CodeUserFrozen, "user frozen"
+	case strings.Contains(msg, "invalid api key"):
+		return commonerrors.CodeInvalidApiKey, "invalid api key"
+	case strings.Contains(msg, "ip not allowed") || strings.Contains(msg, "ip not whitelisted"):
+		return commonerrors.CodeIpNotWhitelisted, "ip not whitelisted"
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "timeout"):
+		return commonerrors.CodeTimeout, "auth timeout"
+	case strings.Contains(msg, "user service") || strings.Contains(msg, "service"):
+		return commonerrors.CodeUnavailable, "auth service unavailable"
+	default:
+		return commonerrors.CodeInvalidSignature, "invalid signature"
+	}
+}
+
+func ClientIPFromRequest(r *http.Request) string {
+	clientIP := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+		clientIP = host
+	}
+	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff == "" || !IsTrustedProxyIP(clientIP) {
+		return clientIP
+	}
+	if idx := strings.Index(xff, ","); idx >= 0 {
+		xff = xff[:idx]
+	}
+	xff = strings.TrimSpace(xff)
+	if xff == "" {
+		return clientIP
+	}
+	return xff
 }
 
 func isWhitelistedPath(path string, cfg *AuthConfig) bool {
