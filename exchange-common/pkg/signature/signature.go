@@ -40,10 +40,11 @@ func (s *Signer) Verify(canonicalString, signature string) bool {
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
-// BuildCanonicalString 构建规范字符串
-// 格式：timestampMs\nnonce\nmethod\npath\ncanonicalQuery
-// body 参数预留（当前签名不包含 body）
 func BuildCanonicalString(timestampMs int64, nonce, method, path string, query url.Values, body []byte) string {
+	return BuildCanonicalStringWithBodyHash(timestampMs, nonce, method, path, query, bodyHash(body))
+}
+
+func BuildCanonicalStringWithBodyHash(timestampMs int64, nonce, method, path string, query url.Values, bodyHash string) string {
 	parts := []string{
 		fmt.Sprintf("%d", timestampMs),
 		nonce,
@@ -51,7 +52,18 @@ func BuildCanonicalString(timestampMs int64, nonce, method, path string, query u
 		path,
 		canonicalQuery(query),
 	}
+	if bodyHash != "" {
+		parts = append(parts, bodyHash)
+	}
 	return strings.Join(parts, "\n")
+}
+
+func bodyHash(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // canonicalQuery 构建规范查询字符串（按 key 排序）
@@ -133,7 +145,6 @@ func (v *Verifier) VerifyRequest(req *Request) error {
 		return ErrInvalidTimestamp
 	}
 
-	// 2. 验证 nonce（防重放）
 	if v.nonceStore != nil {
 		expireAt := time.Now().Add(v.timeWindow * 2)
 		exists, err := v.nonceStore.Exists(req.ApiKey, req.Nonce, expireAt)
@@ -145,14 +156,17 @@ func (v *Verifier) VerifyRequest(req *Request) error {
 		}
 	}
 
-	// 3. 验证签名
-	canonical := BuildCanonicalString(
+	payloadHash := req.BodyHash
+	if payloadHash == "" {
+		payloadHash = bodyHash(req.Body)
+	}
+	canonical := BuildCanonicalStringWithBodyHash(
 		req.TimestampMs,
 		req.Nonce,
 		req.Method,
 		req.Path,
 		req.Query,
-		req.Body,
+		payloadHash,
 	)
 	if !v.signer.Verify(canonical, req.Signature) {
 		return ErrInvalidSignature
@@ -171,6 +185,7 @@ type Request struct {
 	Path        string
 	Query       url.Values
 	Body        []byte
+	BodyHash    string
 }
 
 // 错误定义

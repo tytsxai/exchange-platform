@@ -46,11 +46,22 @@ fi
 
 require_set INTERNAL_TOKEN
 require_set AUTH_TOKEN_SECRET
+require_set API_KEY_SECRET_KEY
 require_set ADMIN_TOKEN
 
 require_not_default INTERNAL_TOKEN "dev-internal-token-change-me"
 require_not_default AUTH_TOKEN_SECRET "dev-auth-token-secret-32-bytes-minimum"
+require_not_default API_KEY_SECRET_KEY "dev-api-key-secret-32-bytes-minimum"
 require_not_default ADMIN_TOKEN "dev-admin-token-change-me"
+
+if [ "${#AUTH_TOKEN_SECRET}" -lt 32 ]; then
+  echo "AUTH_TOKEN_SECRET must be at least 32 characters" >&2
+  exit 1
+fi
+if [ "${#API_KEY_SECRET_KEY}" -lt 32 ]; then
+  echo "API_KEY_SECRET_KEY must be at least 32 characters" >&2
+  exit 1
+fi
 
 require_set DB_HOST
 require_set DB_PORT

@@ -17,6 +17,7 @@ exchange-common/
 ├── pkg/                    # 共享工具包
 │   ├── decimal/            # 高精度计算
 │   ├── errors/             # 统一错误码
+│   ├── response/           # HTTP 响应助手
 │   ├── snowflake/          # 雪花 ID 生成
 │   ├── signature/          # API 签名验证
 │   └── redis/              # Redis Streams 封装
@@ -60,6 +61,7 @@ chmod +x scripts/gen-proto.sh
 import (
     "github.com/exchange/common/pkg/decimal"
     "github.com/exchange/common/pkg/errors"
+    "github.com/exchange/common/pkg/response"
     "github.com/exchange/common/pkg/snowflake"
     "github.com/exchange/common/pkg/signature"
     "github.com/exchange/common/pkg/redis"
@@ -80,6 +82,10 @@ err := errors.New(errors.CodeInsufficientBalance, "余额不足")
 // 签名验证
 signer := signature.NewSigner("your-secret")
 sig := signer.Sign(canonicalString)
+
+// HTTP 响应助手
+response.WriteError(w, r, errors.New(errors.CodeInsufficientBalance, "余额不足"))
+response.WriteErrorCode(w, r, errors.CodeInvalidSignature, "签名无效")
 ```
 
 ## Proto 定义
@@ -88,7 +94,7 @@ sig := signer.Sign(canonicalString)
 - `Order`: 订单实体
 - `Side`: BUY/SELL
 - `OrderType`: LIMIT/MARKET
-- `OrderStatus`: NEW/PARTIALLY_FILLED/FILLED/CANCELED/REJECTED
+- `OrderStatus`: INIT/NEW/PARTIALLY_FILLED/FILLED/CANCELED/REJECTED/EXPIRED
 - `TimeInForce`: GTC/IOC/FOK/POST_ONLY
 
 ### account.proto
@@ -176,8 +182,17 @@ Headers:
   X-API-SIGNATURE: hmac-sha256-signature
 
 Signature = HMAC-SHA256(secret, timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + canonicalQuery)
-canonicalQuery = sorted query string (exclude `signature` if present); request body is not signed.
+canonicalQuery = sorted query string (exclude `signature` if present)
+bodyHash = hex(sha256(body))  # body 为空则为空字符串
+canonical = timestamp + "\n" + nonce + "\n" + METHOD + "\n" + path + "\n" + canonicalQuery
+if bodyHash != "":
+    canonical = canonical + "\n" + bodyHash
+Signature = HMAC-SHA256(secret, canonical)
 ```
+
+说明：
+- 网关当前默认**兼容 legacy 签名**（不带 `bodyHash`），用于历史客户端迁移。
+- 新客户端建议：**请求体非空时务必带 `bodyHash`**，确保签名一致性。
 
 如果历史 API Key 使用 bcrypt 存储 secret，需要重新生成（可用 `scripts/disable-bcrypt-api-keys.sql` 批量禁用旧 key）。
 
@@ -204,5 +219,8 @@ Token 由 `AUTH_TOKEN_SECRET` 签名，包含过期时间（`AUTH_TOKEN_TTL`）�
 - `INTERNAL_TOKEN`：服务间调用鉴权必配
 - `AUTH_TOKEN_SECRET` + `AUTH_TOKEN_TTL`：用户/管理/钱包 Bearer Token 签名与过期
 - `ADMIN_TOKEN`：高风险管理接口额外保护（`X-Admin-Token`）
+- `API_KEY_SECRET_KEY`：API Key secret 加密密钥（>= 32 字符）
+- `REDIS_PASSWORD`：非 dev 环境必须配置
 - `DB_SSL_MODE=require`：生产数据库强制 TLS
+- `ENABLE_DOCS=false`（除非明确允许并设置 `ALLOW_DOCS_IN_NONDEV=true`）
 - `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME`：连接池基线

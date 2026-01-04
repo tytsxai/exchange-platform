@@ -7,10 +7,10 @@ import (
 
 func TestNew(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantVal  int64
+		input     string
+		wantVal   int64
 		wantScale int
-		wantErr  bool
+		wantErr   bool
 	}{
 		{"0", 0, 0, false},
 		{"10", 10, 0, false},

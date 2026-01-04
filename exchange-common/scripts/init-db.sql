@@ -113,7 +113,7 @@ CREATE TABLE exchange_order.orders (
     orig_qty BIGINT NOT NULL,
     executed_qty BIGINT NOT NULL DEFAULT 0,
     cumulative_quote_qty BIGINT NOT NULL DEFAULT 0,
-    status SMALLINT NOT NULL DEFAULT 1,  -- 1=NEW, 2=PARTIAL, 3=FILLED, 4=CANCELED, 5=REJECTED, 6=EXPIRED
+    status SMALLINT NOT NULL DEFAULT 1,  -- 0=INIT, 1=NEW, 2=PARTIAL, 3=FILLED, 4=CANCELED, 5=REJECTED, 6=EXPIRED
     reject_reason VARCHAR(255),
     cancel_reason VARCHAR(255),
     stp_mode SMALLINT NOT NULL DEFAULT 1,  -- 1=NONE, 2=CANCEL_TAKER, 3=CANCEL_MAKER, 4=CANCEL_BOTH
@@ -374,9 +374,9 @@ CREATE TABLE exchange_admin.user_roles (
 -- 插入默认交易对
 INSERT INTO exchange_order.symbol_configs (symbol, base_asset, quote_asset, price_tick, qty_step, price_precision, qty_precision, min_qty, max_qty, min_notional, maker_fee_rate, taker_fee_rate, status, created_at_ms, updated_at_ms)
 VALUES
-    ('BTCUSDT', 'BTC', 'USDT', 1, 1, 2, 4, 1, 10000000, 1000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
-    ('ETHUSDT', 'ETH', 'USDT', 1, 1, 2, 3, 1, 10000000, 1000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
-    ('SOLUSDT', 'SOL', 'USDT', 1, 1, 3, 2, 1, 10000000, 5000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000);
+    ('BTCUSDT', 'BTC', 'USDT', 10000, 10000, 6, 8, 10000, 100000000000, 10000000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
+    ('ETHUSDT', 'ETH', 'USDT', 10000, 100000, 6, 8, 100000, 1000000000000, 10000000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000),
+    ('SOLUSDT', 'SOL', 'USDT', 1000, 1000000, 6, 8, 1000000, 10000000000000, 5000000, 0.001, 0.001, 1, EXTRACT(EPOCH FROM NOW()) * 1000, EXTRACT(EPOCH FROM NOW()) * 1000);
 
 -- 插入默认资产
 INSERT INTO exchange_wallet.assets (asset, name, precision, status, created_at_ms, updated_at_ms)

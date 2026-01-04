@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Trim Redis Streams to prevent unbounded growth.
+#
+# Example:
+#   STREAMS="exchange:orders,exchange:events,exchange:events:dlq" MAX_LEN=1000000 \
+#     REDIS_ADDR=redis:6379 REDIS_PASSWORD=... bash exchange-common/scripts/trim-streams.sh
+
 REDIS_ADDR=${REDIS_ADDR:-"localhost:6380"}
 REDIS_USERNAME=${REDIS_USERNAME:-""}
 REDIS_PASSWORD=${REDIS_PASSWORD:-""}
@@ -8,14 +14,14 @@ REDIS_TLS=${REDIS_TLS:-"false"}
 REDIS_CACERT=${REDIS_CACERT:-""}
 REDIS_CERT=${REDIS_CERT:-""}
 REDIS_KEY=${REDIS_KEY:-""}
-OUT_DIR=${OUT_DIR:-"./backups"}
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-FILE="${OUT_DIR}/redis_${TIMESTAMP}.rdb"
 
-HOST=${REDIS_ADDR%%:*}
-PORT=${REDIS_ADDR##*:}
+STREAMS=${STREAMS:-"exchange:orders,exchange:events"}
+MAX_LEN=${MAX_LEN:-1000000}
 
-mkdir -p "$OUT_DIR"
+if [ -z "$STREAMS" ]; then
+  echo "STREAMS is empty; nothing to trim" >&2
+  exit 1
+fi
 
 if ! command -v redis-cli >/dev/null 2>&1; then
   echo "redis-cli not found in PATH" >&2
@@ -43,5 +49,14 @@ if [ -n "$REDIS_PASSWORD" ]; then
   export REDISCLI_AUTH="$REDIS_PASSWORD"
 fi
 
-redis-cli -h "$HOST" -p "$PORT" "${args[@]}" --rdb "$FILE"
-echo "Redis snapshot saved to ${FILE}"
+IFS=',' read -r -a stream_list <<< "$STREAMS"
+for stream in "${stream_list[@]}"; do
+  stream=$(echo "$stream" | xargs)
+  if [ -z "$stream" ]; then
+    continue
+  fi
+  echo "Trimming stream ${stream} to MAXLEN ~ ${MAX_LEN}..."
+  redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" "${args[@]}" XTRIM "$stream" MAXLEN "~" "$MAX_LEN" >/dev/null
+done
+
+echo "Trim complete."

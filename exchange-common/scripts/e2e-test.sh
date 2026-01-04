@@ -398,6 +398,75 @@ test_create_order() {
     return 1
 }
 
+test_request_body_too_large() {
+    log_info "Testing request body too large (413)..."
+
+    if [ -z "${API_KEY}" ] || [ -z "${API_SECRET}" ]; then
+        log_error "Missing API key/secret for payload size test"
+        return 1
+    fi
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    python3 - "$tmpfile" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+payload = {
+    "clientOrderId": "e2e_payload_too_large",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "type": "LIMIT",
+    "price": 1,
+    "quantity": 1,
+    "padding": "a" * (5 * 1024 * 1024),
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(payload, f)
+PY
+
+    local resp status body
+    resp=$(curl_signed "POST" "${BASE_URL}/v1/order" \
+        -H "Content-Type: application/json" \
+        --data-binary @"$tmpfile" \
+        -w "\n%{http_code}" 2>/dev/null || true)
+    rm -f "$tmpfile"
+
+    status=$(printf '%s\n' "$resp" | tail -n 1)
+    body=$(printf '%s\n' "$resp" | sed '$d')
+
+    if [ "$status" != "413" ]; then
+        log_error "Payload size: FAILED - status $status body: $body"
+        return 1
+    fi
+
+    python3 - "$body" <<'PY'
+import json
+import sys
+
+body = sys.argv[1]
+try:
+    data = json.loads(body)
+except Exception:
+    sys.exit(1)
+
+if data.get("code") != "REQUEST_TOO_LARGE":
+    sys.exit(1)
+if data.get("message") != "request body too large":
+    sys.exit(1)
+if data.get("retryable") is not False:
+    sys.exit(1)
+PY
+    if [ $? -ne 0 ]; then
+        log_error "Payload size: FAILED - invalid error response: $body"
+        return 1
+    fi
+
+    log_info "Payload size: PASSED"
+    return 0
+}
+
 test_list_orders() {
     local user_id=$1
     log_info "Testing list orders..."
@@ -479,6 +548,7 @@ main() {
     # 订单测试
     log_info "--- Order Tests ---"
     if test_create_order "$user_id"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+    if test_request_body_too_large; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
     if test_list_orders "$user_id"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
     echo ""
 
