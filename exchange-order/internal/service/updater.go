@@ -167,9 +167,13 @@ func (u *OrderUpdater) consumeOnce(ctx context.Context) error {
 					u.metrics.IncStreamError(u.eventStream, u.group)
 				}
 				log.Printf("process event error: %v", err)
+				if dlqErr := u.sendToDLQ(ctx, &msg, err.Error()); dlqErr != nil {
+					log.Printf("send dlq error: %v", dlqErr)
+				}
 				continue
 			}
 			u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
+
 		}
 	}
 	return nil
@@ -238,6 +242,9 @@ func (u *OrderUpdater) processPending(ctx context.Context) error {
 				u.metrics.IncStreamError(u.eventStream, u.group)
 			}
 			log.Printf("process pending event error: %v", err)
+			if dlqErr := u.sendToDLQ(ctx, &msg, err.Error()); dlqErr != nil {
+				log.Printf("send dlq error: %v", dlqErr)
+			}
 			continue
 		}
 		u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
@@ -265,7 +272,7 @@ func (u *OrderUpdater) sendToDLQ(ctx context.Context, msg *redis.XMessage, reaso
 func (u *OrderUpdater) processMessage(ctx context.Context, msg redis.XMessage) error {
 	data, ok := msg.Values["data"].(string)
 	if !ok {
-		return nil
+		return fmt.Errorf("invalid message payload")
 	}
 
 	var event MatchingEvent
@@ -287,7 +294,7 @@ func (u *OrderUpdater) processMessage(ctx context.Context, msg redis.XMessage) e
 	case "TRADE_CREATED":
 		return u.handleTradeCreated(ctx, &event)
 	default:
-		return nil
+		return fmt.Errorf("unknown event type: %s", event.Type)
 	}
 }
 
@@ -443,7 +450,14 @@ func (u *OrderUpdater) handleOrderCanceled(ctx context.Context, event *MatchingE
 		return err
 	}
 
-	amount, asset, err := u.calculateCancelUnfreeze(order, cfg, data.LeavesQty)
+	leavesQty := data.LeavesQty
+	if data.Reason == "ORDER_NOT_FOUND" {
+		if computed, err := orderLeavesQty(order); err == nil {
+			leavesQty = computed
+		}
+	}
+
+	amount, asset, err := u.calculateCancelUnfreeze(order, cfg, leavesQty)
 	if err != nil {
 		return err
 	}
@@ -699,4 +713,23 @@ func parseInt64(value string, field string) (int64, error) {
 		return 0, fmt.Errorf("parse %s: %w", field, err)
 	}
 	return parsed, nil
+}
+
+func orderLeavesQty(order *repository.Order) (int64, error) {
+	if order == nil {
+		return 0, fmt.Errorf("order is nil")
+	}
+	orig, err := parseInt64(order.OrigQty, "orig_qty")
+	if err != nil {
+		return 0, err
+	}
+	executed, err := parseInt64(order.ExecutedQty, "executed_qty")
+	if err != nil {
+		return 0, err
+	}
+	leaves := orig - executed
+	if leaves < 0 {
+		leaves = 0
+	}
+	return leaves, nil
 }

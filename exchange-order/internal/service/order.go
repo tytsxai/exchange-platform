@@ -41,13 +41,11 @@ type OrderStore interface {
 	GetOrderByClientID(ctx context.Context, userID int64, clientOrderID string) (*repository.Order, error)
 	CreateOrder(ctx context.Context, order *repository.Order) error
 	GetOrder(ctx context.Context, orderID int64) (*repository.Order, error)
+	UpdateOrderStatus(ctx context.Context, orderID int64, status int, executedQty, cumulativeQuoteQty, updateTimeMs int64) error
+	RejectOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error
 	ListOpenOrders(ctx context.Context, userID int64, symbol string, limit int) ([]*repository.Order, error)
 	ListOrders(ctx context.Context, userID int64, symbol string, startTime, endTime int64, limit int) ([]*repository.Order, error)
 	ListSymbolConfigs(ctx context.Context) ([]*repository.SymbolConfig, error)
-}
-
-type orderRejector interface {
-	RejectOrder(ctx context.Context, orderID int64, reason string, updateTimeMs int64) error
 }
 
 // IDGenerator ID 生成器接口
@@ -125,6 +123,11 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	if req.ClientOrderID != "" {
 		existing, err := s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
 		if err == nil && existing != nil {
+			if code, err := s.ensureOrderReady(ctx, existing, cfg); err != nil {
+				return nil, err
+			} else if code != "" {
+				return reject(code), nil
+			}
 			return &CreateOrderResponse{Order: existing}, nil
 		}
 	}
@@ -154,7 +157,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		OrigQty:            strconv.FormatInt(req.Quantity, 10),
 		ExecutedQty:        "0",
 		CumulativeQuoteQty: "0",
-		Status:             repository.StatusNew,
+		Status:             repository.StatusInit,
 		CreateTimeMs:       now,
 		UpdateTimeMs:       now,
 	}
@@ -179,7 +182,26 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		freezeAmount = req.Quantity
 	}
 
-	// 7. 调用清算服务冻结资金
+	// 7. 保存订单（先落库，再冻结）
+	if err := s.repo.CreateOrder(ctx, order); err != nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
+		if errors.Is(err, repository.ErrDuplicateClientOrderID) && req.ClientOrderID != "" {
+			existing, fetchErr := s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
+			if fetchErr == nil && existing != nil {
+				if code, err := s.ensureOrderReady(ctx, existing, cfg); err != nil {
+					return nil, err
+				} else if code != "" {
+					return reject(code), nil
+				}
+				return &CreateOrderResponse{Order: existing}, nil
+			}
+		}
+		return nil, fmt.Errorf("create order: %w", err)
+	}
+
+	// 8. 调用清算服务冻结资金（幂等键基于 orderId）
 	freezeKey := fmt.Sprintf("freeze:order:%d", order.OrderID)
 	freezeResp, err := s.clearing.FreezeBalance(ctx, order.UserID, freezeAsset, freezeAmount, freezeKey)
 	if err != nil {
@@ -189,35 +211,22 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		return nil, fmt.Errorf("freeze balance: %w", err)
 	}
 	if !freezeResp.Success {
+		_ = s.repo.RejectOrder(ctx, order.OrderID, freezeResp.ErrorCode, time.Now().UnixMilli())
 		return reject(freezeResp.ErrorCode), nil
 	}
 
-	// 8. 保存订单
-	if err := s.repo.CreateOrder(ctx, order); err != nil {
-		if s.metrics != nil {
-			s.metrics.IncOrderRejected("INTERNAL_ERROR")
-		}
-		if errors.Is(err, repository.ErrDuplicateClientOrderID) && req.ClientOrderID != "" {
-			_ = s.rollbackFreeze(ctx, order, freezeAsset, freezeAmount, "duplicate_client_id")
-			existing, fetchErr := s.repo.GetOrderByClientID(ctx, req.UserID, req.ClientOrderID)
-			if fetchErr == nil && existing != nil {
-				return &CreateOrderResponse{Order: existing}, nil
-			}
-		}
-		if rollbackErr := s.rollbackFreeze(ctx, order, freezeAsset, freezeAmount, "create_failed"); rollbackErr != nil {
-			return nil, fmt.Errorf("create order: %w (rollback: %v)", err, rollbackErr)
-		}
-		return nil, fmt.Errorf("create order: %w", err)
+	// 9. 更新订单状态为 NEW
+	updateTime := time.Now().UnixMilli()
+	if err := s.repo.UpdateOrderStatus(ctx, order.OrderID, repository.StatusNew, 0, 0, updateTime); err != nil {
+		return nil, fmt.Errorf("update order status: %w", err)
 	}
+	order.Status = repository.StatusNew
+	order.UpdateTimeMs = updateTime
 
-	// 9. 发送到撮合队列
+	// 10. 发送到撮合队列
 	if err := s.sendToMatchingWithRetry(ctx, order); err != nil {
 		if s.metrics != nil {
 			s.metrics.IncOrderRejected("INTERNAL_ERROR")
-		}
-		s.rejectOrder(ctx, order.OrderID, "MATCHING_UNAVAILABLE")
-		if rollbackErr := s.rollbackFreeze(ctx, order, freezeAsset, freezeAmount, "matching_failed"); rollbackErr != nil {
-			return nil, fmt.Errorf("send to matching: %w (rollback: %v)", err, rollbackErr)
 		}
 		return nil, fmt.Errorf("send to matching: %w", err)
 	}
@@ -261,10 +270,69 @@ func (s *OrderService) sendToMatchingWithRetry(ctx context.Context, order *repos
 	return lastErr
 }
 
-func (s *OrderService) rejectOrder(ctx context.Context, orderID int64, reason string) {
-	if repo, ok := s.repo.(orderRejector); ok {
-		_ = repo.RejectOrder(ctx, orderID, reason, time.Now().UnixMilli())
+func (s *OrderService) ensureOrderReady(ctx context.Context, order *repository.Order, cfg *repository.SymbolConfig) (string, error) {
+	if order == nil {
+		return "", nil
 	}
+	switch order.Status {
+	case repository.StatusInit:
+		freezeAsset, freezeAmount, err := s.freezeSpecFromOrder(order, cfg)
+		if err != nil {
+			return "", err
+		}
+		freezeKey := fmt.Sprintf("freeze:order:%d", order.OrderID)
+		freezeResp, err := s.clearing.FreezeBalance(ctx, order.UserID, freezeAsset, freezeAmount, freezeKey)
+		if err != nil {
+			return "", fmt.Errorf("freeze balance: %w", err)
+		}
+		if freezeResp == nil || !freezeResp.Success {
+			code := "FREEZE_FAILED"
+			if freezeResp != nil && freezeResp.ErrorCode != "" {
+				code = freezeResp.ErrorCode
+			}
+			_ = s.repo.RejectOrder(ctx, order.OrderID, code, time.Now().UnixMilli())
+			return code, nil
+		}
+		updateTime := time.Now().UnixMilli()
+		if err := s.repo.UpdateOrderStatus(ctx, order.OrderID, repository.StatusNew, 0, 0, updateTime); err != nil {
+			return "", fmt.Errorf("update order status: %w", err)
+		}
+		order.Status = repository.StatusNew
+		order.UpdateTimeMs = updateTime
+	}
+
+	if order.Status == repository.StatusNew && s.redis != nil {
+		// best-effort re-send; matching side will dedupe.
+		_ = s.sendToMatchingWithRetry(ctx, order)
+	}
+
+	return "", nil
+}
+
+func (s *OrderService) freezeSpecFromOrder(order *repository.Order, cfg *repository.SymbolConfig) (string, int64, error) {
+	if order == nil || cfg == nil {
+		return "", 0, fmt.Errorf("invalid order/config")
+	}
+	if order.Side == repository.SideBuy {
+		price, err := parseInt64Compat(order.Price, "price")
+		if err != nil {
+			return "", 0, err
+		}
+		qty, err := parseInt64Compat(order.OrigQty, "orig_qty")
+		if err != nil {
+			return "", 0, err
+		}
+		return cfg.QuoteAsset, quoteQty(price, qty, cfg.QtyPrecision), nil
+	}
+	qty, err := parseInt64Compat(order.OrigQty, "orig_qty")
+	if err != nil {
+		return "", 0, err
+	}
+	return cfg.BaseAsset, qty, nil
+}
+
+func (s *OrderService) rejectOrder(ctx context.Context, orderID int64, reason string) {
+	_ = s.repo.RejectOrder(ctx, orderID, reason, time.Now().UnixMilli())
 }
 
 func (s *OrderService) rollbackFreeze(ctx context.Context, order *repository.Order, asset string, amount int64, reason string) error {
@@ -377,6 +445,15 @@ func (s *OrderService) GetExchangeInfo(ctx context.Context) ([]*repository.Symbo
 }
 
 func (s *OrderService) validateOrder(req *CreateOrderRequest, cfg *repository.SymbolConfig) error {
+	if cfg.BasePrecision <= 0 || cfg.QuotePrecision <= 0 {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
+	if normalizePrecision(cfg.QtyPrecision) != normalizePrecision(cfg.BasePrecision) {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
+	if normalizePrecision(cfg.PricePrecision) != normalizePrecision(cfg.QuotePrecision) {
+		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
+	}
 	// 解析配置值（兼容小数与最小单位整数）
 	qtyPrecision := normalizePrecision(cfg.QtyPrecision)
 	pricePrecision := normalizePrecision(cfg.PricePrecision)

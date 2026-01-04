@@ -498,8 +498,8 @@ func TestOrderUpdater_ProcessMessage_Invalid(t *testing.T) {
 	updater := NewOrderUpdater(nil, &fakeOrderStore{}, &fakeTradeStore{}, &fakeUnfreezer{}, nil, &UpdaterConfig{})
 
 	msg := redis.XMessage{Values: map[string]interface{}{"data": 123}}
-	if err := updater.processMessage(context.Background(), msg); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := updater.processMessage(context.Background(), msg); err == nil {
+		t.Fatal("expected error")
 	}
 
 	msg = redis.XMessage{Values: map[string]interface{}{"data": "{"}}
@@ -510,8 +510,8 @@ func TestOrderUpdater_ProcessMessage_Invalid(t *testing.T) {
 	payload := MatchingEvent{Type: "UNKNOWN"}
 	raw, _ := json.Marshal(payload)
 	msg = redis.XMessage{Values: map[string]interface{}{"data": string(raw)}}
-	if err := updater.processMessage(context.Background(), msg); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := updater.processMessage(context.Background(), msg); err == nil {
+		t.Fatal("expected error")
 	}
 }
 

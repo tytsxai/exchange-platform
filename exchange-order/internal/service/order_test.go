@@ -19,15 +19,19 @@ import (
 func TestValidateOrder_Boundaries(t *testing.T) {
 	s := &OrderService{}
 	cfg := &repository.SymbolConfig{
-		Symbol:      "BTCUSDT",
-		BaseAsset:   "BTC",
-		QuoteAsset:  "USDT",
-		PriceTick:   "0.01",
-		QtyStep:     "0.001",
-		MinQty:      "0.001",
-		MaxQty:      "10.0",
-		MinNotional: "10.0",
-		Status:      1,
+		Symbol:         "BTCUSDT",
+		BaseAsset:      "BTC",
+		QuoteAsset:     "USDT",
+		PricePrecision: 8,
+		QtyPrecision:   8,
+		BasePrecision:  8,
+		QuotePrecision: 8,
+		PriceTick:      "0.01",
+		QtyStep:        "0.001",
+		MinQty:         "0.001",
+		MaxQty:         "10.0",
+		MinNotional:    "10.0",
+		Status:         1,
 	}
 
 	// qty too small: 0.0009
@@ -212,6 +216,14 @@ func (c *cancelOrderStore) GetOrder(_ context.Context, _ int64) (*repository.Ord
 	return c.order, nil
 }
 
+func (c *cancelOrderStore) UpdateOrderStatus(_ context.Context, _ int64, _ int, _, _ int64, _ int64) error {
+	return nil
+}
+
+func (c *cancelOrderStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
 func (c *cancelOrderStore) ListOpenOrders(_ context.Context, _ int64, _ string, limit int) ([]*repository.Order, error) {
 	c.lastOpenLimit = limit
 	return nil, nil
@@ -256,6 +268,14 @@ func (m *mockOrderStore) GetOrder(_ context.Context, _ int64) (*repository.Order
 	return nil, repository.ErrOrderNotFound
 }
 
+func (m *mockOrderStore) UpdateOrderStatus(_ context.Context, _ int64, _ int, _, _ int64, _ int64) error {
+	return nil
+}
+
+func (m *mockOrderStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
+	return nil
+}
+
 func (m *mockOrderStore) ListOpenOrders(_ context.Context, _ int64, _ string, _ int) ([]*repository.Order, error) {
 	return nil, nil
 }
@@ -296,15 +316,19 @@ func (f *fakeOrderPublisher) PublishOrderEvent(_ context.Context, _ int64, _ str
 func TestCreateOrder_PublishesOrderCreated(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 	}
 
@@ -363,6 +387,10 @@ func TestPriceCreateOrder_OutOfRange(t *testing.T) {
 			Symbol:         "BTCUSDT",
 			BaseAsset:      "BTC",
 			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
 			MinQty:         "0.001",
 			MaxQty:         "10.0",
 			MinNotional:    "10.0",
@@ -422,15 +450,19 @@ func TestCreateOrder_SymbolNotFound(t *testing.T) {
 func TestCreateOrder_SymbolNotTrading(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      0,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         0,
 		},
 	}
 	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, nil, nil)
@@ -452,18 +484,22 @@ func TestCreateOrder_SymbolNotTrading(t *testing.T) {
 }
 
 func TestCreateOrder_IdempotentClientID(t *testing.T) {
-	existing := &repository.Order{OrderID: 99}
+	existing := &repository.Order{OrderID: 99, Status: repository.StatusNew}
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 		existingOrder: existing,
 	}
@@ -489,15 +525,19 @@ func TestCreateOrder_IdempotentClientID(t *testing.T) {
 func TestCreateOrder_ValidationErrors(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 	}
 	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, nil, nil)
@@ -577,15 +617,19 @@ func TestCreateOrder_ValidationErrors(t *testing.T) {
 func TestCreateOrder_FreezeError(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 	}
 
@@ -612,15 +656,19 @@ func TestCreateOrder_FreezeError(t *testing.T) {
 func TestCreateOrder_FreezeRejected(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 	}
 
@@ -649,23 +697,27 @@ func TestCreateOrder_FreezeRejected(t *testing.T) {
 	if resp.ErrorCode != "INSUFFICIENT_BALANCE" {
 		t.Fatalf("expected INSUFFICIENT_BALANCE, got %s", resp.ErrorCode)
 	}
-	if store.created {
-		t.Fatal("expected no order created when freeze rejected")
+	if !store.created {
+		t.Fatal("expected order created before freeze rejected")
 	}
 }
 
 func TestCreateOrder_SendToMatchingError(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 	}
 
@@ -705,15 +757,19 @@ func TestCreateOrder_SendToMatchingError(t *testing.T) {
 func TestCreateOrder_CreateOrderFailsDoesNotSend(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
-			Symbol:      "BTCUSDT",
-			BaseAsset:   "BTC",
-			QuoteAsset:  "USDT",
-			MinQty:      "0.001",
-			MaxQty:      "10.0",
-			MinNotional: "10.0",
-			PriceTick:   "0.01",
-			QtyStep:     "0.001",
-			Status:      1,
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
 		},
 		createErr: errors.New("db error"),
 	}
@@ -949,6 +1005,10 @@ func TestPriceCreateOrder_InRange(t *testing.T) {
 			Symbol:         "BTCUSDT",
 			BaseAsset:      "BTC",
 			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
 			MinQty:         "0.001",
 			MaxQty:         "10.0",
 			MinNotional:    "10.0",
@@ -995,6 +1055,10 @@ func TestPriceCreateOrder_BoundaryValues(t *testing.T) {
 			Symbol:         "BTCUSDT",
 			BaseAsset:      "BTC",
 			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
 			MinQty:         "0.001",
 			MaxQty:         "10.0",
 			MinNotional:    "10.0",
@@ -1054,6 +1118,10 @@ func TestPriceCreateOrder_DisabledSkipsCheck(t *testing.T) {
 			Symbol:         "BTCUSDT",
 			BaseAsset:      "BTC",
 			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
 			MinQty:         "0.001",
 			MaxQty:         "10.0",
 			MinNotional:    "10.0",
@@ -1102,6 +1170,10 @@ func TestPriceCreateOrder_MarketSkipsCheck(t *testing.T) {
 			Symbol:         "BTCUSDT",
 			BaseAsset:      "BTC",
 			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
 			MinQty:         "0.001",
 			MaxQty:         "10.0",
 			MinNotional:    "10.0",

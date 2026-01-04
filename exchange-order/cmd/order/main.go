@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/order/internal/client"
 	"github.com/exchange/order/internal/config"
@@ -109,7 +112,7 @@ func main() {
 	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			next(w, r)
@@ -142,13 +145,20 @@ func main() {
 	mux.HandleFunc("/v1/exchangeInfo", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		configs, err := svc.GetExchangeInfo(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
+		}
+		symbols := make([]*symbolInfoResponse, 0, len(configs))
+		for _, cfg := range configs {
+			if cfg == nil {
+				continue
+			}
+			symbols = append(symbols, toSymbolInfoResponse(cfg))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"serverTime": time.Now().UnixMilli(),
-			"symbols":    configs,
+			"symbols":    symbols,
 		})
 	}))
 
@@ -157,7 +167,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			metricsClient.Handler().ServeHTTP(w, r)
@@ -175,7 +185,7 @@ func main() {
 		case http.MethodGet:
 			handleGetOrder(w, r, svc)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 		}
 	}))
 
@@ -183,7 +193,7 @@ func main() {
 	mux.HandleFunc("/v1/openOrders", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		userID, err := getUserIDFromHeader(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, err.Error())
 			return
 		}
 		symbol := r.URL.Query().Get("symbol")
@@ -194,19 +204,19 @@ func main() {
 
 		orders, err := svc.ListOpenOrders(r.Context(), userID, symbol, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(orders)
+		json.NewEncoder(w).Encode(toOrderResponses(orders))
 	}))
 
 	// 历史订单
 	mux.HandleFunc("/v1/allOrders", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		userID, err := getUserIDFromHeader(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, err.Error())
 			return
 		}
 		symbol := r.URL.Query().Get("symbol")
@@ -216,25 +226,25 @@ func main() {
 
 		orders, err := svc.ListOrders(r.Context(), userID, symbol, startTime, endTime, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(orders)
+		json.NewEncoder(w).Encode(toOrderResponses(orders))
 	}))
 
 	// 我的成交
 	mux.HandleFunc("/v1/myTrades", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		userID, err := getUserIDFromHeader(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, err.Error())
 			return
 		}
 
 		symbol := r.URL.Query().Get("symbol")
 		if strings.TrimSpace(symbol) == "" {
-			http.Error(w, "symbol required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "symbol required")
 			return
 		}
 		startTime, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
@@ -243,16 +253,19 @@ func main() {
 
 		trades, err := tradeRepo.ListTradesByUser(r.Context(), userID, symbol, startTime, endTime, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(trades)
+		json.NewEncoder(w).Encode(toAccountTradeResponses(trades, userID))
 	}))
 
+	handler := limitBodyMiddleware(maxBodyBytes, mux)
+	handler = commonresp.RequestIDMiddleware(handler)
+	handler = commonresp.RecoveryMiddleware(handler)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -417,13 +430,12 @@ func getUserIDFromHeader(r *http.Request) (int64, error) {
 func handleCreateOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderService) {
 	userID, err := getUserIDFromHeader(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, err.Error())
 		return
 	}
 
 	var req CreateOrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -439,23 +451,22 @@ func handleCreateOrder(w http.ResponseWriter, r *http.Request, svc *service.Orde
 		ClientOrderID: req.ClientOrderID,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	if resp.ErrorCode != "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"code": resp.ErrorCode})
+		commonresp.WriteErrorCode(w, r, commonerrors.Code(resp.ErrorCode), "")
 		return
 	}
-	json.NewEncoder(w).Encode(resp.Order)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(toOrderResponse(resp.Order))
 }
 
 func handleCancelOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderService) {
 	userID, err := getUserIDFromHeader(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, err.Error())
 		return
 	}
 	symbol := r.URL.Query().Get("symbol")
@@ -469,35 +480,34 @@ func handleCancelOrder(w http.ResponseWriter, r *http.Request, svc *service.Orde
 		ClientOrderID: clientOrderID,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	if resp.ErrorCode != "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"code": resp.ErrorCode})
+		commonresp.WriteErrorCode(w, r, commonerrors.Code(resp.ErrorCode), "")
 		return
 	}
-	json.NewEncoder(w).Encode(resp.Order)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(toOrderResponse(resp.Order))
 }
 
 func handleGetOrder(w http.ResponseWriter, r *http.Request, svc *service.OrderService) {
 	userID, err := getUserIDFromHeader(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, err.Error())
 		return
 	}
 	orderID, _ := strconv.ParseInt(r.URL.Query().Get("orderId"), 10, 64)
 
 	order, err := svc.GetOrder(r.Context(), userID, orderID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeOrderNotFound, "order not found")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(order)
+	json.NewEncoder(w).Encode(toOrderResponse(order))
 }
 
 func metricsAuthorized(r *http.Request, token string) bool {
@@ -512,4 +522,238 @@ func metricsAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return false
+}
+
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if isRequestTooLarge(err) {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+			return false
+		}
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid request")
+		return false
+	}
+	return true
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	commonresp.WriteErrorCode(w, nil, commonerrors.CodeInternal, "internal error")
+}
+
+type symbolInfoResponse struct {
+	Symbol         string `json:"symbol"`
+	BaseAsset      string `json:"baseAsset"`
+	QuoteAsset     string `json:"quoteAsset"`
+	Status         int    `json:"status"`
+	BasePrecision  int    `json:"basePrecision"`
+	QuotePrecision int    `json:"quotePrecision"`
+	PricePrecision int    `json:"pricePrecision"`
+	QtyPrecision   int    `json:"qtyPrecision"`
+	PriceTick      string `json:"priceTick"`
+	QtyStep        string `json:"qtyStep"`
+	MinQty         string `json:"minQty"`
+	MaxQty         string `json:"maxQty"`
+	MinNotional    string `json:"minNotional"`
+	PriceLimitRate string `json:"priceLimitRate,omitempty"`
+	MakerFeeRate   string `json:"makerFeeRate,omitempty"`
+	TakerFeeRate   string `json:"takerFeeRate,omitempty"`
+}
+
+func toSymbolInfoResponse(cfg *repository.SymbolConfig) *symbolInfoResponse {
+	if cfg == nil {
+		return nil
+	}
+	return &symbolInfoResponse{
+		Symbol:         cfg.Symbol,
+		BaseAsset:      cfg.BaseAsset,
+		QuoteAsset:     cfg.QuoteAsset,
+		Status:         cfg.Status,
+		BasePrecision:  cfg.BasePrecision,
+		QuotePrecision: cfg.QuotePrecision,
+		PricePrecision: cfg.PricePrecision,
+		QtyPrecision:   cfg.QtyPrecision,
+		PriceTick:      cfg.PriceTick,
+		QtyStep:        cfg.QtyStep,
+		MinQty:         cfg.MinQty,
+		MaxQty:         cfg.MaxQty,
+		MinNotional:    cfg.MinNotional,
+		PriceLimitRate: cfg.PriceLimitRate,
+		MakerFeeRate:   cfg.MakerFeeRate,
+		TakerFeeRate:   cfg.TakerFeeRate,
+	}
+}
+
+type orderResponse struct {
+	OrderID       int64  `json:"orderId"`
+	ClientOrderID string `json:"clientOrderId,omitempty"`
+	Symbol        string `json:"symbol"`
+	Side          string `json:"side"`
+	Type          string `json:"type"`
+	TimeInForce   string `json:"timeInForce"`
+	Price         string `json:"price"`
+	OrigQty       string `json:"origQty"`
+	ExecutedQty   string `json:"executedQty"`
+	Status        string `json:"status"`
+	CreatedAt     int64  `json:"createdAt"`
+	UpdatedAt     int64  `json:"updatedAt"`
+}
+
+func toOrderResponse(order *repository.Order) *orderResponse {
+	if order == nil {
+		return nil
+	}
+	return &orderResponse{
+		OrderID:       order.OrderID,
+		ClientOrderID: order.ClientOrderID,
+		Symbol:        order.Symbol,
+		Side:          sideToString(order.Side),
+		Type:          typeToString(order.Type),
+		TimeInForce:   tifToString(order.TimeInForce),
+		Price:         order.Price,
+		OrigQty:       order.OrigQty,
+		ExecutedQty:   order.ExecutedQty,
+		Status:        statusToString(order.Status),
+		CreatedAt:     order.CreateTimeMs,
+		UpdatedAt:     order.UpdateTimeMs,
+	}
+}
+
+func toOrderResponses(orders []*repository.Order) []*orderResponse {
+	if len(orders) == 0 {
+		return []*orderResponse{}
+	}
+	resp := make([]*orderResponse, 0, len(orders))
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+		resp = append(resp, toOrderResponse(order))
+	}
+	return resp
+}
+
+type accountTradeResponse struct {
+	TradeID         int64  `json:"tradeId"`
+	OrderID         int64  `json:"orderId"`
+	Symbol          string `json:"symbol"`
+	Price           string `json:"price"`
+	Qty             string `json:"qty"`
+	Commission      string `json:"commission"`
+	CommissionAsset string `json:"commissionAsset"`
+	Time            int64  `json:"time"`
+	IsBuyer         bool   `json:"isBuyer"`
+	IsMaker         bool   `json:"isMaker"`
+}
+
+func toAccountTradeResponses(trades []*repository.Trade, userID int64) []*accountTradeResponse {
+	if len(trades) == 0 {
+		return []*accountTradeResponse{}
+	}
+	resp := make([]*accountTradeResponse, 0, len(trades))
+	for _, trade := range trades {
+		if trade == nil {
+			continue
+		}
+		resp = append(resp, toAccountTradeResponse(trade, userID))
+	}
+	return resp
+}
+
+func toAccountTradeResponse(trade *repository.Trade, userID int64) *accountTradeResponse {
+	if trade == nil {
+		return nil
+	}
+	isMaker := trade.MakerUserID == userID
+	orderID := trade.TakerOrderID
+	commission := trade.TakerFee
+	isBuyer := trade.TakerSide == repository.SideBuy
+	if isMaker {
+		orderID = trade.MakerOrderID
+		commission = trade.MakerFee
+		isBuyer = trade.TakerSide == repository.SideSell
+	}
+	return &accountTradeResponse{
+		TradeID:         trade.TradeID,
+		OrderID:         orderID,
+		Symbol:          trade.Symbol,
+		Price:           strconv.FormatInt(trade.Price, 10),
+		Qty:             strconv.FormatInt(trade.Qty, 10),
+		Commission:      strconv.FormatInt(commission, 10),
+		CommissionAsset: trade.FeeAsset,
+		Time:            trade.TimestampMs,
+		IsBuyer:         isBuyer,
+		IsMaker:         isMaker,
+	}
+}
+
+func sideToString(side int) string {
+	switch side {
+	case repository.SideBuy:
+		return "BUY"
+	case repository.SideSell:
+		return "SELL"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func typeToString(orderType int) string {
+	switch orderType {
+	case repository.TypeLimit:
+		return "LIMIT"
+	case repository.TypeMarket:
+		return "MARKET"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func tifToString(tif int) string {
+	switch tif {
+	case 2:
+		return "IOC"
+	case 3:
+		return "FOK"
+	default:
+		return "GTC"
+	}
+}
+
+func statusToString(status int) string {
+	switch status {
+	case repository.StatusInit:
+		return "INIT"
+	case repository.StatusNew:
+		return "NEW"
+	case repository.StatusPartiallyFilled:
+		return "PARTIALLY_FILLED"
+	case repository.StatusFilled:
+		return "FILLED"
+	case repository.StatusCanceled:
+		return "CANCELED"
+	case repository.StatusRejected:
+		return "REJECTED"
+	case repository.StatusExpired:
+		return "EXPIRED"
+	default:
+		return "UNKNOWN"
+	}
 }

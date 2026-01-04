@@ -15,6 +15,7 @@ var (
 
 // OrderStatus 订单状态
 const (
+	StatusInit            = 0
 	StatusNew             = 1
 	StatusPartiallyFilled = 2
 	StatusFilled          = 3
@@ -84,6 +85,8 @@ type SymbolConfig struct {
 	QtyStep        string // DECIMAL from DB
 	PricePrecision int
 	QtyPrecision   int
+	BasePrecision  int    `json:"-"`
+	QuotePrecision int    `json:"-"`
 	MinQty         string // DECIMAL from DB
 	MaxQty         string // DECIMAL from DB
 	MinNotional    string // DECIMAL from DB
@@ -212,7 +215,7 @@ func (r *OrderRepository) RejectOrder(ctx context.Context, orderID int64, reason
 	query := `
 		UPDATE exchange_order.orders
 		SET status = $1, reject_reason = $2, update_time_ms = $3
-		WHERE order_id = $4 AND status IN (1, 2)
+		WHERE order_id = $4 AND status IN (0, 1, 2)
 	`
 	result, err := r.db.ExecContext(ctx, query, StatusRejected, reason, updateTimeMs, orderID)
 	if err != nil {
@@ -259,17 +262,22 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int64, symbol s
 // GetSymbolConfig 获取交易对配置
 func (r *OrderRepository) GetSymbolConfig(ctx context.Context, symbol string) (*SymbolConfig, error) {
 	query := `
-		SELECT symbol, base_asset, quote_asset, price_tick, qty_step,
-		       price_precision, qty_precision, min_qty, max_qty, min_notional,
-		       price_limit_rate, maker_fee_rate, taker_fee_rate, status
-		FROM exchange_order.symbol_configs
-		WHERE symbol = $1
+		SELECT sc.symbol, sc.base_asset, sc.quote_asset, sc.price_tick, sc.qty_step,
+		       sc.price_precision, sc.qty_precision, sc.min_qty, sc.max_qty, sc.min_notional,
+		       sc.price_limit_rate, sc.maker_fee_rate, sc.taker_fee_rate, sc.status,
+		       COALESCE(base.precision, 0) AS base_precision,
+		       COALESCE(quote.precision, 0) AS quote_precision
+		FROM exchange_order.symbol_configs sc
+		LEFT JOIN exchange_wallet.assets base ON base.asset = sc.base_asset
+		LEFT JOIN exchange_wallet.assets quote ON quote.asset = sc.quote_asset
+		WHERE sc.symbol = $1
 	`
 	var cfg SymbolConfig
 	err := r.db.QueryRowContext(ctx, query, symbol).Scan(
 		&cfg.Symbol, &cfg.BaseAsset, &cfg.QuoteAsset, &cfg.PriceTick, &cfg.QtyStep,
 		&cfg.PricePrecision, &cfg.QtyPrecision, &cfg.MinQty, &cfg.MaxQty, &cfg.MinNotional,
 		&cfg.PriceLimitRate, &cfg.MakerFeeRate, &cfg.TakerFeeRate, &cfg.Status,
+		&cfg.BasePrecision, &cfg.QuotePrecision,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrOrderNotFound
@@ -283,11 +291,15 @@ func (r *OrderRepository) GetSymbolConfig(ctx context.Context, symbol string) (*
 // ListSymbolConfigs 获取所有交易对配置
 func (r *OrderRepository) ListSymbolConfigs(ctx context.Context) ([]*SymbolConfig, error) {
 	query := `
-		SELECT symbol, base_asset, quote_asset, price_tick, qty_step,
-		       price_precision, qty_precision, min_qty, max_qty, min_notional,
-		       price_limit_rate, maker_fee_rate, taker_fee_rate, status
-		FROM exchange_order.symbol_configs
-		WHERE status = 1
+		SELECT sc.symbol, sc.base_asset, sc.quote_asset, sc.price_tick, sc.qty_step,
+		       sc.price_precision, sc.qty_precision, sc.min_qty, sc.max_qty, sc.min_notional,
+		       sc.price_limit_rate, sc.maker_fee_rate, sc.taker_fee_rate, sc.status,
+		       COALESCE(base.precision, 0) AS base_precision,
+		       COALESCE(quote.precision, 0) AS quote_precision
+		FROM exchange_order.symbol_configs sc
+		LEFT JOIN exchange_wallet.assets base ON base.asset = sc.base_asset
+		LEFT JOIN exchange_wallet.assets quote ON quote.asset = sc.quote_asset
+		WHERE sc.status = 1
 	`
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
@@ -302,6 +314,7 @@ func (r *OrderRepository) ListSymbolConfigs(ctx context.Context) ([]*SymbolConfi
 			&cfg.Symbol, &cfg.BaseAsset, &cfg.QuoteAsset, &cfg.PriceTick, &cfg.QtyStep,
 			&cfg.PricePrecision, &cfg.QtyPrecision, &cfg.MinQty, &cfg.MaxQty, &cfg.MinNotional,
 			&cfg.PriceLimitRate, &cfg.MakerFeeRate, &cfg.TakerFeeRate, &cfg.Status,
+			&cfg.BasePrecision, &cfg.QuotePrecision,
 		); err != nil {
 			return nil, fmt.Errorf("scan symbol config: %w", err)
 		}
