@@ -1,9 +1,9 @@
-// Package service 清算服务
 package service
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -11,7 +11,6 @@ import (
 	"github.com/exchange/clearing/internal/repository"
 )
 
-// ClearingService 清算服务
 type ClearingService struct {
 	db        *sql.DB
 	balRepo   *repository.BalanceRepository
@@ -25,12 +24,10 @@ type balancePublisher interface {
 	PublishSettledEvent(ctx context.Context, userID int64, data interface{}) error
 }
 
-// IDGenerator ID 生成器接口
 type IDGenerator interface {
 	NextID() int64
 }
 
-// NewClearingService 创建清算服务
 func NewClearingService(db *sql.DB, idGen IDGenerator) *ClearingService {
 	return &ClearingService{
 		db:      db,
@@ -43,7 +40,6 @@ func (s *ClearingService) SetPublisher(publisher balancePublisher) {
 	s.publisher = publisher
 }
 
-// FreezeRequest 冻结请求
 type FreezeRequest struct {
 	IdempotencyKey string
 	UserID         int64
@@ -53,50 +49,40 @@ type FreezeRequest struct {
 	RefID          string
 }
 
-// FreezeResponse 冻结响应
 type FreezeResponse struct {
 	Success   bool
 	ErrorCode string
 	Balance   *repository.Balance
 }
 
-// Freeze 冻结资金（下单时调用）
 func (s *ClearingService) Freeze(ctx context.Context, req *FreezeRequest) (*FreezeResponse, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
 		IdempotencyKey: req.IdempotencyKey,
 		UserID:         req.UserID,
 		Asset:          req.Asset,
-		AvailableDelta: -req.Amount, // 可用减少
-		FrozenDelta:    req.Amount,  // 冻结增加
+		AvailableDelta: -req.Amount,
+		FrozenDelta:    req.Amount,
 		Reason:         repository.ReasonOrderFreeze,
 		RefType:        req.RefType,
 		RefID:          req.RefID,
 		CreatedAt:      time.Now().UnixMilli(),
 	}
 
-	err = s.balRepo.Freeze(ctx, tx, entry)
+	err := s.withOptimisticRetry(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return s.balRepo.Freeze(ctx, tx, entry)
+	})
 	if err != nil {
 		if err == repository.ErrInsufficientBalance {
 			return &FreezeResponse{Success: false, ErrorCode: "INSUFFICIENT_BALANCE"}, nil
 		}
 		if err == repository.ErrIdempotencyConflict {
-			// 幂等：返回成功
 			balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
 			return &FreezeResponse{Success: true, Balance: balance}, nil
 		}
 		return nil, fmt.Errorf("freeze: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
 	if s.publisher != nil {
 		if pubErr := s.publisher.PublishFrozenEvent(ctx, req.UserID, req.Asset, req.Amount); pubErr != nil {
 			log.Printf("publish frozen event error: %v", pubErr)
@@ -107,7 +93,6 @@ func (s *ClearingService) Freeze(ctx context.Context, req *FreezeRequest) (*Free
 	return &FreezeResponse{Success: true, Balance: balance}, nil
 }
 
-// UnfreezeRequest 解冻请求
 type UnfreezeRequest struct {
 	IdempotencyKey string
 	UserID         int64
@@ -117,35 +102,30 @@ type UnfreezeRequest struct {
 	RefID          string
 }
 
-// UnfreezeResponse 解冻响应
 type UnfreezeResponse struct {
 	Success   bool
 	ErrorCode string
 	Balance   *repository.Balance
 }
 
-// Unfreeze 解冻资金（撤单时调用）
 func (s *ClearingService) Unfreeze(ctx context.Context, req *UnfreezeRequest) (*UnfreezeResponse, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
 		IdempotencyKey: req.IdempotencyKey,
 		UserID:         req.UserID,
 		Asset:          req.Asset,
-		AvailableDelta: req.Amount,  // 可用增加
-		FrozenDelta:    -req.Amount, // 冻结减少
+		AvailableDelta: req.Amount,
+		FrozenDelta:    -req.Amount,
 		Reason:         repository.ReasonOrderUnfreeze,
 		RefType:        req.RefType,
 		RefID:          req.RefID,
 		CreatedAt:      time.Now().UnixMilli(),
 	}
 
-	err = s.balRepo.Unfreeze(ctx, tx, entry)
+	err := s.withOptimisticRetry(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return s.balRepo.Unfreeze(ctx, tx, entry)
+	})
+
 	if err != nil {
 		if err == repository.ErrIdempotencyConflict {
 			balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
@@ -154,9 +134,6 @@ func (s *ClearingService) Unfreeze(ctx context.Context, req *UnfreezeRequest) (*
 		return nil, fmt.Errorf("unfreeze: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
 	if s.publisher != nil {
 		if pubErr := s.publisher.PublishUnfrozenEvent(ctx, req.UserID, req.Asset, req.Amount); pubErr != nil {
 			log.Printf("publish unfrozen event error: %v", pubErr)
@@ -167,7 +144,6 @@ func (s *ClearingService) Unfreeze(ctx context.Context, req *UnfreezeRequest) (*
 	return &UnfreezeResponse{Success: true, Balance: balance}, nil
 }
 
-// DeductRequest 扣除请求
 type DeductRequest struct {
 	IdempotencyKey string
 	UserID         int64
@@ -177,21 +153,13 @@ type DeductRequest struct {
 	RefID          string
 }
 
-// DeductResponse 扣除响应
 type DeductResponse struct {
 	Success   bool
 	ErrorCode string
 	Balance   *repository.Balance
 }
 
-// Deduct 扣除冻结资金（提现完成调用）
 func (s *ClearingService) Deduct(ctx context.Context, req *DeductRequest) (*DeductResponse, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
 		IdempotencyKey: req.IdempotencyKey,
@@ -205,7 +173,10 @@ func (s *ClearingService) Deduct(ctx context.Context, req *DeductRequest) (*Dedu
 		CreatedAt:      time.Now().UnixMilli(),
 	}
 
-	err = s.balRepo.Deduct(ctx, tx, entry)
+	err := s.withOptimisticRetry(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return s.balRepo.Deduct(ctx, tx, entry)
+	})
+
 	if err != nil {
 		if err == repository.ErrInsufficientBalance {
 			return &DeductResponse{Success: false, ErrorCode: "INSUFFICIENT_BALANCE"}, nil
@@ -217,15 +188,10 @@ func (s *ClearingService) Deduct(ctx context.Context, req *DeductRequest) (*Dedu
 		return nil, fmt.Errorf("deduct: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
-
 	balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
 	return &DeductResponse{Success: true, Balance: balance}, nil
 }
 
-// CreditRequest 入账请求（充值）
 type CreditRequest struct {
 	IdempotencyKey string
 	UserID         int64
@@ -235,24 +201,16 @@ type CreditRequest struct {
 	RefID          string
 }
 
-// CreditResponse 入账响应
 type CreditResponse struct {
 	Success   bool
 	ErrorCode string
 	Balance   *repository.Balance
 }
 
-// Credit 入账（充值确认后调用）
 func (s *ClearingService) Credit(ctx context.Context, req *CreditRequest) (*CreditResponse, error) {
 	if req.Amount <= 0 {
 		return &CreditResponse{Success: false, ErrorCode: "INVALID_AMOUNT"}, nil
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
 
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
@@ -267,7 +225,10 @@ func (s *ClearingService) Credit(ctx context.Context, req *CreditRequest) (*Cred
 		CreatedAt:      time.Now().UnixMilli(),
 	}
 
-	err = s.balRepo.Credit(ctx, tx, entry)
+	err := s.withOptimisticRetry(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return s.balRepo.Credit(ctx, tx, entry)
+	})
+
 	if err != nil {
 		if err == repository.ErrIdempotencyConflict {
 			balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
@@ -276,29 +237,22 @@ func (s *ClearingService) Credit(ctx context.Context, req *CreditRequest) (*Cred
 		return nil, fmt.Errorf("credit: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
-
 	balance, _ := s.balRepo.GetBalance(ctx, req.UserID, req.Asset)
 	return &CreditResponse{Success: true, Balance: balance}, nil
 }
 
-// SettleTradeRequest 清算请求
 type SettleTradeRequest struct {
 	IdempotencyKey string
 	TradeID        string
 	Symbol         string
 
-	// Maker 侧
 	MakerUserID     int64
 	MakerOrderID    string
-	MakerBaseDelta  int64 // base 资产变动
-	MakerQuoteDelta int64 // quote 资产变动
+	MakerBaseDelta  int64
+	MakerQuoteDelta int64
 	MakerFee        int64
 	MakerFeeAsset   string
 
-	// Taker 侧
 	TakerUserID     int64
 	TakerOrderID    string
 	TakerBaseDelta  int64
@@ -310,13 +264,11 @@ type SettleTradeRequest struct {
 	QuoteAsset string
 }
 
-// SettleTradeResponse 清算响应
 type SettleTradeResponse struct {
 	Success   bool
 	ErrorCode string
 }
 
-// SettleTrade 清算成交
 func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeRequest) (*SettleTradeResponse, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -327,7 +279,6 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 	now := time.Now().UnixMilli()
 	var entries []*repository.LedgerEntry
 
-	// Maker base 资产变动（从冻结中扣除或增加到可用）
 	if req.MakerBaseDelta != 0 {
 		entries = append(entries, &repository.LedgerEntry{
 			LedgerID:       s.idGen.NextID(),
@@ -343,7 +294,6 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 		})
 	}
 
-	// Maker quote 资产变动
 	if req.MakerQuoteDelta != 0 {
 		entries = append(entries, &repository.LedgerEntry{
 			LedgerID:       s.idGen.NextID(),
@@ -359,7 +309,6 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 		})
 	}
 
-	// Maker 手续费
 	if req.MakerFee > 0 {
 		entries = append(entries, &repository.LedgerEntry{
 			LedgerID:       s.idGen.NextID(),
@@ -374,7 +323,6 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 		})
 	}
 
-	// Taker base 资产变动
 	if req.TakerBaseDelta != 0 {
 		entries = append(entries, &repository.LedgerEntry{
 			LedgerID:       s.idGen.NextID(),
@@ -390,7 +338,6 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 		})
 	}
 
-	// Taker quote 资产变动
 	if req.TakerQuoteDelta != 0 {
 		entries = append(entries, &repository.LedgerEntry{
 			LedgerID:       s.idGen.NextID(),
@@ -406,7 +353,6 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 		})
 	}
 
-	// Taker 手续费
 	if req.TakerFee > 0 {
 		entries = append(entries, &repository.LedgerEntry{
 			LedgerID:       s.idGen.NextID(),
@@ -441,17 +387,47 @@ func (s *ClearingService) SettleTrade(ctx context.Context, req *SettleTradeReque
 	return &SettleTradeResponse{Success: true}, nil
 }
 
-// GetBalance 获取余额
+func (s *ClearingService) withOptimisticRetry(ctx context.Context, op func(context.Context, *sql.Tx) error) error {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		err = op(ctx, tx)
+		if err == nil {
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+			return nil
+		}
+		rbErr := tx.Rollback()
+		if rbErr != nil && rbErr != sql.ErrTxDone {
+			return fmt.Errorf("rollback: %w", rbErr)
+		}
+		lastErr = err
+		if errors.Is(err, repository.ErrIdempotencyConflict) {
+			return err
+		}
+		if !errors.Is(err, repository.ErrOptimisticLockFailed) {
+			return err
+		}
+	}
+	return lastErr
+}
+
 func (s *ClearingService) GetBalance(ctx context.Context, userID int64, asset string) (*repository.Balance, error) {
 	return s.balRepo.GetBalance(ctx, userID, asset)
 }
 
-// GetBalances 获取所有余额
 func (s *ClearingService) GetBalances(ctx context.Context, userID int64) ([]*repository.Balance, error) {
 	return s.balRepo.GetBalances(ctx, userID)
 }
 
-// ListLedger 查询账本
 func (s *ClearingService) ListLedger(ctx context.Context, userID int64, asset string, limit int) ([]*repository.LedgerEntry, error) {
 	return s.balRepo.ListLedger(ctx, userID, asset, limit)
 }

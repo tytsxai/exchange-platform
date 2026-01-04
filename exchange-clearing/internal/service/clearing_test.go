@@ -341,11 +341,11 @@ func TestClearingServiceFreeze_Idempotent(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectCheckIdempotency(mock, req.IdempotencyKey)
+	mock.ExpectRollback()
 	mock.ExpectQuery(`SELECT user_id, asset, available, frozen, version, updated_at_ms\s+FROM exchange_clearing\.account_balances\s+WHERE user_id = \$1 AND asset = \$2`).
 		WithArgs(req.UserID, req.Asset).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen", "version", "updated_at_ms"}).
 			AddRow(req.UserID, req.Asset, 100, 0, 1, 1000))
-	mock.ExpectRollback()
 
 	resp, err := svc.Freeze(context.Background(), req)
 	if err != nil {
@@ -404,11 +404,11 @@ func TestClearingServiceUnfreeze_Idempotent(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectCheckIdempotency(mock, req.IdempotencyKey)
+	mock.ExpectRollback()
 	mock.ExpectQuery(`SELECT user_id, asset, available, frozen, version, updated_at_ms\s+FROM exchange_clearing\.account_balances\s+WHERE user_id = \$1 AND asset = \$2`).
 		WithArgs(req.UserID, req.Asset).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen", "version", "updated_at_ms"}).
 			AddRow(req.UserID, req.Asset, 20, 0, 1, 1000))
-	mock.ExpectRollback()
 
 	resp, err := svc.Unfreeze(context.Background(), req)
 	if err != nil {
@@ -646,11 +646,11 @@ func TestClearingServiceCredit_Idempotent(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectCheckIdempotency(mock, req.IdempotencyKey)
+	mock.ExpectRollback()
 	mock.ExpectQuery(`SELECT user_id, asset, available, frozen, version, updated_at_ms\s+FROM exchange_clearing\.account_balances\s+WHERE user_id = \$1 AND asset = \$2`).
 		WithArgs(req.UserID, req.Asset).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen", "version", "updated_at_ms"}).
 			AddRow(req.UserID, req.Asset, 150, 0, 2, 1000))
-	mock.ExpectRollback()
 
 	resp, err := svc.Credit(context.Background(), req)
 	if err != nil {
@@ -685,13 +685,34 @@ func TestClearingServiceFreeze_OptimisticLockConflict(t *testing.T) {
 	expectBalanceForUpdate(mock, req.UserID, req.Asset, 100, 0, 1)
 	expectUpdateBalance(mock, 50, 50, req.UserID, req.Asset, 1, 0)
 	mock.ExpectRollback()
+	mock.ExpectBegin()
+	expectCheckIdempotencyMiss(mock, req.IdempotencyKey)
+	expectBalanceForUpdate(mock, req.UserID, req.Asset, 100, 0, 1)
+	expectUpdateBalance(mock, 50, 50, req.UserID, req.Asset, 1, 1)
+	expectInsertLedger(mock, &repository.LedgerEntry{
+		IdempotencyKey: req.IdempotencyKey,
+		UserID:         req.UserID,
+		Asset:          req.Asset,
+		AvailableDelta: -req.Amount,
+		FrozenDelta:    req.Amount,
+		AvailableAfter: 50,
+		FrozenAfter:    50,
+		Reason:         repository.ReasonOrderFreeze,
+		RefType:        req.RefType,
+		RefID:          req.RefID,
+	})
+	mock.ExpectCommit()
+	mock.ExpectQuery(`SELECT user_id, asset, available, frozen, version, updated_at_ms\s+FROM exchange_clearing\.account_balances\s+WHERE user_id = \$1 AND asset = \$2`).
+		WithArgs(req.UserID, req.Asset).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "asset", "available", "frozen", "version", "updated_at_ms"}).
+			AddRow(req.UserID, req.Asset, 50, 50, 2, 1000))
 
-	_, err := svc.Freeze(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected optimistic lock error")
+	resp, err := svc.Freeze(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected retry success, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "optimistic lock failed") {
-		t.Fatalf("expected optimistic lock error, got %v", err)
+	if resp == nil || !resp.Success {
+		t.Fatalf("expected success, got %+v", resp)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)

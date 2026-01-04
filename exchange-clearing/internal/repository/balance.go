@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrInsufficientBalance = errors.New("insufficient balance")
-	ErrIdempotencyConflict = errors.New("idempotency conflict")
-	ErrNotFound            = errors.New("not found")
+	ErrInsufficientBalance  = errors.New("insufficient balance")
+	ErrIdempotencyConflict  = errors.New("idempotency conflict")
+	ErrNotFound             = errors.New("not found")
+	ErrOptimisticLockFailed = errors.New("optimistic lock failed")
 )
 
 // Balance 账户余额
@@ -376,7 +377,7 @@ func (r *BalanceRepository) updateBalance(ctx context.Context, tx *sql.Tx, userI
 			return fmt.Errorf("get rows affected: %w", err)
 		}
 		if rows == 0 {
-			return errors.New("optimistic lock failed")
+			return ErrOptimisticLockFailed
 		}
 	}
 	return nil

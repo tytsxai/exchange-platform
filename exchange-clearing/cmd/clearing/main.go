@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,9 +18,12 @@ import (
 
 	"github.com/exchange/clearing/internal/config"
 	"github.com/exchange/clearing/internal/metrics"
+	"github.com/exchange/clearing/internal/repository"
 	"github.com/exchange/clearing/internal/service"
 	clearingws "github.com/exchange/clearing/internal/ws"
+	commonerrors "github.com/exchange/common/pkg/errors"
 	"github.com/exchange/common/pkg/health"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
@@ -125,7 +129,7 @@ func main() {
 	requireInternalAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Internal-Token") != cfg.InternalToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			next(w, r)
@@ -135,7 +139,7 @@ func main() {
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			metricsCollector.Handler().ServeHTTP(w, r)
@@ -165,44 +169,84 @@ func main() {
 	mux.HandleFunc("/v1/account", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		userIDStr := strings.TrimSpace(r.Header.Get("X-User-Id"))
 		if userIDStr == "" {
-			http.Error(w, "X-User-Id header required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "X-User-Id header required")
 			return
 		}
 		userID, err := strconv.ParseInt(userIDStr, 10, 64)
 		if err != nil || userID <= 0 {
-			http.Error(w, "invalid X-User-Id", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid X-User-Id")
 			return
 		}
 
 		balances, err := svc.GetBalances(r.Context(), userID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"userId":   userID,
-			"balances": balances,
+			"balances": toBalanceResponses(balances),
 		})
+	}))
+
+	// 账本明细
+	mux.HandleFunc("/v1/ledger", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
+		userIDStr := strings.TrimSpace(r.Header.Get("X-User-Id"))
+		if userIDStr == "" {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "X-User-Id header required")
+			return
+		}
+		userID, err := strconv.ParseInt(userIDStr, 10, 64)
+		if err != nil || userID <= 0 {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid X-User-Id")
+			return
+		}
+		asset := strings.TrimSpace(r.URL.Query().Get("asset"))
+		kind := strings.TrimSpace(r.URL.Query().Get("type"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+
+		fetchLimit := limit
+		if kind != "" {
+			fetchLimit = 1000
+		}
+
+		entries, err := svc.ListLedger(r.Context(), userID, asset, fetchLimit)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		resp := toLedgerResponses(entries, kind)
+		if len(resp) > limit {
+			resp = resp[:limit]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
 	}))
 
 	// 冻结资金
 	mux.HandleFunc("/internal/freeze", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
 		var req service.FreezeRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		resp, err := svc.Freeze(r.Context(), &req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -213,19 +257,18 @@ func main() {
 	// 解冻资金
 	mux.HandleFunc("/internal/unfreeze", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
 		var req service.UnfreezeRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		resp, err := svc.Unfreeze(r.Context(), &req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -236,19 +279,18 @@ func main() {
 	// 扣除冻结资金（提现完成）
 	mux.HandleFunc("/internal/deduct", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
 		var req service.DeductRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		resp, err := svc.Deduct(r.Context(), &req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -259,19 +301,18 @@ func main() {
 	// 入账（充值确认）
 	mux.HandleFunc("/internal/credit", requireInternalAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
 		var req service.CreditRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		resp, err := svc.Credit(r.Context(), &req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -279,9 +320,12 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	}))
 
+	handler := limitBodyMiddleware(maxBodyBytes, mux)
+	handler = commonresp.RequestIDMiddleware(handler)
+	handler = commonresp.RecoveryMiddleware(handler)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           mux,
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -684,4 +728,119 @@ func metricsAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return false
+}
+
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if isRequestTooLarge(err) {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+			return false
+		}
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid request")
+		return false
+	}
+	return true
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	commonresp.WriteErrorCode(w, nil, commonerrors.CodeInternal, "internal error")
+}
+
+type balanceResponse struct {
+	Asset     string `json:"asset"`
+	Available string `json:"available"`
+	Frozen    string `json:"frozen"`
+}
+
+func toBalanceResponses(balances []*repository.Balance) []*balanceResponse {
+	if len(balances) == 0 {
+		return []*balanceResponse{}
+	}
+	resp := make([]*balanceResponse, 0, len(balances))
+	for _, bal := range balances {
+		if bal == nil {
+			continue
+		}
+		resp = append(resp, &balanceResponse{
+			Asset:     bal.Asset,
+			Available: strconv.FormatInt(bal.Available, 10),
+			Frozen:    strconv.FormatInt(bal.Frozen, 10),
+		})
+	}
+	return resp
+}
+
+type ledgerEntryResponse struct {
+	ID        int64  `json:"id"`
+	Asset     string `json:"asset"`
+	Type      string `json:"type"`
+	Amount    string `json:"amount"`
+	Balance   string `json:"balance"`
+	RefID     string `json:"refId"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
+func toLedgerResponses(entries []*repository.LedgerEntry, kind string) []*ledgerEntryResponse {
+	if len(entries) == 0 {
+		return []*ledgerEntryResponse{}
+	}
+	filter := strings.ToUpper(strings.TrimSpace(kind))
+	resp := make([]*ledgerEntryResponse, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		entryType, ok := ledgerTypeFromReason(entry.Reason)
+		if !ok {
+			continue
+		}
+		if filter != "" && entryType != filter {
+			continue
+		}
+		amount := entry.AvailableDelta + entry.FrozenDelta
+		balance := entry.AvailableAfter + entry.FrozenAfter
+		resp = append(resp, &ledgerEntryResponse{
+			ID:        entry.LedgerID,
+			Asset:     entry.Asset,
+			Type:      entryType,
+			Amount:    strconv.FormatInt(amount, 10),
+			Balance:   strconv.FormatInt(balance, 10),
+			RefID:     entry.RefID,
+			CreatedAt: entry.CreatedAt,
+		})
+	}
+	return resp
+}
+
+func ledgerTypeFromReason(reason int) (string, bool) {
+	switch reason {
+	case repository.ReasonTradeSettle:
+		return "TRADE", true
+	case repository.ReasonDeposit:
+		return "DEPOSIT", true
+	case repository.ReasonWithdraw:
+		return "WITHDRAW", true
+	case repository.ReasonFee:
+		return "FEE", true
+	default:
+		return "", false
+	}
 }
