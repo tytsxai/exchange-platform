@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"log"
+	"runtime/debug"
 	"time"
 
+	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/wallet/internal/client"
 	"github.com/exchange/wallet/internal/repository"
 )
@@ -19,6 +21,7 @@ type DepositScanner struct {
 	interval     time.Duration
 	maxAddresses int
 	txLimit      int
+	loop         health.LoopMonitor
 }
 
 func NewDepositScanner(svc *WalletService, interval time.Duration, maxAddresses int) *DepositScanner {
@@ -52,9 +55,27 @@ func (s *DepositScanner) Start(ctx context.Context) {
 			log.Println("[DepositScanner] stopped")
 			return
 		case <-ticker.C:
-			s.scanOnce(ctx)
+			s.loop.Tick()
+			s.safeScanOnce(ctx)
 		}
 	}
+}
+
+func (s *DepositScanner) safeScanOnce(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[DepositScanner] panic recovered: %v\n%s", r, string(debug.Stack()))
+		}
+	}()
+	s.scanOnce(ctx)
+}
+
+func (s *DepositScanner) Interval() time.Duration {
+	return s.interval
+}
+
+func (s *DepositScanner) Healthy(now time.Time, maxAge time.Duration) (bool, time.Duration, string) {
+	return s.loop.Healthy(now, maxAge)
 }
 
 func (s *DepositScanner) scanOnce(ctx context.Context) {
@@ -73,23 +94,23 @@ func (s *DepositScanner) scanOnce(ctx context.Context) {
 	blockCache := make(map[string]int64) // txid -> blockNumber
 	confirmationsFor := func(txid string) int {
 		if currentBlock <= 0 {
-			return 1
+			return 0
 		}
 		if bn, ok := blockCache[txid]; ok {
 			if currentBlock >= bn {
 				return int(currentBlock - bn + 1)
 			}
-			return 1
+			return 0
 		}
 		info, err := s.svc.tronCli.GetTransactionInfo(txid)
 		if err != nil {
-			return 1
+			return 0
 		}
 		blockCache[txid] = info.BlockNumber
 		if currentBlock >= info.BlockNumber {
 			return int(currentBlock - info.BlockNumber + 1)
 		}
-		return 1
+		return 0
 	}
 
 	for _, n := range networks {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	commonresp "github.com/exchange/common/pkg/response"
 )
 
 type ClearingClient struct {
@@ -95,6 +97,9 @@ func (c *ClearingClient) post(ctx context.Context, path string, body interface{}
 	req.Header.Set("Content-Type", "application/json")
 	if c.internalToken != "" {
 		req.Header.Set("X-Internal-Token", c.internalToken)
+	}
+	if reqID := commonresp.RequestIDFromContext(ctx); reqID != "" {
+		req.Header.Set("X-Request-ID", reqID)
 	}
 
 	resp, err := c.client.Do(req)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	commonauth "github.com/exchange/common/pkg/auth"
+	commonerrors "github.com/exchange/common/pkg/errors"
+	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/wallet/internal/client"
 	"github.com/exchange/wallet/internal/config"
@@ -69,9 +72,10 @@ func main() {
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
+	var scanner *service.DepositScanner
 	if cfg.DepositScannerEnabled {
 		interval := time.Duration(cfg.DepositScannerIntervalSecs) * time.Second
-		scanner := service.NewDepositScanner(svc, interval, cfg.DepositScannerMaxAddresses)
+		scanner = service.NewDepositScanner(svc, interval, cfg.DepositScannerMaxAddresses)
 		go scanner.Start(bgCtx)
 	}
 
@@ -85,13 +89,16 @@ func main() {
 			checkPostgres(r.Context(), db),
 			checkHTTP(r.Context(), "clearing", clearingBaseURL, healthHTTPClient),
 		}
+		if scanner != nil {
+			deps = append(deps, checkScannerLoop(scanner))
+		}
 		writeHealth(w, deps)
 	})
 	metricsHandler := promhttp.Handler()
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !metricsAuthorized(r, token) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 			promhttp.Handler().ServeHTTP(w, r)
@@ -102,6 +109,9 @@ func main() {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
 			checkHTTP(r.Context(), "clearing", clearingBaseURL, healthHTTPClient),
+		}
+		if scanner != nil {
+			deps = append(deps, checkScannerLoop(scanner))
 		}
 		writeHealth(w, deps)
 	})
@@ -164,12 +174,12 @@ func main() {
 	// ========== 资产与网络 ==========
 	mux.HandleFunc("/wallet/assets", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 		assets, err := svc.ListAssets(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -178,13 +188,13 @@ func main() {
 
 	mux.HandleFunc("/wallet/networks", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 		asset := r.URL.Query().Get("asset")
 		networks, err := svc.ListNetworks(r.Context(), asset)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -194,7 +204,7 @@ func main() {
 	// ========== 充值 ==========
 	mux.HandleFunc("/wallet/deposit/address", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -203,13 +213,20 @@ func main() {
 		network := r.URL.Query().Get("network")
 
 		if asset == "" || network == "" {
-			http.Error(w, "asset and network required", http.StatusBadRequest)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "asset and network required")
 			return
 		}
 
 		addr, err := svc.GetDepositAddress(r.Context(), userID, asset, network)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			switch strings.ToLower(err.Error()) {
+			case "network not found":
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeNetworkNotFound, "network not found")
+			case "deposit disabled":
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeDepositDisabled, "deposit disabled")
+			default:
+				writeInternalError(w, err)
+			}
 			return
 		}
 
@@ -219,7 +236,7 @@ func main() {
 
 	mux.HandleFunc("/wallet/deposits", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -228,7 +245,7 @@ func main() {
 
 		deposits, err := svc.ListDeposits(r.Context(), userID, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -239,7 +256,7 @@ func main() {
 	// ========== 提现 ==========
 	mux.HandleFunc("/wallet/withdraw", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -252,8 +269,7 @@ func main() {
 			Address        string `json:"address"`
 			Tag            string `json:"tag"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
@@ -267,17 +283,21 @@ func main() {
 			Tag:            req.Tag,
 		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
+		if resp.ErrorCode != "" {
+			commonresp.WriteErrorCode(w, r, commonerrors.Code(resp.ErrorCode), "")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.HandleFunc("/wallet/withdrawals", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -286,7 +306,7 @@ func main() {
 
 		withdrawals, err := svc.ListWithdrawals(r.Context(), userID, limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -297,14 +317,14 @@ func main() {
 	// ========== 管理接口 ==========
 	mux.HandleFunc("/wallet/admin/withdrawals/pending", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		withdrawals, err := svc.ListPendingWithdrawals(r.Context(), limit)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -314,7 +334,7 @@ func main() {
 
 	mux.HandleFunc("/wallet/admin/withdraw/approve", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -322,13 +342,12 @@ func main() {
 		var req struct {
 			WithdrawID int64 `json:"withdrawId"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		if err := svc.ApproveWithdraw(r.Context(), req.WithdrawID, approverID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -338,7 +357,7 @@ func main() {
 
 	mux.HandleFunc("/wallet/admin/withdraw/reject", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -346,13 +365,12 @@ func main() {
 		var req struct {
 			WithdrawID int64 `json:"withdrawId"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		if err := svc.RejectWithdraw(r.Context(), req.WithdrawID, approverID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -362,7 +380,7 @@ func main() {
 
 	mux.HandleFunc("/wallet/admin/withdraw/complete", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			commonresp.WriteStatusError(w, r, http.StatusMethodNotAllowed, commonerrors.CodeInvalidRequest, "method not allowed")
 			return
 		}
 
@@ -370,13 +388,12 @@ func main() {
 			WithdrawID int64  `json:"withdrawId"`
 			Txid       string `json:"txid"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 
 		if err := svc.CompleteWithdraw(r.Context(), req.WithdrawID, req.Txid); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -387,6 +404,9 @@ func main() {
 	// 中间件
 	handler := authMiddleware(tokenManager, mux)
 	handler = adminTokenMiddleware(cfg.AdminToken, handler)
+	handler = limitBodyMiddleware(maxBodyBytes, handler)
+	handler = commonresp.RequestIDMiddleware(handler)
+	handler = commonresp.RecoveryMiddleware(handler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -488,6 +508,26 @@ func checkHTTP(ctx context.Context, name, baseURL string, client *http.Client) d
 	}
 }
 
+func checkScannerLoop(scanner *service.DepositScanner) dependencyStatus {
+	if scanner == nil {
+		return dependencyStatus{Name: "depositScanner", Status: "ok", Latency: 0}
+	}
+	maxAge := 2 * scanner.Interval()
+	if maxAge <= 0 {
+		maxAge = 30 * time.Second
+	}
+	ok, age, _ := scanner.Healthy(time.Now(), maxAge)
+	status := "ok"
+	if !ok {
+		status = "down"
+	}
+	return dependencyStatus{
+		Name:    "depositScanner",
+		Status:  status,
+		Latency: age.Milliseconds(),
+	}
+}
+
 func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 	status := "ok"
 	for _, dep := range deps {
@@ -519,13 +559,13 @@ func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) ht
 		// 2. 获取 Token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "authorization required", http.StatusUnauthorized)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "authorization required")
 			return
 		}
 
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "invalid authorization format", http.StatusUnauthorized)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "invalid authorization format")
 			return
 		}
 
@@ -533,7 +573,7 @@ func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) ht
 
 		userID, err := tokenManager.Verify(token)
 		if err != nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "invalid token")
 			return
 		}
 
@@ -548,7 +588,7 @@ func adminTokenMiddleware(adminToken string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/wallet/admin") {
 			if r.Header.Get("X-Admin-Token") != adminToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
 				return
 			}
 		}
@@ -568,4 +608,38 @@ func metricsAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return false
+}
+
+const maxBodyBytes int64 = 4 << 20
+
+func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && maxBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if isRequestTooLarge(err) {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeRequestTooLarge, "")
+			return false
+		}
+		commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid request")
+		return false
+	}
+	return true
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	commonresp.WriteErrorCode(w, nil, commonerrors.CodeInternal, "internal error")
 }
