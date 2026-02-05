@@ -120,6 +120,10 @@ func main() {
 	}
 
 	// 健康检查
+	mux.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
