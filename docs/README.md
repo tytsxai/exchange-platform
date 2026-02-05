@@ -5,14 +5,13 @@ Comprehensive documentation for the OpenExchange cryptocurrency exchange platfor
 ## 📚 Documentation Structure
 
 ### Getting Started
-- [Installation](installation.md) - Setup guide for development environment
 - [Quick Start](quickstart.md) - Get trading services running in 5 minutes
 - [Architecture](architecture.md) - System architecture overview
 
 ### Core Concepts
 - [Trading Flow](trading-flow.md) - Order lifecycle from creation to settlement
-- [Matching Engine](matching-engine.md) - How orders are matched
-- [Event Model](event-model.md) - Event-driven communication between services
+- [Data Models](data-models.md) - Proto definitions and database schemas
+- [Glossary](glossary.md) - Exchange terminology
 
 ### Development
 - [Development Guide](development.md) - Setting up local development environment
@@ -21,9 +20,7 @@ Comprehensive documentation for the OpenExchange cryptocurrency exchange platfor
 
 ### API Reference
 - [API Overview](api.md) - API architecture and authentication
-- [Gateway API](api-gateway.md) - Trading, market data, and account endpoints
-- [Admin API](api-admin.md) - Administrative operations
-- [Wallet API](api-wallet.md) - Deposit and withdrawal operations
+- [Gateway API](api.md) - Trading, market data, and account endpoints
 
 ### Operations
 - [Deployment](deployment.md) - Production deployment guide
@@ -34,9 +31,8 @@ Comprehensive documentation for the OpenExchange cryptocurrency exchange platfor
 - [Production Readiness](ops/production-ready.md) - Pre-launch checklist
 
 ### Reference
-- [Data Models](data-models.md) - Proto definitions and database schemas
-- [Error Codes](error-codes.md) - Comprehensive error code reference
-- [Glossary](glossary.md) - Exchange terminology
+- [Error Codes](ops/production-ready.md#error-codes) - Error handling
+- [Withdraw State Machine](ops/withdraw-state-machine.md) - Withdrawal flow
 
 ## 🚀 Quick Links
 
