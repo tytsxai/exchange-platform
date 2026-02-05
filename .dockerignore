@@ -1,10 +1,19 @@
+# Version control
 .git
+.gitignore
 .github
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
 
 # Local tooling / agent metadata
 .auto-*
 .claude*
+.claude_settings.json
 
 # Build/test outputs
 **/*.test
@@ -12,6 +21,25 @@
 **/bin
 **/dist
 **/tmp
+**/*.log
+*.pid
 
-# Docs and misc
+# Development
+.env
+.env.local
+.env.*.local
+*.local
+
+# Documentation (keep in separate docs/ dir if needed)
 交易所项目文档
+docs/
+README.md
+CONTRIBUTING.md
+LICENSE
+*.md
+
+# Temporary
+*.tmp
+*.bak
+*~
+.#*

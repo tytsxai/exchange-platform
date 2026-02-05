@@ -6,6 +6,12 @@
 .claude_settings.json
 .worktrees/
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
 # Build/run artifacts
 **/bin/
 **/logs/
@@ -13,8 +19,26 @@
 **/coverage*.out
 **/*.log
 **/*.pid
+**/*.tmp
+**/*.bak
 
-# Production env (secrets)
-deploy/prod/prod.env
-deploy/prod/monitoring.env
-deploy/prod/metrics.token
+# Environment secrets
+.env
+.env.local
+.env.*.local
+.deploy/
+deploy/*/!.gitignore
+!.deploy/*/.gitignore
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# macOS
+.DS_Store
