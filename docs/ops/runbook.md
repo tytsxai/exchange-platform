@@ -51,6 +51,7 @@
 ## 3. 上线后验收（最小可交付）
 
 - 网关可用：
+  - `curl -sf http://<gateway-host>:8080/live`
   - `curl -sf http://<gateway-host>:8080/health`
   - `curl -sf http://<gateway-host>:8080/ready`
 - 内部关键服务 ready 绿（至少覆盖异步链路）：
@@ -85,6 +86,8 @@
 - **服务是否还活着**：`docker compose ps`
 - **健康检查是否失败**：`docker compose ps` 的 `healthy/unhealthy`
 - **依赖是否异常**：各服务 `/ready` 返回 `degraded` 时查看 dependencies
+- **链路追踪**：Jaeger UI（默认 http://localhost:16686）查看请求链路
+- **审计日志**：查询 `audit_logs` 表，按 `user_id`/`event_type`/`timestamp` 过滤
 - **Redis Streams backlog**：
   - 查看 pending、DLQ（stream: `exchange:*:dlq`）
   - 优先确认：consumer group/name 是否配置错误（同名 consumer 会互相抢占）

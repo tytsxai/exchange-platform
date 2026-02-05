@@ -35,6 +35,7 @@
    - 如需指定 env 文件：`PROD_ENV_FILE=deploy/prod/prod.env bash deploy/prod/deploy.sh`
    - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d --build`
 4. 验证：
+   - `curl -sf http://<gateway-host>:8080/live`
    - `curl -sf http://<gateway-host>:8080/health`
    - `curl -sf http://<gateway-host>:8080/ready`
    - 内部服务的 `/ready` 也建议验证（尤其是 `matching/order/clearing/marketdata`，其 ready 会包含 Streams 消费循环活性）
