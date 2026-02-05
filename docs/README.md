@@ -6,10 +6,13 @@ Comprehensive documentation for the OpenExchange cryptocurrency exchange platfor
 
 ### Getting Started
 - [Quick Start](quickstart.md) - Get trading services running in 5 minutes
+- [Installation](installation.md) - Complete installation guide
 - [Architecture](architecture.md) - System architecture overview
 
 ### Core Concepts
 - [Trading Flow](trading-flow.md) - Order lifecycle from creation to settlement
+- [Matching Engine](matching-engine.md) - In-depth matching algorithm
+- [Event Model](event-model.md) - Event-driven communication
 - [Data Models](data-models.md) - Proto definitions and database schemas
 - [Glossary](glossary.md) - Exchange terminology
 
@@ -17,6 +20,7 @@ Comprehensive documentation for the OpenExchange cryptocurrency exchange platfor
 - [Development Guide](development.md) - Setting up local development environment
 - [Code Style](code-style.md) - Coding conventions and best practices
 - [Testing](testing.md) - Writing and running tests
+- [Redis Configuration](redis-configuration.md) - Redis Streams and Pub/Sub
 
 ### API Reference
 - [API Overview](api.md) - API architecture and authentication
@@ -29,10 +33,10 @@ Comprehensive documentation for the OpenExchange cryptocurrency exchange platfor
 - [Runbook](ops/runbook.md) - Production operations handbook
 - [Backup & Recovery](ops/backup-restore.md) - Data backup procedures
 - [Production Readiness](ops/production-ready.md) - Pre-launch checklist
+- [Withdraw State Machine](ops/withdraw-state-machine.md) - Withdrawal flow
 
 ### Reference
-- [Error Codes](ops/production-ready.md#error-codes) - Error handling
-- [Withdraw State Machine](ops/withdraw-state-machine.md) - Withdrawal flow
+- [Project Roadmap](project-roadmap.md) - Development milestones and future plans
 
 ## 🚀 Quick Links
 
