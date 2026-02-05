@@ -145,24 +145,10 @@ func (s *MarketDataService) GetDepth(symbol string, limit int) *Depth {
 	}
 
 	// 限制档位数
-	result := &Depth{
-		Symbol:       depth.Symbol,
-		LastUpdateID: depth.LastUpdateID,
-		TimestampMs:  depth.TimestampMs,
+	result := cloneDepth(depth, limit)
+	if result == nil {
+		return &Depth{Symbol: symbol, Bids: []PriceLevel{}, Asks: []PriceLevel{}}
 	}
-
-	if limit <= 0 || limit > len(depth.Bids) {
-		result.Bids = depth.Bids
-	} else {
-		result.Bids = depth.Bids[:limit]
-	}
-
-	if limit <= 0 || limit > len(depth.Asks) {
-		result.Asks = depth.Asks
-	} else {
-		result.Asks = depth.Asks[:limit]
-	}
-
 	return result
 }
 
@@ -177,9 +163,9 @@ func (s *MarketDataService) GetTrades(symbol string, limit int) []*Trade {
 	}
 
 	if limit <= 0 || limit > len(trades) {
-		return trades
+		return cloneTrades(trades)
 	}
-	return trades[len(trades)-limit:]
+	return cloneTrades(trades[len(trades)-limit:])
 }
 
 // GetTicker 获取 24h 行情
@@ -191,7 +177,8 @@ func (s *MarketDataService) GetTicker(symbol string) *Ticker {
 	if !ok {
 		return &Ticker{Symbol: symbol}
 	}
-	return ticker
+	snapshot := *ticker
+	return &snapshot
 }
 
 // GetAllTickers 获取所有 ticker
@@ -201,7 +188,8 @@ func (s *MarketDataService) GetAllTickers() []*Ticker {
 
 	result := make([]*Ticker, 0, len(s.tickers))
 	for _, t := range s.tickers {
-		result = append(result, t)
+		snapshot := *t
+		result = append(result, &snapshot)
 	}
 	return result
 }
@@ -562,12 +550,19 @@ func (s *MarketDataService) publish(symbol, dataType string, data interface{}) {
 }
 
 func (s *MarketDataService) publishDepth(symbol string, depth *Depth) {
+	if depth == nil {
+		return
+	}
+	snapshot := cloneDepth(depth, 0)
+	if snapshot == nil {
+		return
+	}
 	channel := "market." + symbol + ".book"
 	event := &Event{
 		Channel:     channel,
-		Seq:         depth.LastUpdateID,
-		TimestampMs: depth.TimestampMs,
-		Data:        depth,
+		Seq:         snapshot.LastUpdateID,
+		TimestampMs: snapshot.TimestampMs,
+		Data:        snapshot,
 	}
 
 	s.subMu.RLock()
@@ -580,6 +575,46 @@ func (s *MarketDataService) publishDepth(symbol string, depth *Depth) {
 		default:
 		}
 	}
+}
+
+func cloneDepth(depth *Depth, limit int) *Depth {
+	if depth == nil {
+		return nil
+	}
+	result := &Depth{
+		Symbol:       depth.Symbol,
+		LastUpdateID: depth.LastUpdateID,
+		TimestampMs:  depth.TimestampMs,
+	}
+	bids := depth.Bids
+	asks := depth.Asks
+	if limit > 0 && limit < len(bids) {
+		bids = bids[:limit]
+	}
+	if limit > 0 && limit < len(asks) {
+		asks = asks[:limit]
+	}
+	result.Bids = clonePriceLevels(bids)
+	result.Asks = clonePriceLevels(asks)
+	return result
+}
+
+func clonePriceLevels(levels []PriceLevel) []PriceLevel {
+	if len(levels) == 0 {
+		return []PriceLevel{}
+	}
+	result := make([]PriceLevel, len(levels))
+	copy(result, levels)
+	return result
+}
+
+func cloneTrades(trades []*Trade) []*Trade {
+	if len(trades) == 0 {
+		return []*Trade{}
+	}
+	result := make([]*Trade, len(trades))
+	copy(result, trades)
+	return result
 }
 
 // insertLevel 插入价格档位并保持排序
