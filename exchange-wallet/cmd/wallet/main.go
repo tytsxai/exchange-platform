@@ -84,6 +84,10 @@ func main() {
 	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
 
 	// 健康检查 (不受中间件保护，或在中间件中豁免)
+	mux.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -551,7 +555,7 @@ func writeHealth(w http.ResponseWriter, deps []dependencyStatus) {
 func authMiddleware(tokenManager *commonauth.TokenManager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. 跳过健康检查和文档
-		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/docs" || r.URL.Path == "/openapi.yaml" || r.URL.Path == "/metrics" {
+		if r.URL.Path == "/live" || r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/docs" || r.URL.Path == "/openapi.yaml" || r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
