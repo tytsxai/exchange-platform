@@ -49,6 +49,11 @@
   - [x] 签名验证工具 (`pkg/signature`)
   - [x] Redis Streams 封装 (`pkg/redis`)
   - [x] 错误码定义 (`pkg/errors`)
+  - [x] 结构化日志 (`pkg/logger`) - zerolog + traceID
+  - [x] 健康检查 (`pkg/health`) - Live/Ready/Health 端点
+  - [x] 链路追踪 (`pkg/tracing`) - OpenTelemetry + Jaeger
+  - [x] 参数验证 (`pkg/validate`) - Symbol/Price/Quantity/Address
+  - [x] 审计日志 (`pkg/audit`) - 异步写入、敏感参数脱敏
 - [x] 数据库 Schema (`scripts/init-db.sql`)
 
 ### M0.2 基础设施
@@ -119,24 +124,25 @@
 
 ---
 
-## M3: 后台与止血能力 🔲
+## M3: 后台与止血能力 🟡
 
 ### M3.1 exchange-admin
-- [ ] RBAC 权限模型
-- [ ] 配置管理（交易对/费率/风控规则）
-- [ ] Kill Switch（全局/按 symbol 暂停）
-- [ ] 审计日志
+- [x] RBAC 权限模型（SuperAdmin/Operator/Support/Auditor 四种角色）
+- [x] 配置管理（交易对管理 symbol_manager）
+- [x] Kill Switch（全局/按 symbol 暂停）
+- [x] 审计日志（异步写入、敏感参数脱敏）
 - [ ] 提现审核
 - [ ] 人工加减款（双人复核）
 
 ---
 
-## M4: 钱包出入金 🔲
+## M4: 钱包出入金 🟡
 
 ### M4.1 exchange-wallet
-- [ ] 资产/网络配置
-- [ ] 充值（地址生成、链上监听、去重入账）
-- [ ] 提现（申请、风控、审批、出款）
+- [x] 资产/网络配置
+- [x] 充值（地址生成、链上监听 scanner）
+- [x] 提现（申请、状态机、出款流程）
+- [ ] 风控规则
 - [ ] 链上对账
 - [ ] 地址白名单
 
