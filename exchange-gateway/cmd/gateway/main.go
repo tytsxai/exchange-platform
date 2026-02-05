@@ -21,6 +21,7 @@ import (
 	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/common/pkg/logger"
 	commonresp "github.com/exchange/common/pkg/response"
+	"github.com/exchange/common/pkg/tracing"
 	"github.com/exchange/gateway/internal/config"
 	"github.com/exchange/gateway/internal/middleware"
 	"github.com/exchange/gateway/internal/ws"
@@ -39,6 +40,18 @@ var httpClient = &http.Client{
 }
 
 func main() {
+	shutdown, err := tracing.Init(tracing.Config{
+		ServiceName: "exchange-gateway",
+		Endpoint:    os.Getenv("JAEGER_ENDPOINT"),
+		Enabled:     os.Getenv("TRACING_ENABLED") == "true",
+		SampleRate:  0.1,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init tracing: %v\n", err)
+		os.Exit(1)
+	}
+	defer shutdown(context.Background())
+
 	cfg := config.Load()
 	l := logger.New(cfg.ServiceName, os.Stdout)
 	l.Info(fmt.Sprintf("Starting %s...", cfg.ServiceName))
@@ -91,20 +104,15 @@ func main() {
 
 	// 创建路由
 	mux := http.NewServeMux()
-	healthHTTPClient := &http.Client{Timeout: 2 * time.Second}
+
+	healthz := health.New()
+	healthz.Register(health.NewRedisChecker(redisClient))
+	healthz.Register(newLoopChecker("private_consumer", &privateEventLoop, 45*time.Second))
+	healthz.SetReady(true)
 
 	// 公共接口（无需鉴权）
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		deps := []dependencyStatus{
-			checkRedis(r.Context(), redisClient),
-			checkConsumeLoop(&privateEventLoop, "privateEventsConsumer"),
-			checkHTTP(r.Context(), "order", cfg.OrderServiceURL, healthHTTPClient),
-			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
-			checkHTTP(r.Context(), "user", cfg.UserServiceURL, healthHTTPClient),
-			checkHTTP(r.Context(), "clearing", cfg.ClearingServiceURL, healthHTTPClient),
-		}
-		writeHealth(w, deps)
-	})
+	mux.HandleFunc("/live", healthz.LiveHandler())
+	mux.HandleFunc("/health", healthz.HealthHandler())
 	metricsHandler := promhttp.Handler()
 	if token := os.Getenv("METRICS_TOKEN"); token != "" {
 		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,17 +124,7 @@ func main() {
 		})
 	}
 	mux.Handle("/metrics", metricsHandler)
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		deps := []dependencyStatus{
-			checkRedis(r.Context(), redisClient),
-			checkConsumeLoop(&privateEventLoop, "privateEventsConsumer"),
-			checkHTTP(r.Context(), "order", cfg.OrderServiceURL, healthHTTPClient),
-			checkHTTP(r.Context(), "matching", cfg.MatchingServiceURL, healthHTTPClient),
-			checkHTTP(r.Context(), "user", cfg.UserServiceURL, healthHTTPClient),
-			checkHTTP(r.Context(), "clearing", cfg.ClearingServiceURL, healthHTTPClient),
-		}
-		writeHealth(w, deps)
-	})
+	mux.HandleFunc("/ready", healthz.ReadyHandler())
 
 	mux.HandleFunc("/v1/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -349,6 +347,7 @@ func main() {
 	handler = requestIDMiddleware(handler)
 	handler = loggingMiddleware(l, handler)
 	handler = limitBodyMiddleware(maxBodyBytes, handler)
+	handler = tracing.HTTPMiddleware(handler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -719,6 +718,42 @@ func limitBodyMiddleware(maxBytes int64, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+type loopChecker struct {
+	name   string
+	loop   *health.LoopMonitor
+	maxAge time.Duration
+}
+
+func newLoopChecker(name string, loop *health.LoopMonitor, maxAge time.Duration) health.Checker {
+	if name == "" {
+		name = "loop"
+	}
+	return &loopChecker{name: name, loop: loop, maxAge: maxAge}
+}
+
+func (c *loopChecker) Name() string {
+	if c == nil || c.name == "" {
+		return "loop"
+	}
+	return c.name
+}
+
+func (c *loopChecker) Check(ctx context.Context) health.CheckResult {
+	if c == nil || c.loop == nil {
+		return health.CheckResult{Status: health.StatusDown, Message: "nil loop monitor"}
+	}
+	ok, age, lastErr := c.loop.Healthy(time.Now(), c.maxAge)
+	status := health.StatusUp
+	if !ok {
+		status = health.StatusDown
+	}
+	msg := lastErr
+	if msg == "" && !ok {
+		msg = "stale"
+	}
+	return health.CheckResult{Status: status, Latency: age, Message: msg}
 }
 
 // trusted proxy evaluation lives in middleware.IsTrustedProxyIP
