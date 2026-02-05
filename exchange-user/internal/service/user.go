@@ -4,8 +4,10 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
+	"github.com/exchange/common/pkg/audit"
 	"github.com/exchange/user/internal/repository"
 )
 
@@ -13,6 +15,12 @@ var (
 	ErrTokenIssuerNotConfigured = errors.New("token issuer not configured")
 	ErrUserFrozen               = errors.New("user frozen")
 	ErrUserDisabled             = errors.New("user disabled")
+)
+
+const (
+	minPasswordLength = 8
+	maxPasswordLength = 128
+	maxEmailLength    = 254
 )
 
 // UserRepository 用户仓储接口
@@ -29,9 +37,10 @@ type UserRepository interface {
 
 // UserService 用户服务
 type UserService struct {
-	repo  UserRepository
-	idGen IDGenerator
-	token TokenIssuer
+	repo        UserRepository
+	idGen       IDGenerator
+	token       TokenIssuer
+	auditLogger audit.Logger
 }
 
 // IDGenerator ID 生成器接口
@@ -53,6 +62,11 @@ func NewUserService(repo UserRepository, idGen IDGenerator, tokenIssuer TokenIss
 	}
 }
 
+// SetAuditLogger 设置审计日志 logger。
+func (s *UserService) SetAuditLogger(logger audit.Logger) {
+	s.auditLogger = logger
+}
+
 // RegisterRequest 注册请求
 type RegisterRequest struct {
 	Email    string
@@ -67,10 +81,15 @@ type RegisterResponse struct {
 
 // Register 注册
 func (s *UserService) Register(ctx context.Context, req *RegisterRequest) (*RegisterResponse, error) {
+	email := strings.TrimSpace(req.Email)
+	if code := validateRegisterInput(email, req.Password); code != "" {
+		return &RegisterResponse{ErrorCode: code}, nil
+	}
+
 	now := time.Now().UnixMilli()
 	user := &repository.User{
 		UserID:      s.idGen.NextID(),
-		Email:       req.Email,
+		Email:       email,
 		Status:      repository.UserStatusActive,
 		KycStatus:   1, // NOT_STARTED
 		CreatedAtMs: now,
@@ -103,20 +122,45 @@ type LoginResponse struct {
 
 // Login 登录
 func (s *UserService) Login(ctx context.Context, req *LoginRequest) (*LoginResponse, error) {
-	user, err := s.repo.GetUserByEmail(ctx, req.Email)
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		s.writeAudit(ctx, audit.NewLog(audit.EventLoginFailed, 0).
+			WithIP("").
+			WithParams(map[string]interface{}{"email": email}).
+			WithResult(false, "INVALID_CREDENTIALS"))
+		return &LoginResponse{ErrorCode: "INVALID_CREDENTIALS"}, nil
+	}
+
+	user, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil {
 		if err == repository.ErrUserNotFound {
+			s.writeAudit(ctx, audit.NewLog(audit.EventLoginFailed, 0).
+				WithIP("").
+				WithParams(map[string]interface{}{"email": email}).
+				WithResult(false, "INVALID_CREDENTIALS"))
 			return &LoginResponse{ErrorCode: "INVALID_CREDENTIALS"}, nil
 		}
 		return nil, err
 	}
 
 	if !s.repo.VerifyPassword(user, req.Password) {
+		s.writeAudit(ctx, audit.NewLog(audit.EventLoginFailed, user.UserID).
+			WithIP("").
+			WithParams(map[string]interface{}{"email": email}).
+			WithResult(false, "INVALID_CREDENTIALS"))
 		return &LoginResponse{ErrorCode: "INVALID_CREDENTIALS"}, nil
 	}
 
 	if user.Status != repository.UserStatusActive {
-		return &LoginResponse{ErrorCode: "USER_FROZEN"}, nil
+		code := "USER_FROZEN"
+		if user.Status == repository.UserStatusDisabled {
+			code = "USER_DISABLED"
+		}
+		s.writeAudit(ctx, audit.NewLog(audit.EventLoginFailed, user.UserID).
+			WithIP("").
+			WithParams(map[string]interface{}{"email": email, "status": user.Status}).
+			WithResult(false, code))
+		return &LoginResponse{ErrorCode: code}, nil
 	}
 
 	if s.token == nil {
@@ -128,7 +172,24 @@ func (s *UserService) Login(ctx context.Context, req *LoginRequest) (*LoginRespo
 		return nil, err
 	}
 
+	s.writeAudit(ctx, audit.NewLog(audit.EventLogin, user.UserID).
+		WithIP("").
+		WithParams(map[string]interface{}{"email": email}).
+		WithResult(true, ""))
 	return &LoginResponse{User: user, Token: token}, nil
+}
+
+func validateRegisterInput(email, password string) string {
+	if email == "" || len(email) > maxEmailLength || strings.ContainsAny(email, " \t\r\n") || !strings.Contains(email, "@") {
+		return "INVALID_PARAM"
+	}
+	if strings.TrimSpace(password) == "" {
+		return "INVALID_PASSWORD"
+	}
+	if len(password) < minPasswordLength || len(password) > maxPasswordLength {
+		return "INVALID_PASSWORD"
+	}
+	return ""
 }
 
 // CreateApiKeyRequest 创建 API Key 请求
@@ -165,6 +226,15 @@ func (s *UserService) CreateApiKey(ctx context.Context, req *CreateApiKeyRequest
 		return nil, err
 	}
 
+	s.writeAudit(ctx, audit.NewLog(audit.EventAPIKeyCreated, req.UserID).
+		WithIP("").
+		WithParams(map[string]interface{}{
+			"apiKeyId":    apiKey.ApiKeyID,
+			"label":       req.Label,
+			"permissions": req.Permissions,
+			"ipWhitelist": req.IPWhitelist,
+		}).
+		WithResult(true, ""))
 	return &CreateApiKeyResponse{ApiKey: apiKey, Secret: secret}, nil
 }
 
@@ -175,7 +245,14 @@ func (s *UserService) ListApiKeys(ctx context.Context, userID int64) ([]*reposit
 
 // DeleteApiKey 删除 API Key
 func (s *UserService) DeleteApiKey(ctx context.Context, userID, apiKeyID int64) error {
-	return s.repo.DeleteApiKey(ctx, userID, apiKeyID)
+	err := s.repo.DeleteApiKey(ctx, userID, apiKeyID)
+	if err == nil {
+		s.writeAudit(ctx, audit.NewLog(audit.EventAPIKeyDeleted, userID).
+			WithIP("").
+			WithParams(map[string]interface{}{"apiKeyId": apiKeyID}).
+			WithResult(true, ""))
+	}
+	return err
 }
 
 // GetApiKeyInfo 获取 API Key 信息（用于网关鉴权）
@@ -204,4 +281,11 @@ func (s *UserService) GetApiKeyInfo(ctx context.Context, apiKey string) (secret 
 // GetUser 获取用户
 func (s *UserService) GetUser(ctx context.Context, userID int64) (*repository.User, error) {
 	return s.repo.GetUserByID(ctx, userID)
+}
+
+func (s *UserService) writeAudit(ctx context.Context, log *audit.AuditLog) {
+	if s == nil || s.auditLogger == nil || log == nil {
+		return
+	}
+	_ = s.auditLogger.Log(ctx, log)
 }

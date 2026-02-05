@@ -107,6 +107,10 @@ func main() {
 	}
 
 	// 健康检查
+	mux.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkPostgres(r.Context(), db),
@@ -307,7 +311,10 @@ func main() {
 			return
 		}
 
-		clientIP := clientIPFromRequest(r)
+		clientIP := strings.TrimSpace(req.ClientIP)
+		if clientIP == "" || net.ParseIP(clientIP) == nil {
+			clientIP = clientIPFromRequest(r)
+		}
 		if len(ipWhitelist) > 0 && !ipAllowed(clientIP, ipWhitelist) {
 			resp["error"] = "ip not allowed"
 			w.Header().Set("Content-Type", "application/json")

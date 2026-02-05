@@ -41,7 +41,7 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 		WithArgs(int64(101), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), repository.UserStatusActive, 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	regResp, err := svc.Register(ctx, &RegisterRequest{Email: "a@b.com", Password: "pw"})
+	regResp, err := svc.Register(ctx, &RegisterRequest{Email: "a@b.com", Password: "password123"})
 	if err != nil {
 		t.Fatalf("Register error: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 		WithArgs(int64(102), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), repository.UserStatusActive, 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnError(errors.New("duplicate key value violates unique constraint"))
 
-	regResp, err = svc.Register(ctx, &RegisterRequest{Email: "dup@b.com", Password: "pw"})
+	regResp, err = svc.Register(ctx, &RegisterRequest{Email: "dup@b.com", Password: "password123"})
 	if err != nil || regResp.ErrorCode != "EMAIL_EXISTS" {
 		t.Fatalf("expected EMAIL_EXISTS, got resp=%+v err=%v", regResp, err)
 	}
@@ -62,7 +62,7 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 		WithArgs(int64(103), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), repository.UserStatusActive, 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnError(sql.ErrConnDone)
 
-	if _, err := svc.Register(ctx, &RegisterRequest{Email: "err@b.com", Password: "pw"}); err == nil {
+	if _, err := svc.Register(ctx, &RegisterRequest{Email: "err@b.com", Password: "password123"}); err == nil {
 		t.Fatal("expected Register error")
 	}
 
@@ -104,6 +104,19 @@ func TestTOTPUserService_Register_Login_ApiKey(t *testing.T) {
 	loginResp, err = svc.Login(ctx, &LoginRequest{Email: "user@b.com", Password: "good-pass"})
 	if err != nil || loginResp.ErrorCode != "USER_FROZEN" {
 		t.Fatalf("expected USER_FROZEN, got resp=%+v err=%v", loginResp, err)
+	}
+
+	rows = sqlmock.NewRows([]string{
+		"user_id", "email", "phone", "password_hash", "status", "kyc_status", "created_at_ms", "updated_at_ms",
+	}).AddRow(int64(202), "user@b.com", nil, string(hash), repository.UserStatusDisabled, 1, int64(1), int64(1))
+
+	mock.ExpectQuery("FROM exchange_user.users").
+		WithArgs("user@b.com").
+		WillReturnRows(rows)
+
+	loginResp, err = svc.Login(ctx, &LoginRequest{Email: "user@b.com", Password: "good-pass"})
+	if err != nil || loginResp.ErrorCode != "USER_DISABLED" {
+		t.Fatalf("expected USER_DISABLED, got resp=%+v err=%v", loginResp, err)
 	}
 
 	rows = sqlmock.NewRows([]string{
