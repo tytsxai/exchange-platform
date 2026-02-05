@@ -78,3 +78,24 @@ func TestDecimal_Mul(t *testing.T) {
 		}
 	}
 }
+
+func TestDecimal_Div_Truncate(t *testing.T) {
+	tests := []struct {
+		a, b  string
+		scale int
+		want  string
+	}{
+		{"1.234", "1", 2, "1.23"},
+		{"123.456", "100", 1, "1.2"},
+		{"12.34", "100", 2, "0.12"},
+	}
+
+	for _, tt := range tests {
+		da := MustNew(tt.a)
+		db := MustNew(tt.b)
+		got := da.Div(db, tt.scale)
+		if got.String() != tt.want {
+			t.Errorf("%s / %s scale=%d = %s, want %s", tt.a, tt.b, tt.scale, got.String(), tt.want)
+		}
+	}
+}

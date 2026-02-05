@@ -20,7 +20,12 @@ exchange-common/
 │   ├── response/           # HTTP 响应助手
 │   ├── snowflake/          # 雪花 ID 生成
 │   ├── signature/          # API 签名验证
-│   └── redis/              # Redis Streams 封装
+│   ├── redis/              # Redis Streams 封装
+│   ├── logger/             # 结构化日志（zerolog）
+│   ├── health/             # 健康检查（Live/Ready/Health）
+│   ├── tracing/            # 链路追踪（OpenTelemetry）
+│   ├── validate/           # 参数验证
+│   └── audit/              # 审计日志
 ├── scripts/
 │   ├── gen-proto.sh        # Proto 编译脚本
 │   ├── init-db.sql         # 数据库初始化
@@ -65,6 +70,11 @@ import (
     "github.com/exchange/common/pkg/snowflake"
     "github.com/exchange/common/pkg/signature"
     "github.com/exchange/common/pkg/redis"
+    "github.com/exchange/common/pkg/logger"
+    "github.com/exchange/common/pkg/health"
+    "github.com/exchange/common/pkg/tracing"
+    "github.com/exchange/common/pkg/validate"
+    "github.com/exchange/common/pkg/audit"
 )
 
 // 初始化雪花 ID
@@ -86,6 +96,38 @@ sig := signer.Sign(canonicalString)
 // HTTP 响应助手
 response.WriteError(w, r, errors.New(errors.CodeInsufficientBalance, "余额不足"))
 response.WriteErrorCode(w, r, errors.CodeInvalidSignature, "签名无效")
+
+// 结构化日志
+log := logger.New("order-service", os.Stdout)
+log.WithContext(ctx).Info("order created")
+
+// 健康检查
+h := health.New()
+h.Register(health.NewPostgresChecker(db))
+h.Register(health.NewRedisChecker(redisClient))
+http.HandleFunc("/live", h.LiveHandler())
+http.HandleFunc("/ready", h.ReadyHandler())
+
+// 链路追踪
+shutdown, _ := tracing.Init(tracing.Config{
+    ServiceName: "order-service",
+    Endpoint:    "http://jaeger:14268/api/traces",
+    Enabled:     true,
+    SampleRate:  0.1,
+})
+defer shutdown(context.Background())
+
+// 参数验证
+if err := validate.Symbol("BTC_USDT"); err != nil { /* handle */ }
+if err := validate.Price(10050000000, 2); err != nil { /* handle */ }
+if err := validate.Address("0x...", "ETH"); err != nil { /* handle */ }
+
+// 审计日志
+auditLogger, _ := audit.NewDBLogger(db)
+auditLogger.Log(ctx, audit.NewLog(audit.EventOrderCreated, userID).
+    WithIP(clientIP).
+    WithResource("order", orderID).
+    WithParams(map[string]interface{}{"symbol": "BTC_USDT", "qty": 100}))
 ```
 
 ## Proto 定义

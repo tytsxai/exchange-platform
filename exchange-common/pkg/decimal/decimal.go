@@ -165,6 +165,9 @@ func (d *Decimal) Div(other *Decimal, scale int) *Decimal {
 	if scaleDiff > 0 {
 		multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scaleDiff)), nil)
 		dividend.Mul(dividend, multiplier)
+	} else if scaleDiff < 0 {
+		divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-scaleDiff)), nil)
+		dividend.Div(dividend, divisor)
 	}
 
 	result := new(big.Int).Div(dividend, other.value)

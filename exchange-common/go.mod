@@ -5,6 +5,9 @@ go 1.25
 require (
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/rs/zerolog v1.33.0
+	go.opentelemetry.io/otel v1.26.0
+	go.opentelemetry.io/otel/exporters/jaeger v1.26.0
+	go.opentelemetry.io/otel/sdk v1.26.0
 )
 
 require (

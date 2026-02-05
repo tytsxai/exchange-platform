@@ -64,6 +64,43 @@ func (l *Logger) Error(msg string) {
 	l.logger.Error().Msg(msg)
 }
 
+// Infof 带字段的 Info 日志
+func (l *Logger) Infof(msg string, fields map[string]interface{}) {
+	event := l.logger.Info()
+	for k, v := range fields {
+		event = event.Interface(k, v)
+	}
+	event.Msg(msg)
+}
+
+// Warnf 带字段的 Warn 日志
+func (l *Logger) Warnf(msg string, fields map[string]interface{}) {
+	event := l.logger.Warn()
+	for k, v := range fields {
+		event = event.Interface(k, v)
+	}
+	event.Msg(msg)
+}
+
+// Errorf 带字段的 Error 日志
+func (l *Logger) Errorf(msg string, fields map[string]interface{}) {
+	event := l.logger.Error()
+	for k, v := range fields {
+		event = event.Interface(k, v)
+	}
+	event.Msg(msg)
+}
+
+// WithError 添加错误字段
+func (l *Logger) WithError(err error) *Logger {
+	return &Logger{logger: l.logger.With().Err(err).Logger()}
+}
+
+// WithField 添加单个字段
+func (l *Logger) WithField(key string, value interface{}) *Logger {
+	return &Logger{logger: l.logger.With().Interface(key, value).Logger()}
+}
+
 func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDKey, traceID)
 }
