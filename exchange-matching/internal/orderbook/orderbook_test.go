@@ -48,6 +48,56 @@ func TestOrderStruct(t *testing.T) {
 	}
 }
 
+func TestInsertPrice(t *testing.T) {
+	// 升序插入
+	prices := []int64{}
+	prices = insertPrice(prices, 100, false)
+	prices = insertPrice(prices, 50, false)
+	prices = insertPrice(prices, 150, false)
+
+	expected := []int64{50, 100, 150}
+	for i, p := range expected {
+		if prices[i] != p {
+			t.Errorf("asc[%d]: expected %d, got %d", i, p, prices[i])
+		}
+	}
+
+	// 降序插入
+	prices = []int64{}
+	prices = insertPrice(prices, 100, true)
+	prices = insertPrice(prices, 50, true)
+	prices = insertPrice(prices, 150, true)
+
+	expected = []int64{150, 100, 50}
+	for i, p := range expected {
+		if prices[i] != p {
+			t.Errorf("desc[%d]: expected %d, got %d", i, p, prices[i])
+		}
+	}
+}
+
+func TestRemovePrice(t *testing.T) {
+	prices := []int64{50, 100, 150, 200}
+
+	// 移除中间
+	result := removePrice(prices, 100)
+	if len(result) != 3 {
+		t.Errorf("expected len 3, got %d", len(result))
+	}
+
+	// 移除不存在
+	result = removePrice([]int64{50, 150}, 100)
+	if len(result) != 2 {
+		t.Error("should not change when price not found")
+	}
+
+	// 空切片
+	result = removePrice([]int64{}, 100)
+	if len(result) != 0 {
+		t.Error("empty slice should remain empty")
+	}
+}
+
 func TestPriceLevelStruct(t *testing.T) {
 	level := &PriceLevel{
 		Price: 50000,

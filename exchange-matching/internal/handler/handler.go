@@ -5,18 +5,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/exchange/common/pkg/health"
+	"github.com/exchange/common/pkg/logger"
 	"github.com/exchange/matching/internal/engine"
 	"github.com/exchange/matching/internal/metrics"
 	"github.com/exchange/matching/internal/orderbook"
+	"github.com/exchange/matching/internal/types"
 	"github.com/redis/go-redis/v9"
 )
+
+// OrderLoader 订单加载器接口（用于启动时恢复订单簿）
+type OrderLoader interface {
+	// LoadOpenOrders 加载指定 symbol 的所有 OPEN 状态订单
+	// 返回按 created_at 升序排列的订单列表
+	LoadOpenOrders(ctx context.Context, symbol string) ([]*OpenOrder, error)
+	// ListActiveSymbols 列出所有有活跃订单的交易对
+	ListActiveSymbols(ctx context.Context) ([]string, error)
+}
+
+// OpenOrder 启动恢复用的挂单快照（来自数据库）
+//
+// 为避免 handler <-> engine 互相依赖，这里使用 types.OpenOrder 的别名。
+type OpenOrder = types.OpenOrder
 
 // OrderMessage 订单消息（从 Redis Stream 接收）
 type OrderMessage struct {
@@ -46,6 +61,7 @@ type Handler struct {
 	redis   *redis.Client
 	engines map[string]*engine.Engine
 	mu      sync.RWMutex
+	log     *logger.Logger
 
 	orderStream string // 输入流名称
 	eventStream string // 输出流名称
@@ -53,9 +69,13 @@ type Handler struct {
 	consumer    string // 消费者名称
 	dedupeTTL   time.Duration
 
-	ctx context.Context
+	orderLoader  OrderLoader
+	recoveryDone chan struct{}
+	ctxMu        sync.RWMutex
+	ctx          context.Context
 
-	loop health.LoopMonitor
+	forwardWg sync.WaitGroup // 跟踪 forwardEvents goroutine
+	loop      health.LoopMonitor
 }
 
 const (
@@ -70,6 +90,8 @@ type Config struct {
 	Group       string
 	Consumer    string
 	DedupeTTL   time.Duration
+	OrderLoader OrderLoader
+	Logger      *logger.Logger
 }
 
 // NewHandler 创建处理器
@@ -78,14 +100,21 @@ func NewHandler(redisClient *redis.Client, cfg *Config) *Handler {
 	if dedupeTTL <= 0 {
 		dedupeTTL = 24 * time.Hour
 	}
+	log := cfg.Logger
+	if log == nil {
+		log = logger.New("matching", nil)
+	}
 	return &Handler{
-		redis:       redisClient,
-		engines:     make(map[string]*engine.Engine),
-		orderStream: cfg.OrderStream,
-		eventStream: cfg.EventStream,
-		group:       cfg.Group,
-		consumer:    cfg.Consumer,
-		dedupeTTL:   dedupeTTL,
+		redis:        redisClient,
+		engines:      make(map[string]*engine.Engine),
+		log:          log,
+		orderStream:  cfg.OrderStream,
+		eventStream:  cfg.EventStream,
+		group:        cfg.Group,
+		consumer:     cfg.Consumer,
+		dedupeTTL:    dedupeTTL,
+		orderLoader:  cfg.OrderLoader,
+		recoveryDone: make(chan struct{}),
 	}
 }
 
@@ -97,12 +126,71 @@ func (h *Handler) Start(ctx context.Context) error {
 		return fmt.Errorf("create consumer group: %w", err)
 	}
 
+	h.ctxMu.Lock()
 	h.ctx = ctx
+	h.ctxMu.Unlock()
+
+	// 恢复订单簿（在开始消费新消息之前）
+	h.log.Info("recovering order books from database")
+	if err := h.recoverOrderBooks(ctx); err != nil {
+		h.log.WithError(err).Warn("recover order books warning")
+		// 不返回错误，允许服务继续启动
+	}
+	close(h.recoveryDone)
+	h.log.Info("order book recovery completed")
+
 	h.loop.Tick()
 
 	// 启动消费循环
 	go h.consumeLoop(ctx)
 
+	return nil
+}
+
+func (h *Handler) recoverOrderBooks(ctx context.Context) error {
+	if h.orderLoader == nil {
+		return nil
+	}
+
+	symbols, err := h.orderLoader.ListActiveSymbols(ctx)
+	if err != nil {
+		return fmt.Errorf("list active symbols: %w", err)
+	}
+
+	for _, symbol := range symbols {
+		if err := h.recoverSymbol(ctx, symbol); err != nil {
+			h.log.WithError(err).WithField("symbol", symbol).Warn("recover symbol error")
+			// 继续恢复其他 symbol，不中断
+		}
+	}
+	return nil
+}
+
+func (h *Handler) recoverSymbol(ctx context.Context, symbol string) error {
+	orders, err := h.orderLoader.LoadOpenOrders(ctx, symbol)
+	if err != nil {
+		return err
+	}
+	if len(orders) == 0 {
+		return nil
+	}
+
+	eng := h.getOrCreateEngine(symbol)
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+		// 直接添加到订单簿，不经过撮合
+		if err := eng.AddOrderDirect(order); err != nil {
+			h.log.WithError(err).Infof("add order direct warning", map[string]interface{}{
+				"symbol": symbol, "orderID": order.OrderID,
+			})
+		}
+	}
+
+	h.log.Infof("recovered orders", map[string]interface{}{
+		"symbol": symbol, "count": len(orders),
+	})
 	return nil
 }
 
@@ -114,7 +202,9 @@ func (h *Handler) consumeLoop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			h.loop.SetError(fmt.Errorf("panic: %v", r))
-			log.Printf("consumeLoop panic: %v\n%s", r, string(debug.Stack()))
+			h.log.Errorf("consumeLoop panic", map[string]interface{}{
+				"panic": r, "stack": string(debug.Stack()),
+			})
 		}
 	}()
 
@@ -123,7 +213,7 @@ func (h *Handler) consumeLoop(ctx context.Context) {
 
 	if err := h.processPending(ctx); err != nil {
 		h.loop.SetError(err)
-		log.Printf("process pending error: %v", err)
+		h.log.WithError(err).Warn("process pending error")
 	}
 
 	for {
@@ -135,7 +225,7 @@ func (h *Handler) consumeLoop(ctx context.Context) {
 		case <-pendingTicker.C:
 			if err := h.processPending(ctx); err != nil {
 				h.loop.SetError(err)
-				log.Printf("process pending error: %v", err)
+				h.log.WithError(err).Warn("process pending error")
 			}
 			continue
 		default:
@@ -155,7 +245,7 @@ func (h *Handler) consumeLoop(ctx context.Context) {
 				continue
 			}
 			h.loop.SetError(err)
-			log.Printf("read stream error: %v", err)
+			h.log.WithError(err).Warn("read stream error")
 			continue
 		}
 
@@ -176,7 +266,7 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 
 	var orderMsg OrderMessage
 	if err := json.Unmarshal([]byte(data), &orderMsg); err != nil {
-		log.Printf("unmarshal message error: %v", err)
+		h.log.WithError(err).Warn("unmarshal message error")
 		h.ack(ctx, msg.ID)
 		return
 	}
@@ -195,7 +285,7 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 	// 提交命令
 	if err := eng.Submit(cmd); err != nil {
 		metrics.IncStreamError(h.orderStream, h.group)
-		log.Printf("submit command error: %v", err)
+		h.log.WithError(err).Warn("submit command error")
 		return
 	}
 
@@ -211,7 +301,7 @@ func (h *Handler) shouldProcess(ctx context.Context, msg *OrderMessage) bool {
 	defer cancel()
 	ok, err := h.redis.SetNX(timeoutCtx, key, "1", h.dedupeTTL).Result()
 	if err != nil {
-		log.Printf("dedupe check error: %v", err)
+		h.log.WithError(err).Warn("dedupe check error")
 		return true
 	}
 	return ok
@@ -262,7 +352,7 @@ func (h *Handler) processPending(ctx context.Context) error {
 		if retryCount, toDLQ := dlqIDs[msg.ID]; toDLQ {
 			if err := h.sendToDLQ(ctx, &msg, fmt.Sprintf("max retries exceeded: %d", retryCount)); err != nil {
 				metrics.IncStreamError(h.orderStream, h.group)
-				log.Printf("send dlq error: %v", err)
+				h.log.WithError(err).Warn("send dlq error")
 				continue
 			}
 			metrics.IncStreamDLQ(h.orderStream, h.group)
@@ -312,10 +402,13 @@ func (h *Handler) getOrCreateEngine(symbol string) *engine.Engine {
 	eng.Start()
 
 	// 启动事件转发
+	h.ctxMu.RLock()
 	evtCtx := h.ctx
+	h.ctxMu.RUnlock()
 	if evtCtx == nil {
 		evtCtx = context.Background()
 	}
+	h.forwardWg.Add(1)
 	go h.forwardEvents(evtCtx, eng)
 
 	h.engines[symbol] = eng
@@ -323,6 +416,7 @@ func (h *Handler) getOrCreateEngine(symbol string) *engine.Engine {
 }
 
 func (h *Handler) forwardEvents(ctx context.Context, eng *engine.Engine) {
+	defer h.forwardWg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -343,12 +437,12 @@ func (h *Handler) forwardEvents(ctx context.Context, eng *engine.Engine) {
 
 			data, err := json.Marshal(eventMsg)
 			if err != nil {
-				log.Printf("marshal event error: %v", err)
+				h.log.WithError(err).Warn("marshal event error")
 				continue
 			}
 
 			if err := h.publishEvent(ctx, data); err != nil && ctx.Err() == nil {
-				log.Printf("send event error: %v", err)
+				h.log.WithError(err).Warn("send event error")
 			}
 		}
 	}
@@ -441,7 +535,9 @@ func (h *Handler) toCommand(msg *OrderMessage) *engine.Command {
 }
 
 func (h *Handler) ack(ctx context.Context, id string) {
-	h.redis.XAck(ctx, h.orderStream, h.group, id)
+	if err := h.redis.XAck(ctx, h.orderStream, h.group, id).Err(); err != nil {
+		h.log.WithError(err).WithField("msgId", id).Warn("ack message error")
+	}
 }
 
 func eventTypeToString(t engine.EventType) string {
@@ -475,7 +571,6 @@ func (h *Handler) GetDepth(symbol string, limit int) (bids, asks []orderbook.Pri
 
 func (h *Handler) ResetEngines(symbol string) int {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	resetOne := func(key string, eng *engine.Engine) {
 		eng.Stop()
@@ -485,9 +580,13 @@ func (h *Handler) ResetEngines(symbol string) int {
 	if symbol != "" {
 		eng, ok := h.engines[symbol]
 		if !ok {
+			h.mu.Unlock()
 			return 0
 		}
 		resetOne(symbol, eng)
+		h.mu.Unlock()
+		// 等待对应的 forwardEvents goroutine 退出
+		h.forwardWg.Wait()
 		return 1
 	}
 
@@ -496,5 +595,15 @@ func (h *Handler) ResetEngines(symbol string) int {
 		resetOne(key, eng)
 		count++
 	}
+	h.mu.Unlock()
+	// 等待所有 forwardEvents goroutine 退出
+	h.forwardWg.Wait()
 	return count
+}
+
+// Stop 优雅关闭处理器
+func (h *Handler) Stop() {
+	h.log.Info("stopping handler")
+	h.ResetEngines("")
+	h.log.Info("handler stopped")
 }

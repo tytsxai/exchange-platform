@@ -56,6 +56,14 @@ func main() {
 	}
 	log.Printf("Connected to Redis at %s", cfg.RedisAddr)
 
+	// 如果配置了数据库连接，可以注入 OrderLoader 用于启动恢复订单簿
+	// orderLoader := NewDBOrderLoader(db)
+	//
+	// h := handler.NewHandler(redisClient, &handler.Config{
+	//     ...
+	//     OrderLoader: orderLoader,
+	// })
+
 	// 创建处理器
 	h := handler.NewHandler(redisClient, &handler.Config{
 		OrderStream: cfg.OrderStream,
@@ -82,6 +90,10 @@ func main() {
 			next(w, r)
 		}
 	}
+	mux.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		deps := []dependencyStatus{
 			checkRedis(r.Context(), redisClient),

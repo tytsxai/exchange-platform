@@ -79,7 +79,9 @@ func (ob *OrderBook) AddOrder(order *Order) {
 		return
 	}
 
-	order.Timestamp = time.Now().UnixNano()
+	if order.Timestamp == 0 {
+		order.Timestamp = time.Now().UnixNano()
+	}
 
 	var levels map[int64]*PriceLevel
 	var prices *[]int64
@@ -359,34 +361,52 @@ func (ob *OrderBook) Match(taker *Order) *MatchResult {
 	return result
 }
 
-// insertPrice 插入价格并保持排序
+// insertPrice 插入价格并保持排序（二分查找 O(log n)）
 func insertPrice(prices []int64, price int64, descending bool) []int64 {
-	i := 0
-	for i < len(prices) {
+	n := len(prices)
+	// 二分查找插入位置
+	lo, hi := 0, n
+	for lo < hi {
+		mid := lo + (hi-lo)/2
 		if descending {
-			if price > prices[i] {
-				break
+			if prices[mid] > price {
+				lo = mid + 1
+			} else {
+				hi = mid
 			}
 		} else {
-			if price < prices[i] {
-				break
+			if prices[mid] < price {
+				lo = mid + 1
+			} else {
+				hi = mid
 			}
 		}
-		i++
 	}
 
 	prices = append(prices, 0)
-	copy(prices[i+1:], prices[i:])
-	prices[i] = price
+	copy(prices[lo+1:], prices[lo:])
+	prices[lo] = price
 	return prices
 }
 
-// removePrice 移除价格
+// removePrice 移除价格（二分查找 O(log n)）
 func removePrice(prices []int64, price int64) []int64 {
-	for i, p := range prices {
-		if p == price {
-			return append(prices[:i], prices[i+1:]...)
+	n := len(prices)
+	if n == 0 {
+		return prices
+	}
+	// 二分查找
+	lo, hi := 0, n
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if prices[mid] < price {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
+	}
+	if lo < n && prices[lo] == price {
+		return append(prices[:lo], prices[lo+1:]...)
 	}
 	return prices
 }

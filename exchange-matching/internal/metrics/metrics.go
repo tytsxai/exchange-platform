@@ -58,6 +58,11 @@ var (
 		},
 		[]string{"stream", "group"},
 	)
+
+	engineCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "matching_engine_count",
+		Help: "Number of active matching engines.",
+	})
 )
 
 // Init registers metrics with the registry once.
@@ -73,6 +78,7 @@ func Init() {
 			streamPending,
 			streamDLQ,
 			streamErrors,
+			engineCount,
 		)
 	})
 }
@@ -123,4 +129,9 @@ func IncStreamDLQ(stream, group string) {
 func IncStreamError(stream, group string) {
 	Init()
 	streamErrors.WithLabelValues(stream, group).Inc()
+}
+
+func SetEngineCount(count int) {
+	Init()
+	engineCount.Set(float64(count))
 }

@@ -4,10 +4,12 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/exchange/matching/internal/orderbook"
+	"github.com/exchange/matching/internal/types"
 )
 
 // Command 命令类型
@@ -179,6 +181,67 @@ func (e *Engine) Done() <-chan struct{} {
 // Depth 获取深度
 func (e *Engine) Depth(limit int) (bids, asks []orderbook.PriceQty) {
 	return e.book.Depth(limit)
+}
+
+// AddOrderDirect 直接添加订单到订单簿（用于恢复，不触发撮合）
+func (e *Engine) AddOrderDirect(order *types.OpenOrder) error {
+	if order == nil {
+		return nil
+	}
+	if order.OrderID <= 0 {
+		return fmt.Errorf("invalid orderID")
+	}
+	if order.Symbol == "" {
+		return fmt.Errorf("empty symbol")
+	}
+	if order.LeavesQty <= 0 {
+		return fmt.Errorf("invalid leavesQty")
+	}
+
+	var side orderbook.Side
+	switch strings.ToUpper(order.Side) {
+	case "BUY":
+		side = orderbook.SideBuy
+	case "SELL":
+		side = orderbook.SideSell
+	default:
+		return fmt.Errorf("invalid side: %s", order.Side)
+	}
+
+	orderType := strings.ToUpper(order.OrderType)
+	if orderType != "" && orderType != "LIMIT" {
+		// 恢复只支持挂单（LIMIT）；OPEN 状态的 MARKET/其他类型不应存在
+		return fmt.Errorf("unsupported orderType for recovery: %s", order.OrderType)
+	}
+
+	var tif int
+	switch strings.ToUpper(order.TimeInForce) {
+	case "GTC", "":
+		tif = 1
+	case "IOC":
+		tif = 2
+	case "FOK":
+		tif = 3
+	case "POST_ONLY":
+		tif = 4
+	default:
+		return fmt.Errorf("invalid timeInForce: %s", order.TimeInForce)
+	}
+
+	obOrder := &orderbook.Order{
+		OrderID:       order.OrderID,
+		UserID:        order.UserID,
+		ClientOrderID: order.ClientOrderID,
+		Symbol:        order.Symbol,
+		Side:          side,
+		Price:         order.Price,
+		OrigQty:       order.LeavesQty,
+		LeavesQty:     order.LeavesQty,
+		TimeInForce:   tif,
+		Timestamp:     order.CreatedAt,
+	}
+	e.book.AddOrder(obOrder)
+	return nil
 }
 
 func (e *Engine) run() {
