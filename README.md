@@ -134,9 +134,9 @@ cp .env.example .env
 - 🌐 Docs Site: https://tytsxai.github.io/exchange-platform/
 - [Architecture Overview](docs/architecture.md)
 - [API Documentation](docs/api.md)
-- [Data Models](docs/models.md)
-- [Event Specifications](docs/events.md)
-- [Runbook & Operations](docs/runbook.md)
+- [Data Models](docs/data-models.md)
+- [Event Specifications](docs/event-model.md)
+- [Runbook & Operations](docs/ops/runbook.md)
 
 ## 🧪 Testing
 
