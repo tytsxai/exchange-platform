@@ -131,6 +131,7 @@ cp .env.example .env
 
 ## 📖 Documentation
 
+- 🌐 Docs Site: https://tytsxai.github.io/exchange-platform/
 - [Architecture Overview](docs/architecture.md)
 - [API Documentation](docs/api.md)
 - [Data Models](docs/models.md)

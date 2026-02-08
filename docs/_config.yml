@@ -1,0 +1,9 @@
+title: OpenExchange Documentation
+description: OpenExchange docs for architecture, API, matching engine, operations, and deployment.
+url: https://tytsxai.github.io
+baseurl: /exchange-platform
+lang: en
+theme: jekyll-theme-primer
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap

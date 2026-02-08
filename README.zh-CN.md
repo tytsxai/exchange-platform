@@ -127,6 +127,7 @@ cp .env.example .env
 
 ## 📖 文档
 
+- 🌐 文档站点：https://tytsxai.github.io/exchange-platform/
 - [架构总览](docs/architecture.md)
 - [API 文档](docs/api.md)
 - [数据模型](docs/models.md)
