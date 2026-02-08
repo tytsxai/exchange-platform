@@ -188,7 +188,7 @@ func CreateOrder(ctx context.Context, req *CreateOrderRequest) (*Order, error) {
 //   - FILLED: Order completely filled
 //   - CANCELED: Order cancelled by user or system
 //
-// For more details, see [Trading Flow](docs/trading-flow.md).
+// For more details, see [Trading Flow](trading-flow.md).
 package order
 ```
 

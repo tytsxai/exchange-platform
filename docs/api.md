@@ -430,6 +430,6 @@ ws.send(JSON.stringify({
 
 Download the OpenAPI specification:
 
-- [Gateway API](exchange-gateway/api/openapi.yaml)
-- [Admin API](exchange-admin/api/openapi.yaml)
-- [Wallet API](exchange-wallet/api/openapi.yaml)
+- [Gateway API](../exchange-gateway/api/openapi.yaml)
+- [Admin API](../exchange-admin/api/openapi.yaml)
+- [Wallet API](../exchange-wallet/api/openapi.yaml)
