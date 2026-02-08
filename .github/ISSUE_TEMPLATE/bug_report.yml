@@ -1,0 +1,90 @@
+name: Bug Report
+description: Report a reproducible bug in OpenExchange
+title: "[Bug]: "
+labels: [bug]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill in the details below so we can reproduce quickly.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line summary of the bug
+      placeholder: Order cancel API returns 500 for valid order ID
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Provide minimal reproducible steps
+      placeholder: |
+        1. Start services with ...
+        2. Call endpoint ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      placeholder: API should return 200 with canceled status
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      placeholder: API returns 500 with stack trace ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Screenshots
+      description: Paste relevant logs, error messages, screenshots
+      render: shell
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected Module
+      options:
+        - exchange-gateway
+        - exchange-user
+        - exchange-order
+        - exchange-matching
+        - exchange-clearing
+        - exchange-marketdata
+        - exchange-admin
+        - exchange-wallet
+        - exchange-common
+        - docs
+        - unknown
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit / Version
+      description: Git commit SHA or release tag
+      placeholder: e.g. 4f21ab9 or v0.2.0
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I can reproduce this bug consistently
+          required: true

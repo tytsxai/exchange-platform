@@ -54,7 +54,7 @@ git checkout -b feature/your-feature-name
 
 ```bash
 git fetch upstream
-git merge upstream/main
+git merge upstream/master
 ```
 
 ### 2. Make Changes
@@ -143,7 +143,7 @@ i++
 
 - Use CamelCase for exported identifiers
 - Use short names for short scopes (`i` for loop counter)
-- Avoid stutter (`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病`肾病肾病`)
+- Avoid stutter (`order.OrderService` → `order.Service`)
 
 ## Testing
 

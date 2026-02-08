@@ -1,6 +1,10 @@
 # OpenExchange - High-Performance Cryptocurrency Exchange Platform
 
 <p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Go-1.25-blue?style=flat-square&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/PostgreSQL-15-red?style=flat-square&logo=postgresql" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/Redis-7-red?style=flat-square&logo=redis" alt="Redis">
@@ -8,6 +12,8 @@
 </p>
 
 A production-ready, high-performance cryptocurrency exchange platform built with Go, featuring a microservices architecture, memory-based matching engine, and real-time market data.
+
+Keywords: crypto exchange, matching engine, order book, clearing and settlement, market data, Go microservices.
 
 ## ⚠️ Important Disclaimer
 
@@ -51,6 +57,13 @@ The authors assume no liability for any financial losses or regulatory violation
 - **Observability**: OpenTelemetry tracing, Prometheus metrics, structured logging
 - **Containerization**: Docker Compose for local development
 
+## 🌍 Multilingual & SEO
+
+- **English README**: [README.md](README.md)
+- **中文 README**: [README.zh-CN.md](README.zh-CN.md)
+- **Documentation (EN)**: [docs/](docs)
+- **Documentation (ZH)**: [交易所项目文档/](交易所项目文档)
+
 ## 🏗️ Architecture
 
 ```
@@ -73,7 +86,7 @@ Client → Gateway(8080) → Order(8081) → Matching(8082)
 | `exchange-common` | - | ✅ | Proto definitions, shared utilities, DB schema |
 | `exchange-gateway` | 8080 | ✅ | API gateway, signature verification, rate limiting |
 | `exchange-user` | 8085 | ✅ | User registration, login, API key management |
-| `exchange-order` | 8081 | ✅ | Order creation, cancellation,查询 |
+| `exchange-order` | 8081 | ✅ | Order creation, cancellation, query |
 | `exchange-matching` | 8082 | ✅ | In-memory order book, matching engine |
 | `exchange-clearing` | 8083 | ✅ | Fund freezing, settlement, ledger |
 | `exchange-marketdata` | 8084/8094 | ✅ | Market data, REST/WebSocket APIs |
@@ -93,7 +106,7 @@ Client → Gateway(8080) → Order(8081) → Matching(8082)
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/exchange-platform.git
+git clone https://github.com/tytsxai/exchange-platform.git
 cd exchange-platform
 
 # Start infrastructure (PostgreSQL, Redis, Jaeger, Grafana)

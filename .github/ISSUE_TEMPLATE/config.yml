@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/tytsxai/exchange-platform/discussions
+    about: Ask usage questions, architecture discussions, and non-bug topics.
+  - name: Security Vulnerability Report
+    url: https://github.com/tytsxai/exchange-platform/security/advisories/new
+    about: Please report security issues privately via GitHub Security Advisories.
+  - name: Project Documentation
+    url: https://github.com/tytsxai/exchange-platform/tree/master/docs
+    about: Read architecture, API, and operations docs before opening an issue.

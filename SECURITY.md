@@ -17,7 +17,7 @@ We take the security of this software seriously. If you believe you have found a
 
 ### Reporting Process
 
-1. **Email**: Send a detailed report to [security email]
+1. **Private Advisory**: Open a private vulnerability report via GitHub Security Advisories: https://github.com/tytsxai/exchange-platform/security/advisories/new
 2. **Response Time**: We will acknowledge receipt within 24-48 hours
 3. **Process**: You'll receive updates on the status of your report
 
