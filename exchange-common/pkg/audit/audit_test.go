@@ -1,16 +1,15 @@
 package audit
 
 import (
-	"encoding/json"
 	"testing"
 )
 
 func TestSanitizeParams_SensitiveKeys(t *testing.T) {
 	params := map[string]interface{}{
-		"password":    "secret123",
-		"api_key":     "key123",
-		"token":       "tok123",
-		"username":    "john",
+		"password": "secret123",
+		"api_key":  "key123",
+		"token":    "tok123",
+		"username": "john",
 	}
 
 	result := SanitizeParams(params)

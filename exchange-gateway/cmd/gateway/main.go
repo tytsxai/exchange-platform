@@ -39,6 +39,14 @@ var httpClient = &http.Client{
 	},
 }
 
+type redisHealthClient struct {
+	client *redis.Client
+}
+
+func (c redisHealthClient) Ping(ctx context.Context) health.RedisPingCmd {
+	return c.client.Ping(ctx)
+}
+
 func main() {
 	shutdown, err := tracing.Init(tracing.Config{
 		ServiceName: "exchange-gateway",
@@ -106,7 +114,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	healthz := health.New()
-	healthz.Register(health.NewRedisChecker(redisClient))
+	healthz.Register(health.NewRedisChecker(redisHealthClient{client: redisClient}))
 	healthz.Register(newLoopChecker("private_consumer", &privateEventLoop, 45*time.Second))
 	healthz.SetReady(true)
 
