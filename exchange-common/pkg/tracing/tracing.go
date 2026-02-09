@@ -24,11 +24,11 @@ type Config struct {
 }
 
 const (
-	httpTraceHeader  = "X-Trace-ID"
-	redisTraceField  = "_traceId"
-	defaultSpanName  = "request"
-	tracerName       = "exchange-common/tracing"
-	unknownService   = "unknown-service"
+	httpTraceHeader = "X-Trace-ID"
+	redisTraceField = "_traceId"
+	defaultSpanName = "request"
+	tracerName      = "exchange-common/tracing"
+	unknownService  = "unknown-service"
 )
 
 type ctxKeyTraceID struct{}

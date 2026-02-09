@@ -138,8 +138,8 @@ func (h *Health) runChecks(ctx context.Context) map[string]CheckResult {
 					Latency: time.Since(start),
 					Message: "timeout",
 				}
-			// 异步消费结果，确保 goroutine 能退出
-			go func() { <-resCh }()
+				// 异步消费结果，确保 goroutine 能退出
+				go func() { <-resCh }()
 			}
 
 			if res.Latency <= 0 {

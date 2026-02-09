@@ -19,7 +19,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	env := &testEnv{
-		ctx:     ctx,
+		ctx:    ctx,
 		cancel: cancel,
 	}
 
@@ -100,12 +100,12 @@ func (s *orderService) MatchAndSettle(ctx context.Context, orderID string) error
 }
 
 type (
-	SubmitOrderReq   struct{ Symbol string }
-	SubmitOrderResp  struct{ OrderID string }
-	CancelOrderReq   struct{ OrderID string }
-	CancelOrderResp  struct{ Canceled bool }
-	SettleTradeReq   struct{ OrderID string }
-	SettleTradeResp  struct{ Settled bool }
+	SubmitOrderReq  struct{ Symbol string }
+	SubmitOrderResp struct{ OrderID string }
+	CancelOrderReq  struct{ OrderID string }
+	CancelOrderResp struct{ Canceled bool }
+	SettleTradeReq  struct{ OrderID string }
+	SettleTradeResp struct{ Settled bool }
 )
 
 // TestTradeFlow_PlaceOrder 测试下单流程

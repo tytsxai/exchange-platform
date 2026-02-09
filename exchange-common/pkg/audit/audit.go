@@ -45,7 +45,7 @@ type AuditLog struct {
 	ID         int64     `json:"id"`
 	EventType  EventType `json:"eventType"`
 	UserID     int64     `json:"userId"`
-	ActorID    int64     `json:"actorId"`    // 操作者（管理员审批时）
+	ActorID    int64     `json:"actorId"` // 操作者（管理员审批时）
 	IP         string    `json:"ip"`
 	UserAgent  string    `json:"userAgent"`
 	Resource   string    `json:"resource"`   // 操作的资源类型
@@ -522,4 +522,3 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_ts ON audit_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_ts ON audit_logs(user_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_event_ts ON audit_logs(event_type, timestamp DESC);
 `
-

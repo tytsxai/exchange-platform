@@ -104,17 +104,17 @@ func (l *DBOrderLoader) LoadOpenOrders(ctx context.Context, symbol string) ([]*O
 	var orders []*OpenOrder
 	for rows.Next() {
 		var (
-			orderID       int64
-			clientOrderID sql.NullString
-			userID        int64
-			dbSymbol      string
-			side          int
-			orderType     int
-			timeInForce   int
-			priceStr      sql.NullString
-			origQtyStr    sql.NullString
+			orderID        int64
+			clientOrderID  sql.NullString
+			userID         int64
+			dbSymbol       string
+			side           int
+			orderType      int
+			timeInForce    int
+			priceStr       sql.NullString
+			origQtyStr     sql.NullString
 			executedQtyStr sql.NullString
-			createTimeMs  int64
+			createTimeMs   int64
 			pricePrecision int
 			qtyPrecision   int
 		)

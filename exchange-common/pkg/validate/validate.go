@@ -12,15 +12,15 @@ import (
 const defaultPrecision = 8
 
 var (
-	symbolAllowedRe        = regexp.MustCompile(`^[A-Z_]{3,20}$`)
-	symbolPartRe           = regexp.MustCompile(`^[A-Z]{1,19}$`)
-	clientOrderIDRe        = regexp.MustCompile(`^[A-Za-z0-9_-]{1,36}$`)
-	ethAddressRe           = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
-	trxAddressRe           = regexp.MustCompile(`^T[1-9A-HJ-NP-Za-km-z]{33}$`)
-	btcBase58AddressRe     = regexp.MustCompile(`^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$`)
-	btcBech32AddressLower  = regexp.MustCompile(`^bc1[0-9ac-hj-np-z]{11,71}$`)
-	btcBech32AddressUpper  = regexp.MustCompile(`^BC1[0-9AC-HJ-NP-Z]{11,71}$`)
-	emailSimpleStrictRe    = regexp.MustCompile(`^[A-Za-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
+	symbolAllowedRe       = regexp.MustCompile(`^[A-Z_]{3,20}$`)
+	symbolPartRe          = regexp.MustCompile(`^[A-Z]{1,19}$`)
+	clientOrderIDRe       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,36}$`)
+	ethAddressRe          = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
+	trxAddressRe          = regexp.MustCompile(`^T[1-9A-HJ-NP-Za-km-z]{33}$`)
+	btcBase58AddressRe    = regexp.MustCompile(`^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$`)
+	btcBech32AddressLower = regexp.MustCompile(`^bc1[0-9ac-hj-np-z]{11,71}$`)
+	btcBech32AddressUpper = regexp.MustCompile(`^BC1[0-9AC-HJ-NP-Z]{11,71}$`)
+	emailSimpleStrictRe   = regexp.MustCompile(`^[A-Za-z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
 )
 
 // Symbol 校验交易对格式（如 BTC_USDT）

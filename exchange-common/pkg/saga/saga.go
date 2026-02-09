@@ -40,4 +40,3 @@ type SagaStore interface {
 	Get(ctx context.Context, id string) (*SagaLog, error)
 	Update(ctx context.Context, log *SagaLog) error
 }
-

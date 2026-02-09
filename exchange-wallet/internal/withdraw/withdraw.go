@@ -175,4 +175,3 @@ func (m *WithdrawManager) Get(withdrawID int64) (*WithdrawRequest, error) {
 	}
 	return req, nil
 }
-

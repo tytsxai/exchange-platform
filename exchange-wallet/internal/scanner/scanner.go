@@ -35,10 +35,10 @@ type ScanResult struct {
 // BaseScanner provides common block scan logic: retry + confirmation window.
 // Extend by providing LatestHeightFn and ScanBlockFn.
 type BaseScanner struct {
-	Net          Network
-	Confirms     int64
-	MaxRetries   int
-	RetryDelay   time.Duration
+	Net            Network
+	Confirms       int64
+	MaxRetries     int
+	RetryDelay     time.Duration
 	LatestHeightFn func(ctx context.Context) (int64, error)
 	ScanBlockFn    func(ctx context.Context, height int64) error
 }

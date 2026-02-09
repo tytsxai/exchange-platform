@@ -13,4 +13,3 @@ type OpenOrder struct {
 	LeavesQty     int64 // 剩余数量
 	CreatedAt     int64 // 纳秒时间戳
 }
-
