@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -35,37 +36,37 @@ func TestValidateOrder_Boundaries(t *testing.T) {
 	}
 
 	// qty too small: 0.0009
-	req := &CreateOrderRequest{Type: "LIMIT", Price: 100 * 1e8, Quantity: int64(0.0009 * 1e8)}
+	req := &CreateOrderRequest{Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Price: 100 * 1e8, Quantity: int64(0.0009 * 1e8)}
 	if err := s.validateOrder(req, cfg); err == nil || err.Error() != "QTY_TOO_SMALL" {
 		t.Fatalf("expected QTY_TOO_SMALL, got %v", err)
 	}
 
 	// qty too large: 10.0001
-	req = &CreateOrderRequest{Type: "LIMIT", Price: 100 * 1e8, Quantity: int64(10.0001 * 1e8)}
+	req = &CreateOrderRequest{Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Price: 100 * 1e8, Quantity: int64(10.0001 * 1e8)}
 	if err := s.validateOrder(req, cfg); err == nil || err.Error() != "QTY_TOO_LARGE" {
 		t.Fatalf("expected QTY_TOO_LARGE, got %v", err)
 	}
 
 	// invalid price: 0
-	req = &CreateOrderRequest{Type: "LIMIT", Price: 0, Quantity: int64(0.001 * 1e8)}
+	req = &CreateOrderRequest{Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Price: 0, Quantity: int64(0.001 * 1e8)}
 	if err := s.validateOrder(req, cfg); err == nil || err.Error() != "INVALID_PRICE" {
 		t.Fatalf("expected INVALID_PRICE, got %v", err)
 	}
 
 	// notional too small: price 100, qty 0.05 => 5 < 10
-	req = &CreateOrderRequest{Type: "LIMIT", Price: 100 * 1e8, Quantity: int64(0.05 * 1e8)}
+	req = &CreateOrderRequest{Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Price: 100 * 1e8, Quantity: int64(0.05 * 1e8)}
 	if err := s.validateOrder(req, cfg); err == nil || err.Error() != "NOTIONAL_TOO_SMALL" {
 		t.Fatalf("expected NOTIONAL_TOO_SMALL, got %v", err)
 	}
 
 	// market skips price/notional checks (only qty checks)
-	req = &CreateOrderRequest{Type: "MARKET", Price: 0, Quantity: int64(0.001 * 1e8)}
+	req = &CreateOrderRequest{Side: "BUY", Type: "MARKET", TimeInForce: "IOC", Price: 0, Quantity: int64(0.001 * 1e8)}
 	if err := s.validateOrder(req, cfg); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
 
 	// ok limit
-	req = &CreateOrderRequest{Type: "LIMIT", Price: 100 * 1e8, Quantity: int64(0.2 * 1e8)} // notional 20
+	req = &CreateOrderRequest{Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Price: 100 * 1e8, Quantity: int64(0.2 * 1e8)} // notional 20
 	if err := s.validateOrder(req, cfg); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
@@ -178,6 +179,18 @@ type mockOrderStore struct {
 	existingOrder   *repository.Order
 	createErr       error
 	createCalls     int
+
+	updateStatusErr       error
+	rejectErr             error
+	rejectCalls           int
+	lastRejectOrderID     int64
+	lastRejectReason      string
+	lastRejectUpdateTime  int64
+	lastUpdateOrderID     int64
+	lastUpdateStatus      int
+	lastUpdateExecutedQty int64
+	lastUpdateQuoteQty    int64
+	lastUpdateTime        int64
 }
 
 type cancelOrderStore struct {
@@ -268,12 +281,21 @@ func (m *mockOrderStore) GetOrder(_ context.Context, _ int64) (*repository.Order
 	return nil, repository.ErrOrderNotFound
 }
 
-func (m *mockOrderStore) UpdateOrderStatus(_ context.Context, _ int64, _ int, _, _ int64, _ int64) error {
-	return nil
+func (m *mockOrderStore) UpdateOrderStatus(_ context.Context, orderID int64, status int, executedQty, cumulativeQuoteQty, updateTimeMs int64) error {
+	m.lastUpdateOrderID = orderID
+	m.lastUpdateStatus = status
+	m.lastUpdateExecutedQty = executedQty
+	m.lastUpdateQuoteQty = cumulativeQuoteQty
+	m.lastUpdateTime = updateTimeMs
+	return m.updateStatusErr
 }
 
-func (m *mockOrderStore) RejectOrder(_ context.Context, _ int64, _ string, _ int64) error {
-	return nil
+func (m *mockOrderStore) RejectOrder(_ context.Context, orderID int64, reason string, updateTimeMs int64) error {
+	m.rejectCalls++
+	m.lastRejectOrderID = orderID
+	m.lastRejectReason = reason
+	m.lastRejectUpdateTime = updateTimeMs
+	return m.rejectErr
 }
 
 func (m *mockOrderStore) ListOpenOrders(_ context.Context, _ int64, _ string, _ int) ([]*repository.Order, error) {
@@ -614,6 +636,200 @@ func TestCreateOrder_ValidationErrors(t *testing.T) {
 	}
 }
 
+func TestCreateOrder_InvalidEnums(t *testing.T) {
+	store := &mockOrderStore{
+		cfg: &repository.SymbolConfig{
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
+		},
+	}
+	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, nil, nil)
+
+	tests := []struct {
+		name      string
+		req       *CreateOrderRequest
+		errorCode string
+	}{
+		{
+			name: "invalid side",
+			req: &CreateOrderRequest{
+				UserID:      1,
+				Symbol:      "BTCUSDT",
+				Side:        "BID",
+				Type:        "LIMIT",
+				TimeInForce: "GTC",
+				Price:       int64(100 * 1e8),
+				Quantity:    int64(1 * 1e8),
+			},
+			errorCode: "INVALID_SIDE",
+		},
+		{
+			name: "invalid order type",
+			req: &CreateOrderRequest{
+				UserID:      1,
+				Symbol:      "BTCUSDT",
+				Side:        "BUY",
+				Type:        "STOP_LIMIT",
+				TimeInForce: "GTC",
+				Price:       int64(100 * 1e8),
+				Quantity:    int64(1 * 1e8),
+			},
+			errorCode: "INVALID_ORDER_TYPE",
+		},
+		{
+			name: "invalid time in force",
+			req: &CreateOrderRequest{
+				UserID:      1,
+				Symbol:      "BTCUSDT",
+				Side:        "BUY",
+				Type:        "LIMIT",
+				TimeInForce: "DAY",
+				Price:       int64(100 * 1e8),
+				Quantity:    int64(1 * 1e8),
+			},
+			errorCode: "INVALID_TIME_IN_FORCE",
+		},
+		{
+			name: "market post only",
+			req: &CreateOrderRequest{
+				UserID:      1,
+				Symbol:      "BTCUSDT",
+				Side:        "BUY",
+				Type:        "MARKET",
+				TimeInForce: "POST_ONLY",
+				Quantity:    int64(1 * 1e8),
+			},
+			errorCode: "INVALID_TIME_IN_FORCE",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := svc.CreateOrder(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.ErrorCode != tc.errorCode {
+				t.Fatalf("expected %s, got %s", tc.errorCode, resp.ErrorCode)
+			}
+		})
+	}
+}
+
+func TestCreateOrder_NormalizesFields(t *testing.T) {
+	store := &mockOrderStore{
+		cfg: &repository.SymbolConfig{
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
+		},
+	}
+	redisClient, clearingClient, cleanup := setupOrderDependencies(t)
+	defer cleanup()
+
+	svc := NewOrderService(store, redisClient, &mockIDGen{}, "orders", nil, clearingClient, nil)
+	resp, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
+		UserID:      1,
+		Symbol:      " BTCUSDT ",
+		Side:        " buy ",
+		Type:        " limit ",
+		TimeInForce: " gtc ",
+		Price:       int64(100 * 1e8),
+		Quantity:    int64(1 * 1e8),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ErrorCode != "" {
+		t.Fatalf("expected empty error code, got %s", resp.ErrorCode)
+	}
+	if store.createdOrder == nil {
+		t.Fatal("expected created order")
+	}
+	if store.createdOrder.Symbol != "BTCUSDT" {
+		t.Fatalf("expected normalized symbol BTCUSDT, got %s", store.createdOrder.Symbol)
+	}
+	if store.createdOrder.Side != repository.SideBuy {
+		t.Fatalf("expected side BUY, got %d", store.createdOrder.Side)
+	}
+	if store.createdOrder.Type != repository.TypeLimit {
+		t.Fatalf("expected type LIMIT, got %d", store.createdOrder.Type)
+	}
+	if store.createdOrder.TimeInForce != 1 {
+		t.Fatalf("expected tif GTC=1, got %d", store.createdOrder.TimeInForce)
+	}
+}
+
+func TestCreateOrder_NilRequest(t *testing.T) {
+	svc := NewOrderService(&mockOrderStore{}, nil, &mockIDGen{}, "orders", nil, nil, nil)
+
+	resp, err := svc.CreateOrder(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil || resp.ErrorCode != "INVALID_PARAM" {
+		t.Fatalf("expected INVALID_PARAM, got %+v", resp)
+	}
+}
+
+func TestCreateOrder_ClearingClientNotConfigured(t *testing.T) {
+	store := &mockOrderStore{
+		cfg: &repository.SymbolConfig{
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
+		},
+	}
+
+	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, nil, nil)
+	if _, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
+		UserID:   1,
+		Symbol:   "BTCUSDT",
+		Side:     "BUY",
+		Type:     "LIMIT",
+		Price:    int64(100 * 1e8),
+		Quantity: int64(1 * 1e8),
+	}); err == nil {
+		t.Fatal("expected clearing client not configured error")
+	} else if !strings.Contains(err.Error(), "clearing client not configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("expected create order not called, got %d", store.createCalls)
+	}
+}
+
 func TestCreateOrder_FreezeError(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
@@ -702,7 +918,7 @@ func TestCreateOrder_FreezeRejected(t *testing.T) {
 	}
 }
 
-func TestCreateOrder_SendToMatchingError(t *testing.T) {
+func TestCreateOrder_FreezeRejectedWithEmptyErrorCode(t *testing.T) {
 	store := &mockOrderStore{
 		cfg: &repository.SymbolConfig{
 			Symbol:         "BTCUSDT",
@@ -722,9 +938,73 @@ func TestCreateOrder_SendToMatchingError(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := client.FreezeResponse{Success: true}
+		resp := client.FreezeResponse{Success: false}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
+	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, clearingClient, nil)
+
+	resp, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
+		UserID:   1,
+		Symbol:   "BTCUSDT",
+		Side:     "BUY",
+		Type:     "LIMIT",
+		Price:    int64(100 * 1e8),
+		Quantity: int64(1 * 1e8),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil || resp.ErrorCode != "FREEZE_FAILED" {
+		t.Fatalf("expected FREEZE_FAILED, got %+v", resp)
+	}
+	if store.rejectCalls != 1 {
+		t.Fatalf("expected reject called once, got %d", store.rejectCalls)
+	}
+	if store.lastRejectReason != "FREEZE_FAILED" {
+		t.Fatalf("expected reject reason FREEZE_FAILED, got %s", store.lastRejectReason)
+	}
+}
+
+func TestCreateOrder_SendToMatchingError(t *testing.T) {
+	store := &mockOrderStore{
+		cfg: &repository.SymbolConfig{
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
+		},
+	}
+
+	unfreezeCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/freeze":
+			resp := client.FreezeResponse{Success: true}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Fatalf("encode response: %v", err)
+			}
+		case "/internal/unfreeze":
+			unfreezeCalls++
+			resp := client.UnfreezeResponse{Success: true}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Fatalf("encode response: %v", err)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
@@ -751,6 +1031,83 @@ func TestCreateOrder_SendToMatchingError(t *testing.T) {
 		Quantity: int64(1 * 1e8),
 	}); err == nil {
 		t.Fatal("expected send to matching error")
+	} else if !strings.Contains(err.Error(), "send to matching") {
+		t.Fatalf("expected send to matching error, got %v", err)
+	}
+	if unfreezeCalls != 1 {
+		t.Fatalf("expected unfreeze called once, got %d", unfreezeCalls)
+	}
+	if store.rejectCalls != 1 {
+		t.Fatalf("expected reject called once, got %d", store.rejectCalls)
+	}
+	if store.lastRejectReason != "INTERNAL_ERROR" {
+		t.Fatalf("expected reject reason INTERNAL_ERROR, got %s", store.lastRejectReason)
+	}
+}
+
+func TestCreateOrder_UpdateStatusErrorCompensates(t *testing.T) {
+	store := &mockOrderStore{
+		cfg: &repository.SymbolConfig{
+			Symbol:         "BTCUSDT",
+			BaseAsset:      "BTC",
+			QuoteAsset:     "USDT",
+			PricePrecision: 8,
+			QtyPrecision:   8,
+			BasePrecision:  8,
+			QuotePrecision: 8,
+			MinQty:         "0.001",
+			MaxQty:         "10.0",
+			MinNotional:    "10.0",
+			PriceTick:      "0.01",
+			QtyStep:        "0.001",
+			Status:         1,
+		},
+		updateStatusErr: errors.New("update failed"),
+	}
+
+	unfreezeCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/freeze":
+			resp := client.FreezeResponse{Success: true}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Fatalf("encode response: %v", err)
+			}
+		case "/internal/unfreeze":
+			unfreezeCalls++
+			resp := client.UnfreezeResponse{Success: true}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Fatalf("encode response: %v", err)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	clearingClient := client.NewClearingClient(server.URL, "internal-token")
+	svc := NewOrderService(store, nil, &mockIDGen{}, "orders", nil, clearingClient, nil)
+
+	if _, err := svc.CreateOrder(context.Background(), &CreateOrderRequest{
+		UserID:   1,
+		Symbol:   "BTCUSDT",
+		Side:     "BUY",
+		Type:     "LIMIT",
+		Price:    int64(100 * 1e8),
+		Quantity: int64(1 * 1e8),
+	}); err == nil {
+		t.Fatal("expected update order status error")
+	} else if !strings.Contains(err.Error(), "update order status") {
+		t.Fatalf("expected update order status error, got %v", err)
+	}
+	if unfreezeCalls != 1 {
+		t.Fatalf("expected unfreeze called once, got %d", unfreezeCalls)
+	}
+	if store.rejectCalls != 1 {
+		t.Fatalf("expected reject called once, got %d", store.rejectCalls)
+	}
+	if store.lastRejectReason != "INTERNAL_ERROR" {
+		t.Fatalf("expected reject reason INTERNAL_ERROR, got %s", store.lastRejectReason)
 	}
 }
 
