@@ -95,6 +95,14 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	if s.metrics != nil {
 		defer func() { s.metrics.ObserveOrderLatency(time.Since(start)) }()
 	}
+	if req == nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INVALID_PARAM")
+		}
+		return &CreateOrderResponse{ErrorCode: "INVALID_PARAM"}, nil
+	}
+
+	normalizeCreateOrderRequest(req)
 
 	reject := func(code string) *CreateOrderResponse {
 		if s.metrics != nil && code != "" {
@@ -181,6 +189,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		freezeAsset = cfg.BaseAsset
 		freezeAmount = req.Quantity
 	}
+	if s.clearing == nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
+		return nil, fmt.Errorf("clearing client not configured")
+	}
 
 	// 7. 保存订单（先落库，再冻结）
 	if err := s.repo.CreateOrder(ctx, order); err != nil {
@@ -210,14 +224,26 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		}
 		return nil, fmt.Errorf("freeze balance: %w", err)
 	}
-	if !freezeResp.Success {
-		_ = s.repo.RejectOrder(ctx, order.OrderID, freezeResp.ErrorCode, time.Now().UnixMilli())
-		return reject(freezeResp.ErrorCode), nil
+	if freezeResp == nil || !freezeResp.Success {
+		code := "FREEZE_FAILED"
+		if freezeResp != nil && freezeResp.ErrorCode != "" {
+			code = freezeResp.ErrorCode
+		}
+		if rejectErr := s.rejectOrder(ctx, order.OrderID, code); rejectErr != nil {
+			return nil, fmt.Errorf("reject order: %w", rejectErr)
+		}
+		return reject(code), nil
 	}
 
 	// 9. 更新订单状态为 NEW
 	updateTime := time.Now().UnixMilli()
 	if err := s.repo.UpdateOrderStatus(ctx, order.OrderID, repository.StatusNew, 0, 0, updateTime); err != nil {
+		if s.metrics != nil {
+			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
+		if rollbackErr := s.compensateCreateOrderFailure(ctx, order, freezeAsset, freezeAmount, "update_status_failed"); rollbackErr != nil {
+			log.Printf("compensate create order failure (update status) error: %v", rollbackErr)
+		}
 		return nil, fmt.Errorf("update order status: %w", err)
 	}
 	order.Status = repository.StatusNew
@@ -227,6 +253,9 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	if err := s.sendToMatchingWithRetry(ctx, order); err != nil {
 		if s.metrics != nil {
 			s.metrics.IncOrderRejected("INTERNAL_ERROR")
+		}
+		if rollbackErr := s.compensateCreateOrderFailure(ctx, order, freezeAsset, freezeAmount, "send_matching_failed"); rollbackErr != nil {
+			log.Printf("compensate create order failure (send matching) error: %v", rollbackErr)
 		}
 		return nil, fmt.Errorf("send to matching: %w", err)
 	}
@@ -276,6 +305,9 @@ func (s *OrderService) ensureOrderReady(ctx context.Context, order *repository.O
 	}
 	switch order.Status {
 	case repository.StatusInit:
+		if s.clearing == nil {
+			return "", fmt.Errorf("clearing client not configured")
+		}
 		freezeAsset, freezeAmount, err := s.freezeSpecFromOrder(order, cfg)
 		if err != nil {
 			return "", err
@@ -290,7 +322,9 @@ func (s *OrderService) ensureOrderReady(ctx context.Context, order *repository.O
 			if freezeResp != nil && freezeResp.ErrorCode != "" {
 				code = freezeResp.ErrorCode
 			}
-			_ = s.repo.RejectOrder(ctx, order.OrderID, code, time.Now().UnixMilli())
+			if err := s.rejectOrder(ctx, order.OrderID, code); err != nil {
+				return "", fmt.Errorf("reject order: %w", err)
+			}
 			return code, nil
 		}
 		updateTime := time.Now().UnixMilli()
@@ -331,8 +365,15 @@ func (s *OrderService) freezeSpecFromOrder(order *repository.Order, cfg *reposit
 	return cfg.BaseAsset, qty, nil
 }
 
-func (s *OrderService) rejectOrder(ctx context.Context, orderID int64, reason string) {
-	_ = s.repo.RejectOrder(ctx, orderID, reason, time.Now().UnixMilli())
+func (s *OrderService) rejectOrder(ctx context.Context, orderID int64, reason string) error {
+	if reason == "" {
+		reason = "INTERNAL_ERROR"
+	}
+	err := s.repo.RejectOrder(ctx, orderID, reason, time.Now().UnixMilli())
+	if err != nil && !errors.Is(err, repository.ErrOrderNotFound) {
+		return err
+	}
+	return nil
 }
 
 func (s *OrderService) rollbackFreeze(ctx context.Context, order *repository.Order, asset string, amount int64, reason string) error {
@@ -350,6 +391,28 @@ func (s *OrderService) rollbackFreeze(ctx context.Context, order *repository.Ord
 	if resp != nil && !resp.Success {
 		return fmt.Errorf("unfreeze failed: %s", resp.ErrorCode)
 	}
+	return nil
+}
+
+func (s *OrderService) compensateCreateOrderFailure(ctx context.Context, order *repository.Order, asset string, amount int64, rollbackReason string) error {
+	if order == nil {
+		return nil
+	}
+
+	var errs []string
+	if err := s.rollbackFreeze(ctx, order, asset, amount, rollbackReason); err != nil {
+		errs = append(errs, fmt.Sprintf("rollback freeze: %v", err))
+	}
+	if err := s.rejectOrder(ctx, order.OrderID, "INTERNAL_ERROR"); err != nil {
+		errs = append(errs, fmt.Sprintf("reject order: %v", err))
+	}
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+
+	order.Status = repository.StatusRejected
+	order.UpdateTimeMs = time.Now().UnixMilli()
 	return nil
 }
 
@@ -445,6 +508,22 @@ func (s *OrderService) GetExchangeInfo(ctx context.Context) ([]*repository.Symbo
 }
 
 func (s *OrderService) validateOrder(req *CreateOrderRequest, cfg *repository.SymbolConfig) error {
+	if req == nil || cfg == nil {
+		return fmt.Errorf("INVALID_PARAM")
+	}
+	if !isValidSide(req.Side) {
+		return fmt.Errorf("INVALID_SIDE")
+	}
+	if !isValidOrderType(req.Type) {
+		return fmt.Errorf("INVALID_ORDER_TYPE")
+	}
+	if !isValidTimeInForce(req.TimeInForce) {
+		return fmt.Errorf("INVALID_TIME_IN_FORCE")
+	}
+	if req.Type == "MARKET" && req.TimeInForce == "POST_ONLY" {
+		return fmt.Errorf("INVALID_TIME_IN_FORCE")
+	}
+
 	if cfg.BasePrecision <= 0 || cfg.QuotePrecision <= 0 {
 		return fmt.Errorf("INVALID_SYMBOL_CONFIG")
 	}
@@ -564,6 +643,9 @@ type OrderMessage struct {
 }
 
 func (s *OrderService) sendToMatching(ctx context.Context, order *repository.Order) error {
+	if s.redis == nil {
+		return fmt.Errorf("redis client not configured")
+	}
 	price, err := parseInt64Compat(order.Price, "price")
 	if err != nil {
 		return err
@@ -623,6 +705,9 @@ func parseInt64Compat(value string, field string) (int64, error) {
 }
 
 func (s *OrderService) sendCancelToMatching(ctx context.Context, order *repository.Order) error {
+	if s.redis == nil {
+		return fmt.Errorf("redis client not configured")
+	}
 	msg := &OrderMessage{
 		Type:          "CANCEL",
 		OrderID:       order.OrderID,
@@ -644,6 +729,34 @@ func (s *OrderService) sendCancelToMatching(ctx context.Context, order *reposito
 	}).Result()
 
 	return err
+}
+
+func normalizeCreateOrderRequest(req *CreateOrderRequest) {
+	if req == nil {
+		return
+	}
+	req.Symbol = strings.TrimSpace(req.Symbol)
+	req.Side = strings.ToUpper(strings.TrimSpace(req.Side))
+	req.Type = strings.ToUpper(strings.TrimSpace(req.Type))
+	req.TimeInForce = strings.ToUpper(strings.TrimSpace(req.TimeInForce))
+	req.ClientOrderID = strings.TrimSpace(req.ClientOrderID)
+}
+
+func isValidSide(side string) bool {
+	return side == "BUY" || side == "SELL"
+}
+
+func isValidOrderType(orderType string) bool {
+	return orderType == "LIMIT" || orderType == "MARKET"
+}
+
+func isValidTimeInForce(tif string) bool {
+	switch tif {
+	case "", "GTC", "IOC", "FOK", "POST_ONLY":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseSide(s string) int {
