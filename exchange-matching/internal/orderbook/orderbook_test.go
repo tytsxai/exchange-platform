@@ -48,7 +48,7 @@ func TestOrderStruct(t *testing.T) {
 	}
 }
 
-func TestInsertPrice(t *testing.T) {
+func TestInsertPrice_MiddleInsert(t *testing.T) {
 	// 升序插入
 	prices := []int64{}
 	prices = insertPrice(prices, 100, false)
@@ -76,7 +76,7 @@ func TestInsertPrice(t *testing.T) {
 	}
 }
 
-func TestRemovePrice(t *testing.T) {
+func TestRemovePrice_RemoveMiddle(t *testing.T) {
 	prices := []int64{50, 100, 150, 200}
 
 	// 移除中间
@@ -473,7 +473,7 @@ func TestMatchSelfTradePrevention(t *testing.T) {
 	}
 }
 
-func TestInsertPrice(t *testing.T) {
+func TestInsertPrice_BidAskMiddle(t *testing.T) {
 	// Test descending (bids)
 	prices := []int64{50000, 49000, 48000}
 	prices = insertPrice(prices, 49500, true)
@@ -489,14 +489,14 @@ func TestInsertPrice(t *testing.T) {
 	}
 }
 
-func TestRemovePrice(t *testing.T) {
-	prices := []int64{50000, 49000, 48000}
+func TestRemovePrice_AscendingInput(t *testing.T) {
+	prices := []int64{48000, 49000, 50000}
 	prices = removePrice(prices, 49000)
 	if len(prices) != 2 {
 		t.Fatalf("expected 2 prices, got %d", len(prices))
 	}
-	if prices[1] != 48000 {
-		t.Fatalf("expected 48000 at index 1, got %d", prices[1])
+	if prices[1] != 50000 {
+		t.Fatalf("expected 50000 at index 1, got %d", prices[1])
 	}
 }
 

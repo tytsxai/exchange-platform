@@ -187,7 +187,7 @@ func TestTOTPUserServiceRegisterSuccess(t *testing.T) {
 
 	resp, err := svc.Register(context.Background(), &RegisterRequest{
 		Email:    "user@example.com",
-		Password: "pass",
+		Password: "password123",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -207,7 +207,7 @@ func TestTOTPUserServiceRegisterEmailExists(t *testing.T) {
 
 	resp, err := svc.Register(context.Background(), &RegisterRequest{
 		Email:    "user@example.com",
-		Password: "pass",
+		Password: "password123",
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -227,7 +227,7 @@ func TestTOTPUserServiceRegisterError(t *testing.T) {
 
 	_, err := svc.Register(context.Background(), &RegisterRequest{
 		Email:    "user@example.com",
-		Password: "pass",
+		Password: "password123",
 	})
 	if err == nil {
 		t.Fatal("expected error")
