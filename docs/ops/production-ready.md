@@ -26,13 +26,15 @@
 ### 1.1 默认密钥/弱配置防呆
 
 - 非 `dev` 环境禁止使用默认占位符密钥（`INTERNAL_TOKEN`、`AUTH_TOKEN_SECRET`、`ADMIN_TOKEN`、`API_KEY_SECRET_KEY`）。
+- 非 `dev` 环境关键密钥建议统一最小长度（默认 `32`）：`INTERNAL_TOKEN`、`AUTH_TOKEN_SECRET`、`ADMIN_TOKEN`、`API_KEY_SECRET_KEY`。
+- 非 `dev` 环境默认禁止使用 `APP_VERSION=latest` 直接发布（避免版本不可追踪、回滚不可控）。
 - 非 `dev` 环境强制 `DB_SSL_MODE != disable`、`DB_PASSWORD != exchange123`。
 - 非 `dev` 环境强制设置 `REDIS_PASSWORD`（避免“内网裸奔”配置被错误带到公网/跨机环境）。
  - API Key secret 以对称加密方式存储；切换加密密钥需评估已有 Key 的迁移或重置流程。
 
 落地方式：
 - 代码侧 `Config.Validate()` fast-fail（避免带病启动）。
-- 上线前运行 `exchange-common/scripts/prod-preflight.sh`（避免误配进入发布流程）。
+- 上线前运行 `exchange-common/scripts/prod-preflight.sh`（避免误配进入发布流程，可通过 `MIN_SECRET_LENGTH` 统一最小长度策略；默认要求 `APP_VERSION` 不是 `latest`）。
 
 ### 1.2 文档与指标的暴露面
 
@@ -109,6 +111,7 @@
 
 - 数据库变更：只允许向前兼容（先加字段/表，再灰度代码；删字段要延后）。
 - 回滚：保留上一版本二进制/镜像 + 可回滚配置；若迁移不可逆，必须提供“降级路径”说明。
+- 生产发布默认应走 **image-only**（不源码构建），确保 `APP_VERSION` 具备可追踪与可回滚语义。
 
 ### 2.4 Liveness 与 Readiness 分离（避免“依赖抖动”触发误重启）
 

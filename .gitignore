@@ -27,8 +27,14 @@
 .env.local
 .env.*.local
 .deploy/
+deploy/prod/prod.env
+deploy/prod/monitoring.env
+deploy/prod/metrics.token
 deploy/*/!.gitignore
 !.deploy/*/.gitignore
+
+# Runtime backups
+backups/
 
 # Go
 *.exe

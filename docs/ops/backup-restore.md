@@ -18,12 +18,20 @@
 
 ### 2.2 手工备份（pg_dump 示例）
 
+生产建议：
+- 显式使用完整 `DB_URL`（包含 `sslmode=require`），避免依赖本地默认 host/port 误操作。
+- 项目脚本 `exchange-common/scripts/backup-db.sh` 在 `APP_ENV!=dev` 且未提供 `DB_URL` 时会拒绝执行。
+
 - 逻辑备份（自包含，便于恢复）：
   - `pg_dump -Fc -h <host> -p 5432 -U <user> -d exchange -f exchange.dump`
 - 仅导出 schema（用于对比/审计）：
   - `pg_dump -s -h <host> -p 5432 -U <user> -d exchange -f exchange.schema.sql`
 
 ### 2.3 恢复（pg_restore 示例）
+
+生产建议：
+- 恢复时使用目标环境的显式 `DB_URL`；不要依赖脚本内置默认本地连接串。
+- 项目脚本 `exchange-common/scripts/restore-db.sh` 在 `APP_ENV!=dev` 且未提供 `DB_URL` 时会拒绝执行。
 
 1. 新建空库（或新实例）：
    - `createdb -h <host> -p 5432 -U <user> exchange`

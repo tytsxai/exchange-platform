@@ -21,6 +21,9 @@
 - 运行预检脚本（防止误用 dev 默认值）：
   - `bash exchange-common/scripts/prod-preflight.sh`
   - 或指定 env 文件：`PROD_ENV_FILE=deploy/prod/prod.env bash deploy/prod/deploy.sh`（脚本会读取该文件做 preflight）
+  - 预检会强制校验密钥长度下限（默认 `32`，可通过 `MIN_SECRET_LENGTH` 覆盖）
+  - 非 dev 环境下，`INTERNAL_TOKEN / AUTH_TOKEN_SECRET / API_KEY_SECRET_KEY / ADMIN_TOKEN` 任一不足最小长度都会 fast-fail
+  - 非 dev 环境默认禁止 `APP_VERSION=latest`（避免不可追踪发布与回滚困难）；如需临时放行可设置 `ALLOW_LATEST_IMAGE_TAG=true`
 - 精度一致性校验（资金口径）：确保 `price_precision == quote asset precision` 且 `qty_precision == base asset precision`
   - 如需修复存量数据：执行 `scripts/align-symbol-precision.sql`（务必先备份）
 
@@ -29,8 +32,14 @@
 建议：生产优先使用 **外部/托管 Postgres + 托管 Redis**（TLS + 密码），应用只部署服务容器。
 
 - 启动/更新：
-  - 推荐一键脚本：`bash deploy/prod/deploy.sh`（会先 preflight；如设置了 `DB_URL` 也会先 migrate）
-  - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d --build`
+  - 推荐一键脚本：`bash deploy/prod/deploy.sh`（默认 image-only，不会 `--build`；会先 preflight）
+  - 需要源码构建时（建议仅 dev/紧急场景）：`BUILD_IMAGES=true ALLOW_SOURCE_BUILD_IN_NONDEV=true bash deploy/prod/deploy.sh`
+  - 无侵入演练（不真正发布）：`DRY_RUN=true bash deploy/prod/deploy.sh`
+  - 需要执行迁移：
+    - 自动：设置 `DB_URL` 且保持 `RUN_MIGRATIONS=auto`（默认）
+    - 强制：`RUN_MIGRATIONS=true DB_URL=... bash deploy/prod/deploy.sh`
+    - 禁用：`RUN_MIGRATIONS=false bash deploy/prod/deploy.sh`
+  - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d`
 - 查看状态（含 healthcheck）：
   - `docker compose -f deploy/prod/docker-compose.yml ps`
 - 查看日志：
@@ -71,15 +80,16 @@
 
 原则：**先回滚应用，再处理数据**。数据库变更必须向前兼容（先加后删，删字段延后）。
 
-- 回滚到上一版本镜像/代码（compose）：
-  1. 将 `deploy/prod/docker-compose.yml` 的 build 版本切回上一 tag（或用上一份构建产物）
-  2. `docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d --build`
+- 推荐回滚方式（基于镜像 tag）：
+  1. 执行：`APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
+  2. 脚本会复用 `deploy/prod/prod.env` 进行 preflight，并以指定 tag 直接 `up -d`（不源码构建）
+  3. 如需仅演练流程：`DRY_RUN=true APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
 - 回滚后检查：
   - `/ready` 恢复、关键链路通过、错误率回落
 
 如果你使用 `APP_VERSION`（推荐）：
 - 将 `deploy/prod/prod.env` 里的 `APP_VERSION` 改回上一个 tag
-- 重新执行：`bash deploy/prod/deploy.sh`（或 `docker compose ... up -d --build`）
+- 重新执行：`bash deploy/prod/deploy.sh`（默认 image-only）
 
 ## 5. 常见故障排查入口（建议优先）
 
@@ -105,11 +115,11 @@
 - `/metrics` 建议只走内网抓取；如必须暴露，请配置 `METRICS_TOKEN`
 - 真实客户端 IP：网关仅在“可信上游代理”（loopback/私网）场景信任 `X-Forwarded-For`；若反代/LB 使用公网 IP，需配置 `TRUSTED_PROXY_CIDRS` 显式信任；生产需确保反代会覆盖/清理客户端传入的 XFF
 - 如暴露 `marketdata` public WS（8094），务必设置 `MARKETDATA_WS_ALLOW_ORIGINS`（禁止 `*`），并避免把它直接裸奔在公网
-- 定期轮换 `INTERNAL_TOKEN` / `AUTH_TOKEN_SECRET` / `ADMIN_TOKEN` 并验证回滚路径
+- 定期轮换 `INTERNAL_TOKEN` / `AUTH_TOKEN_SECRET` / `API_KEY_SECRET_KEY` / `ADMIN_TOKEN` 并验证回滚路径
 
 ## 7. 备份与数据保鲜（必须落地）
 
-- **Postgres 备份**：`bash exchange-common/scripts/backup-db.sh`（优先提供 `DB_URL`；也可用 `DB_HOST/DB_USER/...` 组合）
+- **Postgres 备份**：`bash exchange-common/scripts/backup-db.sh`（生产建议/默认要求显式 `DB_URL`；`APP_ENV!=dev` 且未设置 `DB_URL` 时脚本会拒绝执行）
 - **Redis 备份**：`bash exchange-common/scripts/backup-redis.sh`（生产通常要求 `REDIS_PASSWORD`；如需 TLS，设置 `REDIS_TLS=true` 并按需提供 `REDIS_CACERT/REDIS_CERT/REDIS_KEY`）
 - **Redis Streams 修剪**：避免 Stream 无上限增长导致 Redis 内存耗尽  
   - 例：`STREAMS="exchange:orders,exchange:events,exchange:events:dlq" MAX_LEN=1000000 bash exchange-common/scripts/trim-streams.sh`

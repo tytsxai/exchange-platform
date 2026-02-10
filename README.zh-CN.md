@@ -134,6 +134,23 @@ cp .env.example .env
 - [事件规范](docs/event-model.md)
 - [运维 Runbook](docs/ops/runbook.md)
 
+## 🚦 生产部署（最小安全路径）
+
+```bash
+# 1) 准备环境变量
+cp deploy/prod/prod.env.example deploy/prod/prod.env
+
+# 2) 部署（默认 image-only，且包含 preflight）
+bash deploy/prod/deploy.sh
+
+# 3) 回滚到上一个不可变 tag
+APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh
+
+# 可选：仅演练部署/回滚流程，不实际变更
+DRY_RUN=true bash deploy/prod/deploy.sh
+DRY_RUN=true APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh
+```
+
 ## 🧪 测试
 
 ```bash

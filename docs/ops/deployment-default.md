@@ -31,9 +31,11 @@
 2. 运行预检（会 fast-fail 防止误配）：
    - `bash exchange-common/scripts/prod-preflight.sh`
 3. 部署：
-   - 推荐一键脚本：`bash deploy/prod/deploy.sh`（会先 preflight；如设置了 `DB_URL` 也会先 migrate）
+   - 推荐一键脚本：`bash deploy/prod/deploy.sh`（默认 image-only，不会 `--build`；会先 preflight）
+   - 如需源码构建（建议仅 dev/应急）：`BUILD_IMAGES=true ALLOW_SOURCE_BUILD_IN_NONDEV=true bash deploy/prod/deploy.sh`
+   - 无侵入演练（不真正发布）：`DRY_RUN=true bash deploy/prod/deploy.sh`
    - 如需指定 env 文件：`PROD_ENV_FILE=deploy/prod/prod.env bash deploy/prod/deploy.sh`
-   - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d --build`
+   - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d`
 4. 验证：
    - `curl -sf http://<gateway-host>:8080/live`
    - `curl -sf http://<gateway-host>:8080/health`
@@ -51,6 +53,12 @@
 如果你启用了 `METRICS_TOKEN`：
 - 将 token 写入 `deploy/prod/metrics.token`（该文件已被 gitignore）
 - 在 `deploy/prod/prometheus.yml` 里取消注释 `bearer_token_file`
+
+## 快速回滚（最小动作）
+
+- 执行：`APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
+- 脚本会做 preflight 并按指定 tag 执行 image-only `up -d`
+- 无侵入演练：`DRY_RUN=true APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
 
 ## 生产反代/TLS（建议）
 

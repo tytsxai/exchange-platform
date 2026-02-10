@@ -138,6 +138,23 @@ cp .env.example .env
 - [Event Specifications](docs/event-model.md)
 - [Runbook & Operations](docs/ops/runbook.md)
 
+## 🚦 Production Deploy (Minimal Safe Path)
+
+```bash
+# 1) Prepare env
+cp deploy/prod/prod.env.example deploy/prod/prod.env
+
+# 2) Deploy (image-only by default; includes preflight)
+bash deploy/prod/deploy.sh
+
+# 3) Rollback to previous immutable tag
+APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh
+
+# Optional: dry-run deploy/rollback workflow without applying changes
+DRY_RUN=true bash deploy/prod/deploy.sh
+DRY_RUN=true APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh
+```
+
 ## 🧪 Testing
 
 ```bash
