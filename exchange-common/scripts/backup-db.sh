@@ -5,6 +5,23 @@ DB_URL=${DB_URL:-""}
 OUT_DIR=${OUT_DIR:-"./backups"}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 FILE="${OUT_DIR}/exchange_${TIMESTAMP}.dump"
+APP_ENV=${APP_ENV:-"dev"}
+
+if [ "$APP_ENV" != "dev" ] && [ -z "$DB_URL" ]; then
+  echo "In non-dev environment, DB_URL is required for backup-db.sh" >&2
+  exit 1
+fi
+
+if [ "$APP_ENV" != "dev" ] && [ -n "$DB_URL" ]; then
+  if echo "$DB_URL" | grep -Eq 'sslmode=disable([&#]|$)'; then
+    echo "In non-dev environment, DB_URL must not use sslmode=disable" >&2
+    exit 1
+  fi
+  if echo "$DB_URL" | grep -Eq 'exchange123'; then
+    echo "In non-dev environment, DB_URL must not use default password" >&2
+    exit 1
+  fi
+fi
 
 if [ -z "$DB_URL" ]; then
   DB_HOST=${DB_HOST:-"localhost"}

@@ -54,6 +54,60 @@ func TestGetEnv(t *testing.T) {
 	}
 }
 
+func TestIsInsecureDevSecret(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  string
+		unsafe bool
+	}{
+		{
+			name:   "internal token placeholder",
+			value:  "dev-internal-token-change-me",
+			unsafe: true,
+		},
+		{
+			name:   "admin token placeholder",
+			value:  "dev-admin-token-change-me",
+			unsafe: true,
+		},
+		{
+			name:   "auth token placeholder",
+			value:  "dev-auth-token-secret-32-bytes-minimum",
+			unsafe: true,
+		},
+		{
+			name:   "api key secret placeholder",
+			value:  "dev-api-key-secret-32-bytes-minimum",
+			unsafe: true,
+		},
+		{
+			name:   "non-placeholder secret",
+			value:  "prod-very-strong-random-secret-value",
+			unsafe: false,
+		},
+		{
+			name:   "empty secret",
+			value:  "",
+			unsafe: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsInsecureDevSecret(tt.value)
+			if got != tt.unsafe {
+				t.Fatalf("IsInsecureDevSecret(%q) = %v, want %v", tt.value, got, tt.unsafe)
+			}
+		})
+	}
+}
+
+func TestMinSecretLength(t *testing.T) {
+	if MinSecretLength != 32 {
+		t.Fatalf("MinSecretLength = %d, want 32", MinSecretLength)
+	}
+}
+
 func TestGetEnvInt(t *testing.T) {
 	tests := []struct {
 		name         string

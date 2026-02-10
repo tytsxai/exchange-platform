@@ -83,8 +83,8 @@ func (c *Config) Validate() error {
 	if c.AuthTokenSecret == "" {
 		return fmt.Errorf("AUTH_TOKEN_SECRET is required")
 	}
-	if len(c.AuthTokenSecret) < 32 {
-		return fmt.Errorf("AUTH_TOKEN_SECRET must be at least 32 characters")
+	if len(c.AuthTokenSecret) < envconfig.MinSecretLength {
+		return fmt.Errorf("AUTH_TOKEN_SECRET must be at least %d characters", envconfig.MinSecretLength)
 	}
 	if c.AdminToken == "" {
 		return fmt.Errorf("ADMIN_TOKEN is required")
@@ -92,6 +92,9 @@ func (c *Config) Validate() error {
 	if c.AppEnv != "dev" {
 		if c.EnableDocs && !c.AllowDocsInNonDev {
 			return fmt.Errorf("ENABLE_DOCS must be false unless ALLOW_DOCS_IN_NONDEV=true (APP_ENV=%s)", c.AppEnv)
+		}
+		if len(c.AdminToken) < envconfig.MinSecretLength {
+			return fmt.Errorf("ADMIN_TOKEN must be at least %d characters (APP_ENV=%s)", envconfig.MinSecretLength, c.AppEnv)
 		}
 		if envconfig.IsInsecureDevSecret(c.AuthTokenSecret) {
 			return fmt.Errorf("AUTH_TOKEN_SECRET must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)

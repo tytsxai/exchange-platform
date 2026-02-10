@@ -12,7 +12,10 @@ var insecureDevSecrets = map[string]struct{}{
 	"dev-internal-token-change-me":           {},
 	"dev-admin-token-change-me":              {},
 	"dev-auth-token-secret-32-bytes-minimum": {},
+	"dev-api-key-secret-32-bytes-minimum":    {},
 }
+
+const MinSecretLength = 32
 
 // IsInsecureDevSecret returns true when the value matches a known dev placeholder secret.
 // It is intended to prevent accidental production deployments with default credentials.

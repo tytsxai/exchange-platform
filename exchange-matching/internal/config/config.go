@@ -73,6 +73,9 @@ func (c *Config) Validate() error {
 		if envconfig.IsInsecureDevSecret(c.InternalToken) {
 			return fmt.Errorf("INTERNAL_TOKEN must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)
 		}
+		if len(c.InternalToken) < envconfig.MinSecretLength {
+			return fmt.Errorf("INTERNAL_TOKEN must be at least %d characters (APP_ENV=%s)", envconfig.MinSecretLength, c.AppEnv)
+		}
 		if c.RedisPassword == "" {
 			return fmt.Errorf("REDIS_PASSWORD is required (APP_ENV=%s)", c.AppEnv)
 		}

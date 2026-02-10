@@ -44,6 +44,15 @@ if [ "$APP_ENV" = "dev" ]; then
   exit 1
 fi
 
+MIN_SECRET_LENGTH="${MIN_SECRET_LENGTH:-32}"
+APP_VERSION="${APP_VERSION:-latest}"
+ALLOW_LATEST_IMAGE_TAG="${ALLOW_LATEST_IMAGE_TAG:-false}"
+
+if [ "$ALLOW_LATEST_IMAGE_TAG" != "true" ] && [ "$APP_VERSION" = "latest" ]; then
+  echo "APP_VERSION must not be 'latest' in non-dev deployments (set ALLOW_LATEST_IMAGE_TAG=true to override)" >&2
+  exit 1
+fi
+
 require_set INTERNAL_TOKEN
 require_set AUTH_TOKEN_SECRET
 require_set API_KEY_SECRET_KEY
@@ -54,12 +63,20 @@ require_not_default AUTH_TOKEN_SECRET "dev-auth-token-secret-32-bytes-minimum"
 require_not_default API_KEY_SECRET_KEY "dev-api-key-secret-32-bytes-minimum"
 require_not_default ADMIN_TOKEN "dev-admin-token-change-me"
 
-if [ "${#AUTH_TOKEN_SECRET}" -lt 32 ]; then
-  echo "AUTH_TOKEN_SECRET must be at least 32 characters" >&2
+if [ "${#INTERNAL_TOKEN}" -lt "$MIN_SECRET_LENGTH" ]; then
+  echo "INTERNAL_TOKEN must be at least ${MIN_SECRET_LENGTH} characters" >&2
   exit 1
 fi
-if [ "${#API_KEY_SECRET_KEY}" -lt 32 ]; then
-  echo "API_KEY_SECRET_KEY must be at least 32 characters" >&2
+if [ "${#AUTH_TOKEN_SECRET}" -lt "$MIN_SECRET_LENGTH" ]; then
+  echo "AUTH_TOKEN_SECRET must be at least ${MIN_SECRET_LENGTH} characters" >&2
+  exit 1
+fi
+if [ "${#API_KEY_SECRET_KEY}" -lt "$MIN_SECRET_LENGTH" ]; then
+  echo "API_KEY_SECRET_KEY must be at least ${MIN_SECRET_LENGTH} characters" >&2
+  exit 1
+fi
+if [ "${#ADMIN_TOKEN}" -lt "$MIN_SECRET_LENGTH" ]; then
+  echo "ADMIN_TOKEN must be at least ${MIN_SECRET_LENGTH} characters" >&2
   exit 1
 fi
 
@@ -71,7 +88,10 @@ require_set DB_NAME
 require_set DB_SSL_MODE
 
 require_not_equals DB_PASSWORD "exchange123"
-require_not_equals DB_SSL_MODE "disable"
+if [ "$(echo "$DB_SSL_MODE" | tr '[:upper:]' '[:lower:]')" = "disable" ]; then
+  echo "DB_SSL_MODE must not be 'disable'" >&2
+  exit 1
+fi
 
 require_set REDIS_ADDR
 require_set REDIS_PASSWORD

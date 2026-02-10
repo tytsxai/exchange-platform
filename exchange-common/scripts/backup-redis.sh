@@ -11,6 +11,12 @@ REDIS_KEY=${REDIS_KEY:-""}
 OUT_DIR=${OUT_DIR:-"./backups"}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 FILE="${OUT_DIR}/redis_${TIMESTAMP}.rdb"
+APP_ENV=${APP_ENV:-"dev"}
+
+if [ "$APP_ENV" != "dev" ] && [ -z "$REDIS_PASSWORD" ]; then
+  echo "In non-dev environment, REDIS_PASSWORD is required for backup-redis.sh" >&2
+  exit 1
+fi
 
 HOST=${REDIS_ADDR%%:*}
 PORT=${REDIS_ADDR##*:}

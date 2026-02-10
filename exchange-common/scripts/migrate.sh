@@ -1,9 +1,30 @@
 #!/bin/bash
 set -euo pipefail
 
-DB_URL=${DB_URL:-"postgres://exchange:exchange123@localhost:5436/exchange?sslmode=disable"}
+DB_URL=${DB_URL:-""}
 MIGRATIONS_DIR=${MIGRATIONS_DIR:-"migrations"}
 INIT_SQL=${INIT_SQL:-"scripts/init-db.sql"}
+APP_ENV=${APP_ENV:-"dev"}
+
+if [ "$APP_ENV" != "dev" ] && [ -z "$DB_URL" ]; then
+  echo "In non-dev environment, DB_URL is required for migrate.sh" >&2
+  exit 1
+fi
+
+if [ "$DB_URL" = "" ]; then
+  DB_URL="postgres://exchange:exchange123@localhost:5436/exchange?sslmode=disable"
+fi
+
+if [ "$APP_ENV" != "dev" ]; then
+  if echo "$DB_URL" | grep -Eq 'sslmode=disable([&#]|$)'; then
+    echo "In non-dev environment, DB_URL must not use sslmode=disable" >&2
+    exit 1
+  fi
+  if echo "$DB_URL" | grep -Eq 'exchange123'; then
+    echo "In non-dev environment, DB_URL must not use default password" >&2
+    exit 1
+  fi
+fi
 
 require_cmd() {
   local cmd=$1

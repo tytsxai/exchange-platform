@@ -91,21 +91,27 @@ func (c *Config) Validate() error {
 	if c.AuthTokenSecret == "" {
 		return fmt.Errorf("AUTH_TOKEN_SECRET is required")
 	}
-	if len(c.AuthTokenSecret) < 32 {
-		return fmt.Errorf("AUTH_TOKEN_SECRET must be at least 32 characters")
+	if len(c.AuthTokenSecret) < envconfig.MinSecretLength {
+		return fmt.Errorf("AUTH_TOKEN_SECRET must be at least %d characters", envconfig.MinSecretLength)
 	}
 	if c.APIKeySecretKey == "" {
 		return fmt.Errorf("API_KEY_SECRET_KEY is required")
 	}
-	if len(c.APIKeySecretKey) < 32 {
-		return fmt.Errorf("API_KEY_SECRET_KEY must be at least 32 characters")
+	if len(c.APIKeySecretKey) < envconfig.MinSecretLength {
+		return fmt.Errorf("API_KEY_SECRET_KEY must be at least %d characters", envconfig.MinSecretLength)
 	}
 	if c.AppEnv != "dev" {
 		if envconfig.IsInsecureDevSecret(c.InternalToken) {
 			return fmt.Errorf("INTERNAL_TOKEN must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)
 		}
+		if len(c.InternalToken) < envconfig.MinSecretLength {
+			return fmt.Errorf("INTERNAL_TOKEN must be at least %d characters (APP_ENV=%s)", envconfig.MinSecretLength, c.AppEnv)
+		}
 		if envconfig.IsInsecureDevSecret(c.AuthTokenSecret) {
 			return fmt.Errorf("AUTH_TOKEN_SECRET must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)
+		}
+		if envconfig.IsInsecureDevSecret(c.APIKeySecretKey) {
+			return fmt.Errorf("API_KEY_SECRET_KEY must not be a dev placeholder (APP_ENV=%s)", c.AppEnv)
 		}
 		if c.RedisPassword == "" {
 			return fmt.Errorf("REDIS_PASSWORD is required (APP_ENV=%s)", c.AppEnv)

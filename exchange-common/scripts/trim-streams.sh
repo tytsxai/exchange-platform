@@ -14,9 +14,15 @@ REDIS_TLS=${REDIS_TLS:-"false"}
 REDIS_CACERT=${REDIS_CACERT:-""}
 REDIS_CERT=${REDIS_CERT:-""}
 REDIS_KEY=${REDIS_KEY:-""}
+APP_ENV=${APP_ENV:-"dev"}
 
 STREAMS=${STREAMS:-"exchange:orders,exchange:events"}
 MAX_LEN=${MAX_LEN:-1000000}
+
+if [ "$APP_ENV" != "dev" ] && [ -z "$REDIS_PASSWORD" ]; then
+  echo "In non-dev environment, REDIS_PASSWORD is required for trim-streams.sh" >&2
+  exit 1
+fi
 
 if [ -z "$STREAMS" ]; then
   echo "STREAMS is empty; nothing to trim" >&2
