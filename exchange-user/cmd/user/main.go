@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exchange/common/pkg/audit"
 	commonauth "github.com/exchange/common/pkg/auth"
 	commonerrors "github.com/exchange/common/pkg/errors"
 	commonredis "github.com/exchange/common/pkg/redis"
@@ -74,6 +75,14 @@ func main() {
 		log.Fatalf("Invalid API key secret config: %v", err)
 	}
 	svc := service.NewUserService(repo, idGen, tokenManager)
+	auditLogger, err := audit.NewDBLogger(db, audit.WithErrorHandler(func(auditErr error) {
+		log.Printf("audit logger error: %v", auditErr)
+	}))
+	if err != nil {
+		log.Fatalf("Failed to init audit logger: %v", err)
+	}
+	defer auditLogger.Close()
+	svc.SetAuditLogger(auditLogger)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,

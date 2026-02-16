@@ -287,5 +287,8 @@ func (s *UserService) writeAudit(ctx context.Context, log *audit.AuditLog) {
 	if s == nil || s.auditLogger == nil || log == nil {
 		return
 	}
+	if log.ID == 0 && s.idGen != nil {
+		log.ID = s.idGen.NextID()
+	}
 	_ = s.auditLogger.Log(ctx, log)
 }
