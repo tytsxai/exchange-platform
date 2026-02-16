@@ -64,8 +64,25 @@ if [ -f "$INIT_SQL" ]; then
   fi
 fi
 
+migration_candidates=()
+
 if [ -d "$MIGRATIONS_DIR" ]; then
-  for file in "$MIGRATIONS_DIR"/*.sql; do
+  while IFS= read -r file; do
+    migration_candidates+=("$file")
+  done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' | sort)
+fi
+
+# Backward-compatible path:
+# keep loading numbered SQL migrations from scripts/ (e.g. scripts/003_audit_logs.sql).
+if [ -d "scripts" ]; then
+  while IFS= read -r file; do
+    migration_candidates+=("$file")
+  done < <(find "scripts" -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' | sort)
+fi
+
+if [ "${#migration_candidates[@]}" -gt 0 ]; then
+  mapfile -t unique_migrations < <(printf '%s\n' "${migration_candidates[@]}" | sort -u)
+  for file in "${unique_migrations[@]}"; do
     [ -e "$file" ] || continue
     version=$(basename "$file")
     applied=$(psql -X "$DB_URL" -v ON_ERROR_STOP=1 -q -t -A -c \
