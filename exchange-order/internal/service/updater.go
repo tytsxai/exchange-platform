@@ -169,7 +169,9 @@ func (u *OrderUpdater) consumeOnce(ctx context.Context) error {
 				log.Printf("process event error: %v", err)
 				if dlqErr := u.sendToDLQ(ctx, &msg, err.Error()); dlqErr != nil {
 					log.Printf("send dlq error: %v", dlqErr)
+					continue
 				}
+				u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
 				continue
 			}
 			u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
@@ -244,7 +246,9 @@ func (u *OrderUpdater) processPending(ctx context.Context) error {
 			log.Printf("process pending event error: %v", err)
 			if dlqErr := u.sendToDLQ(ctx, &msg, err.Error()); dlqErr != nil {
 				log.Printf("send dlq error: %v", dlqErr)
+				continue
 			}
+			u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)
 			continue
 		}
 		u.redis.XAck(ctx, u.eventStream, u.group, msg.ID)

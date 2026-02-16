@@ -80,21 +80,35 @@ func TestRemovePrice_RemoveMiddle(t *testing.T) {
 	prices := []int64{50, 100, 150, 200}
 
 	// 移除中间
-	result := removePrice(prices, 100)
+	result := removePrice(prices, 100, false)
 	if len(result) != 3 {
 		t.Errorf("expected len 3, got %d", len(result))
 	}
 
 	// 移除不存在
-	result = removePrice([]int64{50, 150}, 100)
+	result = removePrice([]int64{50, 150}, 100, false)
 	if len(result) != 2 {
 		t.Error("should not change when price not found")
 	}
 
 	// 空切片
-	result = removePrice([]int64{}, 100)
+	result = removePrice([]int64{}, 100, false)
 	if len(result) != 0 {
 		t.Error("empty slice should remain empty")
+	}
+}
+
+func TestRemovePrice_Descending(t *testing.T) {
+	prices := []int64{200, 150, 100, 50}
+	result := removePrice(prices, 150, true)
+	expected := []int64{200, 100, 50}
+	if len(result) != len(expected) {
+		t.Fatalf("expected len %d, got %d", len(expected), len(result))
+	}
+	for i := range expected {
+		if result[i] != expected[i] {
+			t.Fatalf("result[%d] expected %d, got %d", i, expected[i], result[i])
+		}
 	}
 }
 
@@ -491,7 +505,7 @@ func TestInsertPrice_BidAskMiddle(t *testing.T) {
 
 func TestRemovePrice_AscendingInput(t *testing.T) {
 	prices := []int64{48000, 49000, 50000}
-	prices = removePrice(prices, 49000)
+	prices = removePrice(prices, 49000, false)
 	if len(prices) != 2 {
 		t.Fatalf("expected 2 prices, got %d", len(prices))
 	}

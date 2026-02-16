@@ -139,7 +139,7 @@ func (ob *OrderBook) removeOrderLocked(orderID int64) *Order {
 
 		if level.Orders.Len() == 0 {
 			delete(levels, order.Price)
-			*prices = removePrice(*prices, order.Price)
+			*prices = removePrice(*prices, order.Price, order.Side == SideBuy)
 		}
 	}
 
@@ -390,7 +390,7 @@ func insertPrice(prices []int64, price int64, descending bool) []int64 {
 }
 
 // removePrice 移除价格（二分查找 O(log n)）
-func removePrice(prices []int64, price int64) []int64 {
+func removePrice(prices []int64, price int64, descending bool) []int64 {
 	n := len(prices)
 	if n == 0 {
 		return prices
@@ -399,10 +399,18 @@ func removePrice(prices []int64, price int64) []int64 {
 	lo, hi := 0, n
 	for lo < hi {
 		mid := lo + (hi-lo)/2
-		if prices[mid] < price {
-			lo = mid + 1
+		if descending {
+			if prices[mid] > price {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
 		} else {
-			hi = mid
+			if prices[mid] < price {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
 		}
 	}
 	if lo < n && prices[lo] == price {

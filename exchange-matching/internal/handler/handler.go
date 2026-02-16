@@ -271,7 +271,8 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 		return
 	}
 
-	if !h.shouldProcess(ctx, &orderMsg) {
+	dedupeKey, shouldProcess := h.acquireDedupe(ctx, &orderMsg)
+	if !shouldProcess {
 		h.ack(ctx, msg.ID)
 		return
 	}
@@ -284,6 +285,7 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 
 	// 提交命令
 	if err := eng.Submit(cmd); err != nil {
+		h.releaseDedupe(ctx, dedupeKey)
 		metrics.IncStreamError(h.orderStream, h.group)
 		h.log.WithError(err).Warn("submit command error")
 		return
@@ -292,9 +294,9 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 	h.ack(ctx, msg.ID)
 }
 
-func (h *Handler) shouldProcess(ctx context.Context, msg *OrderMessage) bool {
+func (h *Handler) acquireDedupe(ctx context.Context, msg *OrderMessage) (string, bool) {
 	if h.dedupeTTL <= 0 || msg == nil || msg.OrderID <= 0 {
-		return true
+		return "", true
 	}
 	key := fmt.Sprintf("dedupe:%s:%d", strings.ToLower(msg.Type), msg.OrderID)
 	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -302,9 +304,20 @@ func (h *Handler) shouldProcess(ctx context.Context, msg *OrderMessage) bool {
 	ok, err := h.redis.SetNX(timeoutCtx, key, "1", h.dedupeTTL).Result()
 	if err != nil {
 		h.log.WithError(err).Warn("dedupe check error")
-		return true
+		return key, true
 	}
-	return ok
+	return key, ok
+}
+
+func (h *Handler) releaseDedupe(ctx context.Context, dedupeKey string) {
+	if dedupeKey == "" {
+		return
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := h.redis.Del(timeoutCtx, dedupeKey).Err(); err != nil {
+		h.log.WithError(err).WithField("dedupeKey", dedupeKey).Warn("release dedupe key error")
+	}
 }
 
 func (h *Handler) processPending(ctx context.Context) error {
