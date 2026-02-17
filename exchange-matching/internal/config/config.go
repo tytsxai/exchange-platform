@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,12 +23,25 @@ type Config struct {
 	RedisPassword string
 	RedisDB       int
 
+	// PostgreSQL（仅用于启动恢复订单簿）
+	DBHost            string
+	DBPort            int
+	DBUser            string
+	DBPassword        string
+	DBName            string
+	DBSSLMode         string
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime time.Duration
+	DBConnMaxIdleTime time.Duration
+
 	// Streams
-	OrderStream    string
-	EventStream    string
-	ConsumerGroup  string
-	ConsumerName   string
-	OrderDedupeTTL time.Duration
+	OrderStream     string
+	EventStream     string
+	ConsumerGroup   string
+	ConsumerName    string
+	OrderDedupeTTL  time.Duration
+	RecoveryEnabled bool
 
 	// Private events (pub/sub)
 	PrivateUserEventChannel string
@@ -51,11 +65,23 @@ func Load() *Config {
 		RedisPassword: envconfig.GetEnv("REDIS_PASSWORD", ""),
 		RedisDB:       envconfig.GetEnvInt("REDIS_DB", 0),
 
-		OrderStream:    envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
-		EventStream:    envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
-		ConsumerGroup:  envconfig.GetEnv("CONSUMER_GROUP", "matching-group"),
-		ConsumerName:   envconfig.GetEnv("CONSUMER_NAME", "matching-1"),
-		OrderDedupeTTL: envconfig.GetEnvDuration("MATCHING_ORDER_DEDUP_TTL", 24*time.Hour),
+		DBHost:            envconfig.GetEnv("DB_HOST", "localhost"),
+		DBPort:            envconfig.GetEnvInt("DB_PORT", 5436),
+		DBUser:            envconfig.GetEnv("DB_USER", "exchange"),
+		DBPassword:        envconfig.GetEnv("DB_PASSWORD", "exchange123"),
+		DBName:            envconfig.GetEnv("DB_NAME", "exchange"),
+		DBSSLMode:         envconfig.GetEnv("DB_SSL_MODE", "disable"),
+		DBMaxOpenConns:    envconfig.GetEnvInt("DB_MAX_OPEN_CONNS", 20),
+		DBMaxIdleConns:    envconfig.GetEnvInt("DB_MAX_IDLE_CONNS", 5),
+		DBConnMaxLifetime: envconfig.GetEnvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+		DBConnMaxIdleTime: envconfig.GetEnvDuration("DB_CONN_MAX_IDLE_TIME", 5*time.Minute),
+
+		OrderStream:     envconfig.GetEnv("ORDER_STREAM", "exchange:orders"),
+		EventStream:     envconfig.GetEnv("EVENT_STREAM", "exchange:events"),
+		ConsumerGroup:   envconfig.GetEnv("CONSUMER_GROUP", "matching-group"),
+		ConsumerName:    envconfig.GetEnv("CONSUMER_NAME", "matching-1"),
+		OrderDedupeTTL:  envconfig.GetEnvDuration("MATCHING_ORDER_DEDUP_TTL", 24*time.Hour),
+		RecoveryEnabled: envconfig.GetEnvBool("MATCHING_RECOVERY_ENABLED", strings.ToLower(envconfig.GetEnv("APP_ENV", "dev")) != "dev"),
 
 		PrivateUserEventChannel: envconfig.GetEnv("PRIVATE_USER_EVENT_CHANNEL", "private:user:{userId}:events"),
 
@@ -82,9 +108,27 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.ConsumerGroup) == "" || strings.TrimSpace(c.ConsumerName) == "" {
 			return fmt.Errorf("CONSUMER_GROUP and CONSUMER_NAME are required (APP_ENV=%s)", c.AppEnv)
 		}
+		if c.RecoveryEnabled {
+			if c.DBPassword == "" || c.DBPassword == "exchange123" {
+				return fmt.Errorf("DB_PASSWORD must be explicitly set when MATCHING_RECOVERY_ENABLED=true (APP_ENV=%s)", c.AppEnv)
+			}
+			if strings.EqualFold(c.DBSSLMode, "disable") {
+				return fmt.Errorf("DB_SSL_MODE must not be disable when MATCHING_RECOVERY_ENABLED=true (APP_ENV=%s)", c.AppEnv)
+			}
+		}
 	}
 	if c.OrderDedupeTTL <= 0 {
 		return fmt.Errorf("MATCHING_ORDER_DEDUP_TTL must be positive")
 	}
 	return nil
+}
+
+// DSN 返回数据库连接字符串（用于恢复订单簿）。
+func (c *Config) DSN() string {
+	return "host=" + c.DBHost +
+		" port=" + strconv.Itoa(c.DBPort) +
+		" user=" + c.DBUser +
+		" password=" + c.DBPassword +
+		" dbname=" + c.DBName +
+		" sslmode=" + c.DBSSLMode
 }

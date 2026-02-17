@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,6 +20,8 @@ import (
 	"github.com/exchange/matching/internal/handler"
 	"github.com/exchange/matching/internal/metrics"
 	"github.com/exchange/matching/internal/orderbook"
+	"github.com/exchange/matching/internal/recovery"
+	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -56,13 +59,28 @@ func main() {
 	}
 	log.Printf("Connected to Redis at %s", cfg.RedisAddr)
 
-	// 如果配置了数据库连接，可以注入 OrderLoader 用于启动恢复订单簿
-	// orderLoader := NewDBOrderLoader(db)
-	//
-	// h := handler.NewHandler(redisClient, &handler.Config{
-	//     ...
-	//     OrderLoader: orderLoader,
-	// })
+	var db *sql.DB
+	var orderLoader handler.OrderLoader
+	if cfg.RecoveryEnabled {
+		var err error
+		db, err = sql.Open("postgres", cfg.DSN())
+		if err != nil {
+			log.Fatalf("Failed to connect to database for recovery: %v", err)
+		}
+		db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+		db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+		db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+		db.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
+		dbPingCtx, dbPingCancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := db.PingContext(dbPingCtx); err != nil {
+			dbPingCancel()
+			log.Fatalf("Failed to ping database for recovery: %v", err)
+		}
+		dbPingCancel()
+		log.Printf("Connected to PostgreSQL for orderbook recovery")
+		orderLoader = recovery.NewDBOrderLoader(db)
+	}
 
 	// 创建处理器
 	h := handler.NewHandler(redisClient, &handler.Config{
@@ -71,6 +89,7 @@ func main() {
 		Group:       cfg.ConsumerGroup,
 		Consumer:    cfg.ConsumerName,
 		DedupeTTL:   cfg.OrderDedupeTTL,
+		OrderLoader: orderLoader,
 	})
 
 	// 启动处理器
@@ -186,6 +205,9 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	server.Shutdown(shutdownCtx)
+	if db != nil {
+		db.Close()
+	}
 	redisClient.Close()
 	log.Println("Shutdown complete")
 }

@@ -81,6 +81,16 @@ type Handler struct {
 const (
 	defaultMaxStreamRetries = 10
 	defaultClaimMinIdle     = 30 * time.Second
+	dedupeStateProcessing   = "processing"
+	dedupeStateDone         = "done"
+)
+
+type dedupeAction int
+
+const (
+	dedupeActionProcess dedupeAction = iota + 1
+	dedupeActionAlreadyDone
+	dedupeActionInFlight
 )
 
 // Config 配置
@@ -271,9 +281,18 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 		return
 	}
 
-	dedupeKey, shouldProcess := h.acquireDedupe(ctx, &orderMsg)
-	if !shouldProcess {
+	dedupeKey, action := h.acquireDedupe(ctx, &orderMsg)
+	switch action {
+	case dedupeActionAlreadyDone:
 		h.ack(ctx, msg.ID)
+		return
+	case dedupeActionInFlight:
+		// 上一轮处理尚未完成（或实例异常退出后遗留 processing 状态），
+		// 保留消息在 pending，等待后续 claim 重试。
+		return
+	}
+	if action != dedupeActionProcess {
+		h.log.WithField("orderID", orderMsg.OrderID).Warn("unexpected dedupe action")
 		return
 	}
 
@@ -291,22 +310,60 @@ func (h *Handler) processMessage(ctx context.Context, msg redis.XMessage) {
 		return
 	}
 
+	h.markDedupeDone(ctx, dedupeKey)
 	h.ack(ctx, msg.ID)
 }
 
-func (h *Handler) acquireDedupe(ctx context.Context, msg *OrderMessage) (string, bool) {
+func (h *Handler) acquireDedupe(ctx context.Context, msg *OrderMessage) (string, dedupeAction) {
 	if h.dedupeTTL <= 0 || msg == nil || msg.OrderID <= 0 {
-		return "", true
+		return "", dedupeActionProcess
 	}
 	key := fmt.Sprintf("dedupe:%s:%d", strings.ToLower(msg.Type), msg.OrderID)
 	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	ok, err := h.redis.SetNX(timeoutCtx, key, "1", h.dedupeTTL).Result()
+	ok, err := h.redis.SetNX(timeoutCtx, key, dedupeStateProcessing, h.processingDedupeTTL()).Result()
 	if err != nil {
 		h.log.WithError(err).Warn("dedupe check error")
-		return key, true
+		return key, dedupeActionProcess
 	}
-	return key, ok
+	if ok {
+		return key, dedupeActionProcess
+	}
+
+	status, err := h.redis.Get(timeoutCtx, key).Result()
+	if err == redis.Nil {
+		return key, dedupeActionProcess
+	}
+	if err != nil {
+		h.log.WithError(err).Warn("dedupe read status error")
+		return key, dedupeActionProcess
+	}
+	if status == dedupeStateDone {
+		return key, dedupeActionAlreadyDone
+	}
+	return key, dedupeActionInFlight
+}
+
+func (h *Handler) markDedupeDone(ctx context.Context, dedupeKey string) {
+	if dedupeKey == "" || h.dedupeTTL <= 0 {
+		return
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := h.redis.Set(timeoutCtx, dedupeKey, dedupeStateDone, h.dedupeTTL).Err(); err != nil {
+		h.log.WithError(err).WithField("dedupeKey", dedupeKey).Warn("mark dedupe done error")
+	}
+}
+
+func (h *Handler) processingDedupeTTL() time.Duration {
+	if h.dedupeTTL <= 0 {
+		return 2 * time.Minute
+	}
+	const maxProcessingTTL = 5 * time.Minute
+	if h.dedupeTTL < maxProcessingTTL {
+		return h.dedupeTTL
+	}
+	return maxProcessingTTL
 }
 
 func (h *Handler) releaseDedupe(ctx context.Context, dedupeKey string) {
