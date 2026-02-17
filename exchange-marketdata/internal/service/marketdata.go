@@ -27,6 +27,8 @@ type MarketDataService struct {
 	// 内存盘口
 	depths map[string]*Depth
 	mu     sync.RWMutex
+	// 盘口订单索引（symbol -> orderID -> order level），用于增量更新深度。
+	openOrders map[string]map[int64]*orderLevel
 
 	// 最近成交
 	trades map[string][]*Trade
@@ -37,6 +39,13 @@ type MarketDataService struct {
 	// 订阅者
 	subscribers map[string][]chan *Event
 	subMu       sync.RWMutex
+}
+
+type orderLevel struct {
+	OrderID   int64
+	Side      int
+	Price     int64
+	LeavesQty int64
 }
 
 // Depth 盘口
@@ -107,6 +116,7 @@ func NewMarketDataService(redisClient RedisClient, cfg *Config) *MarketDataServi
 		depths:      make(map[string]*Depth),
 		trades:      make(map[string][]*Trade),
 		tickers:     make(map[string]*Ticker),
+		openOrders:  make(map[string]map[int64]*orderLevel),
 		subscribers: make(map[string][]chan *Event),
 	}
 }
@@ -353,6 +363,17 @@ type OrderCanceledData struct {
 	LeavesQty int64 `json:"LeavesQty"`
 }
 
+type OrderPartiallyFilledData struct {
+	OrderID   int64 `json:"OrderID"`
+	UserID    int64 `json:"UserID"`
+	LeavesQty int64 `json:"LeavesQty"`
+}
+
+type OrderFilledData struct {
+	OrderID int64 `json:"OrderID"`
+	UserID  int64 `json:"UserID"`
+}
+
 func (s *MarketDataService) processEvent(ctx context.Context, msg redis.XMessage) {
 	data, ok := msg.Values["data"].(string)
 	if !ok {
@@ -377,6 +398,8 @@ func (s *MarketDataService) processEventData(data string) error {
 		s.handleTradeCreated(event)
 	case "ORDER_ACCEPTED":
 		s.handleOrderAccepted(event)
+	case "ORDER_PARTIALLY_FILLED":
+		s.handleOrderPartiallyFilled(event)
 	case "ORDER_CANCELED", "ORDER_FILLED":
 		s.handleOrderRemoved(event)
 	}
@@ -502,9 +525,18 @@ func (s *MarketDataService) handleOrderAccepted(event MatchingEvent) {
 	// 添加到盘口
 	level := PriceLevel{Price: order.Price, Qty: order.Qty}
 	if order.Side == 1 { // BUY
-		depth.Bids = insertLevel(depth.Bids, level, true)
+		depth.Bids = applyLevelDelta(depth.Bids, level.Price, level.Qty, true)
 	} else { // SELL
-		depth.Asks = insertLevel(depth.Asks, level, false)
+		depth.Asks = applyLevelDelta(depth.Asks, level.Price, level.Qty, false)
+	}
+	if _, ok := s.openOrders[event.Symbol]; !ok {
+		s.openOrders[event.Symbol] = make(map[int64]*orderLevel)
+	}
+	s.openOrders[event.Symbol][order.OrderID] = &orderLevel{
+		OrderID:   order.OrderID,
+		Side:      order.Side,
+		Price:     order.Price,
+		LeavesQty: order.Qty,
 	}
 
 	depth.LastUpdateID = event.Seq
@@ -514,17 +546,100 @@ func (s *MarketDataService) handleOrderAccepted(event MatchingEvent) {
 	s.publishDepth(event.Symbol, depth)
 }
 
-func (s *MarketDataService) handleOrderRemoved(event MatchingEvent) {
-	// 简化实现：实际需要根据订单信息更新盘口
+func (s *MarketDataService) handleOrderPartiallyFilled(event MatchingEvent) {
+	var data OrderPartiallyFilledData
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	depth := s.depths[event.Symbol]
-	if depth != nil {
-		depth.LastUpdateID = event.Seq
-		depth.TimestampMs = time.Now().UnixMilli()
-		s.publishDepth(event.Symbol, depth)
+	if depth == nil {
+		return
 	}
+
+	ordersBySymbol, ok := s.openOrders[event.Symbol]
+	if !ok {
+		return
+	}
+	entry, ok := ordersBySymbol[data.OrderID]
+	if !ok || entry == nil {
+		return
+	}
+
+	leavesQty := data.LeavesQty
+	if leavesQty < 0 {
+		leavesQty = 0
+	}
+
+	deltaQty := leavesQty - entry.LeavesQty
+	if entry.Side == 1 {
+		depth.Bids = applyLevelDelta(depth.Bids, entry.Price, deltaQty, true)
+	} else {
+		depth.Asks = applyLevelDelta(depth.Asks, entry.Price, deltaQty, false)
+	}
+
+	if leavesQty == 0 {
+		delete(ordersBySymbol, data.OrderID)
+		if len(ordersBySymbol) == 0 {
+			delete(s.openOrders, event.Symbol)
+		}
+	} else {
+		entry.LeavesQty = leavesQty
+	}
+
+	depth.LastUpdateID = event.Seq
+	depth.TimestampMs = time.Now().UnixMilli()
+	s.publishDepth(event.Symbol, depth)
+}
+
+func (s *MarketDataService) handleOrderRemoved(event MatchingEvent) {
+	var orderID int64
+	switch event.Type {
+	case "ORDER_CANCELED":
+		var data OrderCanceledData
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			return
+		}
+		orderID = data.OrderID
+	case "ORDER_FILLED":
+		var data OrderFilledData
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			return
+		}
+		orderID = data.OrderID
+	default:
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	depth := s.depths[event.Symbol]
+	if depth == nil {
+		return
+	}
+
+	if ordersBySymbol, ok := s.openOrders[event.Symbol]; ok {
+		if entry, exists := ordersBySymbol[orderID]; exists && entry != nil {
+			deltaQty := -entry.LeavesQty
+			if entry.Side == 1 {
+				depth.Bids = applyLevelDelta(depth.Bids, entry.Price, deltaQty, true)
+			} else {
+				depth.Asks = applyLevelDelta(depth.Asks, entry.Price, deltaQty, false)
+			}
+			delete(ordersBySymbol, orderID)
+			if len(ordersBySymbol) == 0 {
+				delete(s.openOrders, event.Symbol)
+			}
+		}
+	}
+
+	depth.LastUpdateID = event.Seq
+	depth.TimestampMs = time.Now().UnixMilli()
+	s.publishDepth(event.Symbol, depth)
 }
 
 func (s *MarketDataService) publish(symbol, dataType string, data interface{}) {
@@ -655,6 +770,29 @@ func insertLevel(levels []PriceLevel, level PriceLevel, descending bool) []Price
 	copy(levels[i+1:], levels[i:])
 	levels[i] = level
 	return levels
+}
+
+// applyLevelDelta 按价格档位增量调整数量，保持排序。
+// delta > 0: 增量；delta < 0: 减量；调整后 <=0 则移除该档位。
+func applyLevelDelta(levels []PriceLevel, price int64, delta int64, descending bool) []PriceLevel {
+	if delta == 0 {
+		return levels
+	}
+	for i, current := range levels {
+		if current.Price != price {
+			continue
+		}
+		nextQty := current.Qty + delta
+		if nextQty <= 0 {
+			return append(levels[:i], levels[i+1:]...)
+		}
+		levels[i].Qty = nextQty
+		return levels
+	}
+	if delta < 0 {
+		return levels
+	}
+	return insertLevel(levels, PriceLevel{Price: price, Qty: delta}, descending)
 }
 
 func formatPercent(p float64) string {
