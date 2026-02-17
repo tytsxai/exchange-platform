@@ -4,7 +4,10 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // WalletRepository 钱包仓储
@@ -391,6 +394,69 @@ func (r *WalletRepository) UpdateWithdrawalStatus(ctx context.Context, withdrawI
 		_, err := r.db.ExecContext(ctx, query, status, withdrawID)
 		return err
 	}
+}
+
+// UpdateWithdrawalStatusCAS 条件更新提现状态，返回是否命中并更新成功
+func (r *WalletRepository) UpdateWithdrawalStatusCAS(ctx context.Context, withdrawID int64, expectedStatuses []int, status int, approvedBy int64, txid string) (bool, error) {
+	if withdrawID <= 0 {
+		return false, errors.New("invalid withdrawID")
+	}
+	if len(expectedStatuses) == 0 {
+		return false, errors.New("expected statuses required")
+	}
+
+	now := time.Now().UnixMilli()
+	var (
+		query string
+		args  []interface{}
+	)
+	switch status {
+	case WithdrawStatusApproved:
+		query = `
+			UPDATE exchange_wallet.withdrawals
+			SET status = $1, approved_at_ms = $2, approved_by = $3
+			WHERE withdraw_id = $4 AND status = ANY($5)
+		`
+		args = []interface{}{status, now, approvedBy, withdrawID, pq.Array(expectedStatuses)}
+	case WithdrawStatusRejected:
+		query = `
+			UPDATE exchange_wallet.withdrawals
+			SET status = $1, approved_at_ms = $2, approved_by = $3
+			WHERE withdraw_id = $4 AND status = ANY($5)
+		`
+		args = []interface{}{status, now, approvedBy, withdrawID, pq.Array(expectedStatuses)}
+	case WithdrawStatusProcessing:
+		query = `
+			UPDATE exchange_wallet.withdrawals
+			SET status = $1, sent_at_ms = $2
+			WHERE withdraw_id = $3 AND status = ANY($4)
+		`
+		args = []interface{}{status, now, withdrawID, pq.Array(expectedStatuses)}
+	case WithdrawStatusCompleted:
+		query = `
+			UPDATE exchange_wallet.withdrawals
+			SET status = $1, txid = $2, completed_at_ms = $3
+			WHERE withdraw_id = $4 AND status = ANY($5)
+		`
+		args = []interface{}{status, txid, now, withdrawID, pq.Array(expectedStatuses)}
+	default:
+		query = `
+			UPDATE exchange_wallet.withdrawals
+			SET status = $1
+			WHERE withdraw_id = $2 AND status = ANY($3)
+		`
+		args = []interface{}{status, withdrawID, pq.Array(expectedStatuses)}
+	}
+
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // ListWithdrawals 列出提现记录

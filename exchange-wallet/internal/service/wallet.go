@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/exchange/wallet/internal/client"
@@ -20,6 +22,11 @@ type WalletService struct {
 	clearingCli ClearingClient
 	tronCli     TronClient
 }
+
+var (
+	ErrInvalidWithdrawRequest = errors.New("invalid withdraw request")
+	ErrInvalidWithdrawState   = errors.New("invalid withdraw state")
+)
 
 // IDGenerator ID 生成器接口
 type IDGenerator interface {
@@ -177,6 +184,17 @@ type WithdrawResponse struct {
 
 // RequestWithdraw 申请提现
 func (s *WalletService) RequestWithdraw(ctx context.Context, req *WithdrawRequest) (*WithdrawResponse, error) {
+	if req == nil {
+		return &WithdrawResponse{ErrorCode: "INVALID_PARAM"}, nil
+	}
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	req.Asset = strings.TrimSpace(req.Asset)
+	req.Network = strings.TrimSpace(req.Network)
+	req.Address = strings.TrimSpace(req.Address)
+	if req.IdempotencyKey == "" || req.UserID <= 0 || req.Asset == "" || req.Network == "" || req.Address == "" || req.Amount <= 0 {
+		return &WithdrawResponse{ErrorCode: "INVALID_PARAM"}, nil
+	}
+
 	// 幂等检查
 	existing, err := s.repo.GetWithdrawalByIdempotencyKey(ctx, req.IdempotencyKey)
 	if err != nil {
@@ -264,11 +282,33 @@ func (s *WalletService) ListPendingWithdrawals(ctx context.Context, limit int) (
 
 // ApproveWithdraw 审批提现
 func (s *WalletService) ApproveWithdraw(ctx context.Context, withdrawID, approverID int64) error {
-	return s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusApproved, approverID, "")
+	if withdrawID <= 0 || approverID <= 0 {
+		return ErrInvalidWithdrawRequest
+	}
+	withdraw, err := s.repo.GetWithdrawal(ctx, withdrawID)
+	if err != nil {
+		return fmt.Errorf("get withdraw: %w", err)
+	}
+	if withdraw == nil {
+		return fmt.Errorf("withdraw not found")
+	}
+	switch withdraw.Status {
+	case repository.WithdrawStatusApproved:
+		return nil // 幂等
+	case repository.WithdrawStatusPending:
+		// ok
+	default:
+		return fmt.Errorf("%w: current=%d target=%d", ErrInvalidWithdrawState, withdraw.Status, repository.WithdrawStatusApproved)
+	}
+
+	return s.transitionWithdrawalStatus(ctx, withdrawID, []int{repository.WithdrawStatusPending}, repository.WithdrawStatusApproved, approverID, "")
 }
 
 // RejectWithdraw 拒绝提现
 func (s *WalletService) RejectWithdraw(ctx context.Context, withdrawID, approverID int64) error {
+	if withdrawID <= 0 || approverID <= 0 {
+		return ErrInvalidWithdrawRequest
+	}
 	// 1. 获取提现记录
 	withdraw, err := s.repo.GetWithdrawal(ctx, withdrawID)
 	if err != nil {
@@ -278,6 +318,26 @@ func (s *WalletService) RejectWithdraw(ctx context.Context, withdrawID, approver
 		return fmt.Errorf("withdraw not found")
 	}
 
+	// 2. 先通过 CAS 抢占状态（PENDING -> REJECTED），避免并发下先解冻后被审批覆盖。
+	switch withdraw.Status {
+	case repository.WithdrawStatusPending:
+		if err := s.transitionWithdrawalStatus(
+			ctx,
+			withdrawID,
+			[]int{repository.WithdrawStatusPending},
+			repository.WithdrawStatusRejected,
+			approverID,
+			"",
+		); err != nil {
+			return err
+		}
+	case repository.WithdrawStatusRejected:
+		// 幂等重试：继续执行解冻，利用 idempotency key 保证不会重复扣改。
+	default:
+		return fmt.Errorf("%w: current=%d target=%d", ErrInvalidWithdrawState, withdraw.Status, repository.WithdrawStatusRejected)
+	}
+
+	// 3. 解冻资金（幂等）
 	unfreezeReq := &client.UnfreezeRequest{
 		IdempotencyKey: fmt.Sprintf("reject:%d", withdrawID),
 		UserID:         withdraw.UserID,
@@ -291,12 +351,14 @@ func (s *WalletService) RejectWithdraw(ctx context.Context, withdrawID, approver
 		return fmt.Errorf("unfreeze funds: %w", err)
 	}
 
-	// 2. 更新状态
-	return s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusRejected, approverID, "")
+	return nil
 }
 
 // CompleteWithdraw 完成提现（出款后调用）
 func (s *WalletService) CompleteWithdraw(ctx context.Context, withdrawID int64, txid string) error {
+	if withdrawID <= 0 || strings.TrimSpace(txid) == "" {
+		return ErrInvalidWithdrawRequest
+	}
 	// 1. 获取提现记录
 	withdraw, err := s.repo.GetWithdrawal(ctx, withdrawID)
 	if err != nil {
@@ -304,6 +366,14 @@ func (s *WalletService) CompleteWithdraw(ctx context.Context, withdrawID int64, 
 	}
 	if withdraw == nil {
 		return fmt.Errorf("withdraw not found")
+	}
+	switch withdraw.Status {
+	case repository.WithdrawStatusCompleted:
+		return nil // 幂等
+	case repository.WithdrawStatusApproved, repository.WithdrawStatusProcessing:
+		// ok
+	default:
+		return fmt.Errorf("%w: current=%d target=%d", ErrInvalidWithdrawState, withdraw.Status, repository.WithdrawStatusCompleted)
 	}
 
 	deductReq := &client.DeductRequest{
@@ -320,11 +390,40 @@ func (s *WalletService) CompleteWithdraw(ctx context.Context, withdrawID int64, 
 	}
 
 	// 2. 标记完成
-	if err := s.repo.UpdateWithdrawalStatus(ctx, withdrawID, repository.WithdrawStatusCompleted, 0, txid); err != nil {
+	if err := s.transitionWithdrawalStatus(
+		ctx,
+		withdrawID,
+		[]int{repository.WithdrawStatusApproved, repository.WithdrawStatusProcessing},
+		repository.WithdrawStatusCompleted,
+		0,
+		strings.TrimSpace(txid),
+	); err != nil {
 		log.Printf("[CRITICAL] Funds deducted but failed to mark withdrawal completed: withdrawID=%d err=%v", withdrawID, err)
 		return err
 	}
 	return nil
+}
+
+func (s *WalletService) transitionWithdrawalStatus(ctx context.Context, withdrawID int64, expected []int, target int, approvedBy int64, txid string) error {
+	updated, err := s.repo.UpdateWithdrawalStatusCAS(ctx, withdrawID, expected, target, approvedBy, txid)
+	if err != nil {
+		return err
+	}
+	if updated {
+		return nil
+	}
+
+	latest, err := s.repo.GetWithdrawal(ctx, withdrawID)
+	if err != nil {
+		return fmt.Errorf("reload withdraw: %w", err)
+	}
+	if latest == nil {
+		return fmt.Errorf("withdraw not found")
+	}
+	if latest.Status == target {
+		return nil
+	}
+	return fmt.Errorf("%w: current=%d target=%d", ErrInvalidWithdrawState, latest.Status, target)
 }
 
 // 生成地址（简化实现）

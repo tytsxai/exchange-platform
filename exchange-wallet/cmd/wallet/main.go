@@ -351,7 +351,16 @@ func main() {
 		}
 
 		if err := svc.ApproveWithdraw(r.Context(), req.WithdrawID, approverID); err != nil {
-			writeInternalError(w, err)
+			switch {
+			case errors.Is(err, service.ErrInvalidWithdrawRequest):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "invalid withdraw request")
+			case errors.Is(err, service.ErrInvalidWithdrawState):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid withdraw state")
+			case strings.Contains(strings.ToLower(err.Error()), "not found"):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeNotFound, "withdraw not found")
+			default:
+				writeInternalError(w, err)
+			}
 			return
 		}
 
@@ -374,7 +383,16 @@ func main() {
 		}
 
 		if err := svc.RejectWithdraw(r.Context(), req.WithdrawID, approverID); err != nil {
-			writeInternalError(w, err)
+			switch {
+			case errors.Is(err, service.ErrInvalidWithdrawRequest):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "invalid withdraw request")
+			case errors.Is(err, service.ErrInvalidWithdrawState):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid withdraw state")
+			case strings.Contains(strings.ToLower(err.Error()), "not found"):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeNotFound, "withdraw not found")
+			default:
+				writeInternalError(w, err)
+			}
 			return
 		}
 
@@ -397,7 +415,16 @@ func main() {
 		}
 
 		if err := svc.CompleteWithdraw(r.Context(), req.WithdrawID, req.Txid); err != nil {
-			writeInternalError(w, err)
+			switch {
+			case errors.Is(err, service.ErrInvalidWithdrawRequest):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidParam, "invalid withdraw request")
+			case errors.Is(err, service.ErrInvalidWithdrawState):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeInvalidRequest, "invalid withdraw state")
+			case strings.Contains(strings.ToLower(err.Error()), "not found"):
+				commonresp.WriteErrorCode(w, r, commonerrors.CodeNotFound, "withdraw not found")
+			default:
+				writeInternalError(w, err)
+			}
 			return
 		}
 

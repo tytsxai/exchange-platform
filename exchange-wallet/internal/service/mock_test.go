@@ -34,6 +34,8 @@ type mockWalletRepository struct {
 	createWithdrawalErr error
 	getWithdrawalErr    error
 	updateStatusErr     error
+	forceCASNoUpdate    bool
+	casNoUpdateStatus   int
 	listWithdrawalsErr  error
 }
 
@@ -172,18 +174,36 @@ func (m *mockWalletRepository) GetWithdrawal(ctx context.Context, withdrawID int
 	return m.withdrawals[withdrawID], nil
 }
 
-func (m *mockWalletRepository) UpdateWithdrawalStatus(ctx context.Context, withdrawID int64, status int, approvedBy int64, txid string) error {
+func (m *mockWalletRepository) UpdateWithdrawalStatusCAS(ctx context.Context, withdrawID int64, expectedStatuses []int, status int, approvedBy int64, txid string) (bool, error) {
 	if m.updateStatusErr != nil {
-		return m.updateStatusErr
+		return false, m.updateStatusErr
 	}
+	if m.forceCASNoUpdate {
+		if w, ok := m.withdrawals[withdrawID]; ok && m.casNoUpdateStatus > 0 {
+			w.Status = m.casNoUpdateStatus
+		}
+		return false, nil
+	}
+
 	if w, ok := m.withdrawals[withdrawID]; ok {
+		match := false
+		for _, current := range expectedStatuses {
+			if w.Status == current {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false, nil
+		}
 		w.Status = status
 		w.ApprovedBy = approvedBy
 		if txid != "" {
 			w.Txid = txid
 		}
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (m *mockWalletRepository) ListWithdrawals(ctx context.Context, userID int64, limit int) ([]*repository.Withdrawal, error) {

@@ -27,7 +27,7 @@ type WalletRepository interface {
 	CreateWithdrawal(ctx context.Context, w *repository.Withdrawal) error
 	GetWithdrawalByIdempotencyKey(ctx context.Context, key string) (*repository.Withdrawal, error)
 	GetWithdrawal(ctx context.Context, withdrawID int64) (*repository.Withdrawal, error)
-	UpdateWithdrawalStatus(ctx context.Context, withdrawID int64, status int, approvedBy int64, txid string) error
+	UpdateWithdrawalStatusCAS(ctx context.Context, withdrawID int64, expectedStatuses []int, status int, approvedBy int64, txid string) (bool, error)
 	ListWithdrawals(ctx context.Context, userID int64, limit int) ([]*repository.Withdrawal, error)
 	ListPendingWithdrawals(ctx context.Context, limit int) ([]*repository.Withdrawal, error)
 }
