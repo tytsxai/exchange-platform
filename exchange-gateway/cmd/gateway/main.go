@@ -328,24 +328,41 @@ func main() {
 
 	// 私有接口（需要鉴权）
 	privateMux := http.NewServeMux()
-	privateMux.HandleFunc("/v1/order", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
-	privateMux.HandleFunc("/v1/openOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
-	privateMux.HandleFunc("/v1/allOrders", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
-	privateMux.HandleFunc("/v1/myTrades", proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))
-	privateMux.HandleFunc("/v1/account", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken, l))
-	privateMux.HandleFunc("/v1/ledger", proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken, l))
+	privateMux.Handle("/v1/order",
+		middleware.RequirePermissionByMethod(map[string]int{
+			http.MethodGet:    middleware.PermRead,
+			http.MethodPost:   middleware.PermTrade,
+			http.MethodDelete: middleware.PermTrade,
+		}, 0)(http.HandlerFunc(proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))),
+	)
+	privateMux.Handle("/v1/openOrders",
+		middleware.RequirePermission(middleware.PermRead)(http.HandlerFunc(proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))),
+	)
+	privateMux.Handle("/v1/allOrders",
+		middleware.RequirePermission(middleware.PermRead)(http.HandlerFunc(proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))),
+	)
+	privateMux.Handle("/v1/myTrades",
+		middleware.RequirePermission(middleware.PermRead)(http.HandlerFunc(proxyHandler(cfg.OrderServiceURL, cfg.InternalToken, l))),
+	)
+	privateMux.Handle("/v1/account",
+		middleware.RequirePermission(middleware.PermRead)(http.HandlerFunc(proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken, l))),
+	)
+	privateMux.Handle("/v1/ledger",
+		middleware.RequirePermission(middleware.PermRead)(http.HandlerFunc(proxyHandler(cfg.ClearingServiceURL, cfg.InternalToken, l))),
+	)
 
-	// 组合中间件
-	authHandler := middleware.Auth(authCfg)(privateMux)
-	rateLimitedAuth := middleware.RateLimit(userLimiter, middleware.UserKeyFunc)(authHandler)
+	// 组合中间件：
+	// 顺序必须是 Auth -> UserRateLimit（依赖已解析出的 userID）。
+	rateLimitedPrivate := middleware.RateLimit(userLimiter, middleware.UserKeyFunc)(privateMux)
+	authHandler := middleware.Auth(authCfg)(rateLimitedPrivate)
 
 	// 注册私有路由
-	mux.Handle("/v1/order", rateLimitedAuth)
-	mux.Handle("/v1/openOrders", rateLimitedAuth)
-	mux.Handle("/v1/allOrders", rateLimitedAuth)
-	mux.Handle("/v1/myTrades", rateLimitedAuth)
-	mux.Handle("/v1/account", rateLimitedAuth)
-	mux.Handle("/v1/ledger", rateLimitedAuth)
+	mux.Handle("/v1/order", authHandler)
+	mux.Handle("/v1/openOrders", authHandler)
+	mux.Handle("/v1/allOrders", authHandler)
+	mux.Handle("/v1/myTrades", authHandler)
+	mux.Handle("/v1/account", authHandler)
+	mux.Handle("/v1/ledger", authHandler)
 
 	// 应用 IP 限流到所有请求
 	handler := middleware.RateLimit(ipLimiter, middleware.IPKeyFunc)(mux)

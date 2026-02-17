@@ -387,7 +387,9 @@ func main() {
 	})
 
 	// 中间件链
-	handler := authMiddleware(tokenManager, mux)
+	var handler http.Handler = mux
+	handler = adminPermissionMiddleware(repo, handler)
+	handler = authMiddleware(tokenManager, handler)
 	handler = adminTokenMiddleware(cfg.AdminToken, handler)
 	handler = limitBodyMiddleware(maxBodyBytes, handler)
 	handler = commonresp.RequestIDMiddleware(handler)
@@ -525,6 +527,109 @@ func adminTokenMiddleware(adminToken string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+type adminPermissionReader interface {
+	GetUserPermissions(ctx context.Context, userID int64) ([]string, error)
+}
+
+type adminRoutePermission struct {
+	Method      string
+	Path        string
+	PrefixMatch bool
+	AnyOf       []string
+}
+
+var adminRoutePermissions = []adminRoutePermission{
+	{Method: http.MethodGet, Path: "/admin/status", AnyOf: []string{"dashboard:read", "symbol:read", "risk:read", "audit:read"}},
+	{Method: http.MethodGet, Path: "/admin/symbols", AnyOf: []string{"symbol:read", "symbol:write", "risk:read"}},
+	{Method: http.MethodPost, Path: "/admin/symbols", AnyOf: []string{"symbol:write", "risk:write"}},
+	{Method: http.MethodGet, Path: "/admin/symbols/", PrefixMatch: true, AnyOf: []string{"symbol:read", "symbol:write", "risk:read"}},
+	{Method: http.MethodPatch, Path: "/admin/symbols/", PrefixMatch: true, AnyOf: []string{"symbol:write", "risk:write"}},
+	{Method: http.MethodPost, Path: "/admin/killSwitch", AnyOf: []string{"killswitch:execute", "risk:write"}},
+	{Method: http.MethodGet, Path: "/admin/auditLogs", AnyOf: []string{"audit:read"}},
+	{Method: http.MethodGet, Path: "/admin/roles", AnyOf: []string{"rbac:read", "user:read", "risk:read"}},
+	{Method: http.MethodGet, Path: "/admin/userRoles", AnyOf: []string{"rbac:read", "user:read", "risk:read"}},
+	{Method: http.MethodPost, Path: "/admin/userRoles", AnyOf: []string{"rbac:write", "user:write", "risk:write"}},
+	{Method: http.MethodDelete, Path: "/admin/userRoles", AnyOf: []string{"rbac:write", "user:write", "risk:write"}},
+}
+
+func adminPermissionMiddleware(reader adminPermissionReader, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/admin") || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		requiredPerms, matched := matchAdminRoutePermission(r.Method, r.URL.Path)
+		if !matched {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodePermissionDenied, "permission denied")
+			return
+		}
+
+		actorID := getActorID(r)
+		if actorID <= 0 {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeUnauthenticated, "unauthorized")
+			return
+		}
+
+		perms, err := reader.GetUserPermissions(r.Context(), actorID)
+		if err != nil {
+			log.Printf("load admin permissions failed: user=%d err=%v", actorID, err)
+			commonresp.WriteErrorCode(w, r, commonerrors.CodeInternal, "internal error")
+			return
+		}
+		if !hasAnyPermission(perms, requiredPerms) {
+			commonresp.WriteErrorCode(w, r, commonerrors.CodePermissionDenied, "permission denied")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func matchAdminRoutePermission(method, path string) ([]string, bool) {
+	for _, rule := range adminRoutePermissions {
+		if rule.Method != method {
+			continue
+		}
+		if rule.PrefixMatch {
+			if strings.HasPrefix(path, rule.Path) {
+				return rule.AnyOf, true
+			}
+			continue
+		}
+		if path == rule.Path {
+			return rule.AnyOf, true
+		}
+	}
+	return nil, false
+}
+
+func hasAnyPermission(granted []string, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	if len(granted) == 0 {
+		return false
+	}
+	grantedSet := make(map[string]struct{}, len(granted))
+	for _, perm := range granted {
+		perm = strings.TrimSpace(perm)
+		if perm == "" {
+			continue
+		}
+		grantedSet[perm] = struct{}{}
+	}
+	if _, ok := grantedSet["*"]; ok {
+		return true
+	}
+	for _, need := range required {
+		if _, ok := grantedSet[need]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func metricsAuthorized(r *http.Request, token string) bool {

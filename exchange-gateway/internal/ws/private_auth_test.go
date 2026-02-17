@@ -18,7 +18,7 @@ func TestAuthAuthenticateRequestQueryAuth(t *testing.T) {
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			if req.APIKey == "query-key" && req.Signature == "good-signature" {
-				return 9, 0, nil
+				return 9, middleware.PermRead, nil
 			}
 			return 0, 0, errInvalidSignature
 		},
@@ -42,6 +42,28 @@ func TestAuthAuthenticateRequestQueryAuth(t *testing.T) {
 	}
 	if userID != 9 {
 		t.Fatalf("userID = %d, want 9", userID)
+	}
+}
+
+func TestAuthAuthenticateRequestNoReadPermission(t *testing.T) {
+	authCfg := &middleware.AuthConfig{
+		TimeWindow: 30 * time.Second,
+		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
+			return 9, middleware.PermTrade, nil
+		},
+	}
+
+	req := httptest.NewRequest("GET", "/ws/private", nil)
+	query := req.URL.Query()
+	query.Set(queryAPIKey, "test")
+	query.Set(queryTimestamp, strconv.FormatInt(time.Now().UnixMilli(), 10))
+	query.Set(queryNonce, "nonce")
+	query.Set(querySignature, "sig")
+	req.URL.RawQuery = query.Encode()
+
+	_, err := authenticateRequest(req, authCfg)
+	if err == nil {
+		t.Fatal("expected permission denied")
 	}
 }
 
@@ -129,10 +151,10 @@ func TestAuthAuthenticateRequestInvalidSignature(t *testing.T) {
 var errInvalidSignature = fmt.Errorf("invalid signature")
 
 func TestAuthAuthenticateRequestTimeout(t *testing.T) {
-	origTimeout := authTimeout
-	authTimeout = 10 * time.Millisecond
+	origTimeout := getAuthTimeout()
+	setAuthTimeoutForTest(10 * time.Millisecond)
 	defer func() {
-		authTimeout = origTimeout
+		setAuthTimeoutForTest(origTimeout)
 	}()
 
 	authCfg := &middleware.AuthConfig{

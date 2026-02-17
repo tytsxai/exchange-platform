@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // AdminRepository 后台仓储
@@ -259,15 +261,43 @@ func (r *AdminRepository) ListRoles(ctx context.Context) ([]*Role, error) {
 	var roles []*Role
 	for rows.Next() {
 		var role Role
-		var perms string
+		var perms pq.StringArray
 		if err := rows.Scan(&role.RoleID, &role.Name, &perms, &role.CreatedAtMs, &role.UpdatedAtMs); err != nil {
 			return nil, err
 		}
-		// 简化：实际应该解析 PostgreSQL 数组
-		role.Permissions = []string{perms}
+		role.Permissions = append([]string(nil), perms...)
 		roles = append(roles, &role)
 	}
 	return roles, nil
+}
+
+// GetUserPermissions 获取用户聚合权限（合并用户所有角色）
+func (r *AdminRepository) GetUserPermissions(ctx context.Context, userID int64) ([]string, error) {
+	query := `
+		SELECT DISTINCT permission
+		FROM exchange_admin.user_roles ur
+		JOIN exchange_admin.roles r ON r.role_id = ur.role_id
+		CROSS JOIN LATERAL unnest(r.permissions) AS permission
+		WHERE ur.user_id = $1
+	`
+	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	perms := make([]string, 0, 8)
+	for rows.Next() {
+		var perm string
+		if err := rows.Scan(&perm); err != nil {
+			return nil, err
+		}
+		perms = append(perms, perm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return perms, nil
 }
 
 // GetUserRoles 获取用户角色

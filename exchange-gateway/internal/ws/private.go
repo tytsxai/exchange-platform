@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/exchange/gateway/internal/middleware"
@@ -35,10 +36,10 @@ var upgrader = websocket.Upgrader{
 }
 
 var (
-	activityTimeout = 60 * time.Second
-	pingInterval    = 30 * time.Second
-	writeWait       = 10 * time.Second
-	authTimeout     = 5 * time.Second
+	activityTimeoutNanos int64 = int64(60 * time.Second)
+	pingIntervalNanos    int64 = int64(30 * time.Second)
+	writeWaitNanos       int64 = int64(10 * time.Second)
+	authTimeoutNanos     int64 = int64(5 * time.Second)
 )
 
 // PrivateHandler handles /ws/private connections.
@@ -67,7 +68,7 @@ func PrivateHandler(hub *Hub, authCfg *middleware.AuthConfig, allowedOrigins []s
 		client, err := hub.Subscribe(userID, conn)
 		if err != nil {
 			closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "too many connections")
-			_ = conn.WriteControl(websocket.CloseMessage, closeMsg, time.Now().Add(writeWait))
+			_ = conn.WriteControl(websocket.CloseMessage, closeMsg, time.Now().Add(getWriteWait()))
 			conn.Close()
 			return
 		}
@@ -103,10 +104,10 @@ func readPump(client *Client, userID int64, hub *Hub) {
 	}()
 
 	conn.SetReadLimit(4096)
-	conn.SetReadDeadline(time.Now().Add(activityTimeout))
+	conn.SetReadDeadline(time.Now().Add(getActivityTimeout()))
 	conn.SetPongHandler(func(string) error {
 		client.touch()
-		conn.SetReadDeadline(time.Now().Add(activityTimeout))
+		conn.SetReadDeadline(time.Now().Add(getActivityTimeout()))
 		return nil
 	})
 
@@ -115,12 +116,12 @@ func readPump(client *Client, userID int64, hub *Hub) {
 			break
 		}
 		client.touch()
-		conn.SetReadDeadline(time.Now().Add(activityTimeout))
+		conn.SetReadDeadline(time.Now().Add(getActivityTimeout()))
 	}
 }
 
 func writePump(client *Client, userID int64, hub *Hub) {
-	ticker := time.NewTicker(pingInterval)
+	ticker := time.NewTicker(getPingInterval())
 	defer func() {
 		ticker.Stop()
 		hub.Unsubscribe(userID, client)
@@ -130,7 +131,7 @@ func writePump(client *Client, userID int64, hub *Hub) {
 	for {
 		select {
 		case message, ok := <-client.send:
-			client.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			client.conn.SetWriteDeadline(time.Now().Add(getWriteWait()))
 			if !ok {
 				client.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
@@ -139,7 +140,7 @@ func writePump(client *Client, userID int64, hub *Hub) {
 				return
 			}
 		case <-ticker.C:
-			client.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			client.conn.SetWriteDeadline(time.Now().Add(getWriteWait()))
 			if err := client.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
@@ -180,16 +181,17 @@ func authenticateRequest(r *http.Request, cfg *middleware.AuthConfig) (int64, er
 		return 0, fmt.Errorf("timestamp expired")
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), authTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), getAuthTimeout())
 	defer cancel()
 
 	resultCh := make(chan struct {
-		userID int64
-		err    error
+		userID      int64
+		permissions int
+		err         error
 	}, 1)
 	go func() {
 		cleanQuery := cloneQueryWithoutSignature(query)
-		userID, _, err := cfg.VerifySignature(ctx, &middleware.VerifySignatureRequest{
+		userID, permissions, err := cfg.VerifySignature(ctx, &middleware.VerifySignatureRequest{
 			APIKey:    apiKey,
 			Timestamp: timestamp,
 			Nonce:     nonce,
@@ -201,15 +203,19 @@ func authenticateRequest(r *http.Request, cfg *middleware.AuthConfig) (int64, er
 			ClientIP:  middleware.ClientIPFromRequest(r),
 		})
 		resultCh <- struct {
-			userID int64
-			err    error
-		}{userID: userID, err: err}
+			userID      int64
+			permissions int
+			err         error
+		}{userID: userID, permissions: permissions, err: err}
 	}()
 
 	select {
 	case res := <-resultCh:
 		if res.err != nil {
 			return 0, fmt.Errorf("invalid signature")
+		}
+		if (res.permissions & middleware.PermRead) == 0 {
+			return 0, fmt.Errorf("permission denied")
 		}
 		return res.userID, nil
 	case <-ctx.Done():
@@ -274,9 +280,41 @@ func sign(secret, data string) string {
 }
 
 func closeWithCode(conn *websocket.Conn, code int, message string) {
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	conn.SetWriteDeadline(time.Now().Add(getWriteWait()))
 	conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(code, message))
 	conn.Close()
+}
+
+func getActivityTimeout() time.Duration {
+	return time.Duration(atomic.LoadInt64(&activityTimeoutNanos))
+}
+
+func setActivityTimeoutForTest(d time.Duration) {
+	atomic.StoreInt64(&activityTimeoutNanos, int64(d))
+}
+
+func getPingInterval() time.Duration {
+	return time.Duration(atomic.LoadInt64(&pingIntervalNanos))
+}
+
+func setPingIntervalForTest(d time.Duration) {
+	atomic.StoreInt64(&pingIntervalNanos, int64(d))
+}
+
+func getWriteWait() time.Duration {
+	return time.Duration(atomic.LoadInt64(&writeWaitNanos))
+}
+
+func setWriteWaitForTest(d time.Duration) {
+	atomic.StoreInt64(&writeWaitNanos, int64(d))
+}
+
+func getAuthTimeout() time.Duration {
+	return time.Duration(atomic.LoadInt64(&authTimeoutNanos))
+}
+
+func setAuthTimeoutForTest(d time.Duration) {
+	atomic.StoreInt64(&authTimeoutNanos, int64(d))
 }
 
 // PrivateMessage is sent to clients.

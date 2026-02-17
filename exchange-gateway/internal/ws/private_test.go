@@ -22,7 +22,7 @@ func TestAuthPrivateHandlerAuthAndBroadcast(t *testing.T) {
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			if req.APIKey == "test-api-key" && req.Signature == "sig-test" {
-				return 123, 0, nil
+				return 123, middleware.PermRead, nil
 			}
 			return 0, 0, errInvalidAPIKey
 		},
@@ -77,7 +77,7 @@ func TestAuthPrivateHandlerAuthFailure(t *testing.T) {
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			if req.APIKey == "test-api-key" && req.Signature == "sig-test" {
-				return 123, 0, nil
+				return 123, middleware.PermRead, nil
 			}
 			return 0, 0, errInvalidAPIKey
 		},
@@ -115,7 +115,7 @@ func TestAuthPrivateHandlerUnauthorizedResponse(t *testing.T) {
 	authCfg := &middleware.AuthConfig{
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
-			return 1, 0, nil
+			return 1, middleware.PermRead, nil
 		},
 	}
 	server := httptest.NewServer(PrivateHandler(hub, authCfg, []string{"*"}))
@@ -144,7 +144,7 @@ func TestAuthPrivateHandlerConnectionLimit(t *testing.T) {
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			if req.APIKey == "limit-key" && req.Signature == "limit-secret" {
-				return 55, 0, nil
+				return 55, middleware.PermRead, nil
 			}
 			return 0, 0, errInvalidAPIKey
 		},
@@ -173,7 +173,7 @@ func TestAuthHubCloseAll(t *testing.T) {
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			if req.APIKey == "close-key" && req.Signature == "close-secret" {
-				return 77, 0, nil
+				return 77, middleware.PermRead, nil
 			}
 			return 0, 0, errInvalidAPIKey
 		},

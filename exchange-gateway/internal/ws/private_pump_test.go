@@ -14,16 +14,16 @@ import (
 )
 
 func TestAuthPrivateHandlerPingAndRead(t *testing.T) {
-	origPing := pingInterval
-	origTimeout := activityTimeout
-	origWrite := writeWait
-	pingInterval = 10 * time.Millisecond
-	activityTimeout = 50 * time.Millisecond
-	writeWait = 50 * time.Millisecond
+	origPing := getPingInterval()
+	origTimeout := getActivityTimeout()
+	origWrite := getWriteWait()
+	setPingIntervalForTest(10 * time.Millisecond)
+	setActivityTimeoutForTest(50 * time.Millisecond)
+	setWriteWaitForTest(50 * time.Millisecond)
 	defer func() {
-		pingInterval = origPing
-		activityTimeout = origTimeout
-		writeWait = origWrite
+		setPingIntervalForTest(origPing)
+		setActivityTimeoutForTest(origTimeout)
+		setWriteWaitForTest(origWrite)
 	}()
 
 	hub := NewHub()
@@ -31,7 +31,7 @@ func TestAuthPrivateHandlerPingAndRead(t *testing.T) {
 		TimeWindow: 30 * time.Second,
 		VerifySignature: func(ctx context.Context, req *middleware.VerifySignatureRequest) (int64, int, error) {
 			if req.APIKey == "ping-key" && req.Signature == "ping-secret" {
-				return 1, 0, nil
+				return 1, middleware.PermRead, nil
 			}
 			return 0, 0, errInvalidAPIKey
 		},
