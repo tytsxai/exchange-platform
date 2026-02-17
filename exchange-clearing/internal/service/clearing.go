@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/exchange/clearing/internal/repository"
@@ -56,6 +57,13 @@ type FreezeResponse struct {
 }
 
 func (s *ClearingService) Freeze(ctx context.Context, req *FreezeRequest) (*FreezeResponse, error) {
+	if req == nil {
+		return &FreezeResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+	if err := validateBalanceMutation(req.IdempotencyKey, req.UserID, req.Asset, req.Amount); err != nil {
+		return &FreezeResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
 		IdempotencyKey: req.IdempotencyKey,
@@ -109,6 +117,13 @@ type UnfreezeResponse struct {
 }
 
 func (s *ClearingService) Unfreeze(ctx context.Context, req *UnfreezeRequest) (*UnfreezeResponse, error) {
+	if req == nil {
+		return &UnfreezeResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+	if err := validateBalanceMutation(req.IdempotencyKey, req.UserID, req.Asset, req.Amount); err != nil {
+		return &UnfreezeResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
 		IdempotencyKey: req.IdempotencyKey,
@@ -160,6 +175,13 @@ type DeductResponse struct {
 }
 
 func (s *ClearingService) Deduct(ctx context.Context, req *DeductRequest) (*DeductResponse, error) {
+	if req == nil {
+		return &DeductResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+	if err := validateBalanceMutation(req.IdempotencyKey, req.UserID, req.Asset, req.Amount); err != nil {
+		return &DeductResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+
 	entry := &repository.LedgerEntry{
 		LedgerID:       s.idGen.NextID(),
 		IdempotencyKey: req.IdempotencyKey,
@@ -208,6 +230,12 @@ type CreditResponse struct {
 }
 
 func (s *ClearingService) Credit(ctx context.Context, req *CreditRequest) (*CreditResponse, error) {
+	if req == nil {
+		return &CreditResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
+	if strings.TrimSpace(req.IdempotencyKey) == "" || req.UserID <= 0 || strings.TrimSpace(req.Asset) == "" {
+		return &CreditResponse{Success: false, ErrorCode: "INVALID_PARAM"}, nil
+	}
 	if req.Amount <= 0 {
 		return &CreditResponse{Success: false, ErrorCode: "INVALID_AMOUNT"}, nil
 	}
@@ -444,4 +472,20 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func validateBalanceMutation(idempotencyKey string, userID int64, asset string, amount int64) error {
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return fmt.Errorf("idempotency key required")
+	}
+	if userID <= 0 {
+		return fmt.Errorf("invalid userID")
+	}
+	if strings.TrimSpace(asset) == "" {
+		return fmt.Errorf("asset required")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("invalid amount")
+	}
+	return nil
 }

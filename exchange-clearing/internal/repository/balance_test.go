@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -126,5 +127,24 @@ func TestErrNotFound(t *testing.T) {
 	}
 	if ErrNotFound.Error() != "not found" {
 		t.Fatalf("expected 'not found', got %s", ErrNotFound.Error())
+	}
+}
+
+func TestIsUniqueViolationErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "duplicate keyword", err: errors.New("duplicate key value violates unique constraint"), want: true},
+		{name: "sqlstate 23505", err: errors.New("pq: SQLSTATE 23505"), want: true},
+		{name: "random", err: errors.New("timeout"), want: false},
+	}
+
+	for _, tc := range cases {
+		if got := isUniqueViolationErr(tc.err); got != tc.want {
+			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

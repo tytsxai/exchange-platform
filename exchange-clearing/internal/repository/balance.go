@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -359,6 +360,11 @@ func (r *BalanceRepository) updateBalance(ctx context.Context, tx *sql.Tx, userI
 		`
 		_, err := tx.ExecContext(ctx, query, userID, asset, available, frozen, now)
 		if err != nil {
+			// 并发首写同一 (user_id, asset) 时，可能触发唯一键冲突。
+			// 将其视为乐观锁冲突，交给上层重试。
+			if isUniqueViolationErr(err) {
+				return ErrOptimisticLockFailed
+			}
 			return fmt.Errorf("insert balance: %w", err)
 		}
 	} else {
@@ -438,4 +444,14 @@ func currentTimeMs() int64 {
 
 func currentTimeNano() int64 {
 	return time.Now().UnixNano()
+}
+
+func isUniqueViolationErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "unique") ||
+		strings.Contains(msg, "23505")
 }

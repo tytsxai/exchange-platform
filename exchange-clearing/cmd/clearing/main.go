@@ -105,6 +105,7 @@ func main() {
 	idGen := snowflakeIDGen{}
 	svc := service.NewClearingService(db, idGen)
 	svc.SetPublisher(clearingws.NewPublisher(redisClient, cfg.PrivateUserEventChannel))
+	metaResolver := newDBSymbolMetaResolver(db)
 
 	// 启动事件消费
 	var eventLoop health.LoopMonitor
@@ -119,7 +120,7 @@ func main() {
 				log.Printf("consumeEvents panic: %v\n%s", r, string(debug.Stack()))
 			}
 		}()
-		consumeEvents(ctx, redisClient, svc, cfg, &eventLoop)
+		consumeEvents(ctx, redisClient, svc, cfg, metaResolver, &eventLoop)
 	}()
 
 	// HTTP 服务
@@ -496,13 +497,13 @@ func checkConsumeLoop(loop *health.LoopMonitor) dependencyStatus {
 	}
 }
 
-func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, loop *health.LoopMonitor) {
+func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, resolver symbolMetaResolver, loop *health.LoopMonitor) {
 	log.Printf("Consuming events from %s", cfg.EventStream)
 
 	pendingTicker := time.NewTicker(30 * time.Second)
 	defer pendingTicker.Stop()
 
-	if err := processPendingEvents(ctx, redisClient, svc, cfg); err != nil {
+	if err := processPendingEvents(ctx, redisClient, svc, cfg, resolver); err != nil {
 		if loop != nil {
 			loop.SetError(err)
 		}
@@ -517,7 +518,7 @@ func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.
 		case <-ctx.Done():
 			return
 		case <-pendingTicker.C:
-			if err := processPendingEvents(ctx, redisClient, svc, cfg); err != nil {
+			if err := processPendingEvents(ctx, redisClient, svc, cfg, resolver); err != nil {
 				if loop != nil {
 					loop.SetError(err)
 				}
@@ -548,13 +549,13 @@ func consumeEvents(ctx context.Context, redisClient *redis.Client, svc *service.
 
 		for _, result := range results {
 			for _, msg := range result.Messages {
-				processEvent(ctx, redisClient, svc, cfg, msg)
+				processEvent(ctx, redisClient, svc, cfg, resolver, msg)
 			}
 		}
 	}
 }
 
-func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config) error {
+func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, resolver symbolMetaResolver) error {
 	if summary, err := redisClient.XPending(ctx, cfg.EventStream, cfg.ConsumerGroup).Result(); err == nil {
 		streamPending.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Set(float64(summary.Count))
 	}
@@ -606,7 +607,7 @@ func processPendingEvents(ctx context.Context, redisClient *redis.Client, svc *s
 			redisClient.XAck(ctx, cfg.EventStream, cfg.ConsumerGroup, msg.ID)
 			continue
 		}
-		processEvent(ctx, redisClient, svc, cfg, msg)
+		processEvent(ctx, redisClient, svc, cfg, resolver, msg)
 	}
 	return nil
 }
@@ -628,7 +629,7 @@ func sendToDLQ(ctx context.Context, redisClient *redis.Client, stream, group, co
 	return err
 }
 
-func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, msg redis.XMessage) {
+func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.ClearingService, cfg *config.Config, resolver symbolMetaResolver, msg redis.XMessage) {
 	data, ok := msg.Values["data"].(string)
 	if !ok {
 		redisClient.XAck(ctx, cfg.EventStream, cfg.ConsumerGroup, msg.ID)
@@ -655,13 +656,25 @@ func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.C
 		return
 	}
 
-	// 解析 symbol 获取 base/quote
-	baseAsset, quoteAsset := parseSymbol(event.Symbol)
+	// 解析 symbol 元数据（资产 + 精度）
+	meta, err := resolver.Resolve(ctx, event.Symbol)
+	if err != nil {
+		streamErrors.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Inc()
+		log.Printf("Resolve symbol meta error: symbol=%s err=%v", event.Symbol, err)
+		// 不 ACK，等待重试（并最终进入 DLQ）
+		return
+	}
 
 	// 计算资产变动
 	// TakerSide=1(BUY): taker 买入 base，卖出 quote；maker 卖出 base，买入 quote
 	// TakerSide=2(SELL): taker 卖出 base，买入 quote；maker 买入 base，卖出 quote
-	quoteQty := trade.Price * trade.Qty / 1e8 // 假设精度为 8 位
+	quoteQty, err := computeQuoteQty(trade.Price, trade.Qty, meta.QtyPrecision)
+	if err != nil {
+		streamErrors.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Inc()
+		log.Printf("Compute quote qty error: symbol=%s tradeID=%d err=%v", event.Symbol, trade.TradeID, err)
+		// 不 ACK，等待重试（并最终进入 DLQ）
+		return
+	}
 
 	var makerBaseDelta, makerQuoteDelta, takerBaseDelta, takerQuoteDelta int64
 	if trade.TakerSide == 1 { // Taker BUY
@@ -689,18 +702,18 @@ func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.C
 		MakerBaseDelta:  makerBaseDelta,
 		MakerQuoteDelta: makerQuoteDelta,
 		MakerFee:        makerFee,
-		MakerFeeAsset:   quoteAsset,
+		MakerFeeAsset:   meta.QuoteAsset,
 		TakerUserID:     trade.TakerUserID,
 		TakerOrderID:    fmt.Sprintf("%d", trade.TakerOrderID),
 		TakerBaseDelta:  takerBaseDelta,
 		TakerQuoteDelta: takerQuoteDelta,
 		TakerFee:        takerFee,
-		TakerFeeAsset:   quoteAsset,
-		BaseAsset:       baseAsset,
-		QuoteAsset:      quoteAsset,
+		TakerFeeAsset:   meta.QuoteAsset,
+		BaseAsset:       meta.BaseAsset,
+		QuoteAsset:      meta.QuoteAsset,
 	}
 
-	_, err := svc.SettleTrade(ctx, req)
+	_, err = svc.SettleTrade(ctx, req)
 	if err != nil {
 		streamErrors.WithLabelValues(cfg.EventStream, cfg.ConsumerGroup).Inc()
 		log.Printf("Settle trade error: %v", err)
@@ -710,14 +723,6 @@ func processEvent(ctx context.Context, redisClient *redis.Client, svc *service.C
 
 	redisClient.XAck(ctx, cfg.EventStream, cfg.ConsumerGroup, msg.ID)
 	log.Printf("Settled trade %d", trade.TradeID)
-}
-
-func parseSymbol(symbol string) (base, quote string) {
-	// 简单实现：假设 quote 是 USDT
-	if len(symbol) > 4 && symbol[len(symbol)-4:] == "USDT" {
-		return symbol[:len(symbol)-4], "USDT"
-	}
-	return symbol, "USDT"
 }
 
 func metricsAuthorized(r *http.Request, token string) bool {
