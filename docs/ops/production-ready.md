@@ -94,6 +94,52 @@
 - 默认示例数据已对齐精度（见 `exchange-common/scripts/init-db.sql`）。
 - 存量数据库可执行：`scripts/align-symbol-precision.sql`（执行前务必备份）。
 
+### 1.9 API Key 权限必须在网关强制执行（防越权）
+
+风险：如果网关只做签名校验、不校验权限位（READ/TRADE/WITHDRAW），
+则“只读 Key”也可能发起下单/撤单等交易写操作，属于典型越权。
+
+落地方式（已实现）：
+- 网关私有路由按 method 强制权限：
+  - `/v1/order`: `GET=READ`，`POST/DELETE=TRADE`
+  - `/v1/openOrders` `/v1/allOrders` `/v1/myTrades` `/v1/account` `/v1/ledger`: `READ`
+- 私有 WebSocket `/ws/private` 连接要求至少具备 `READ` 权限。
+
+### 1.10 用户级限流必须在鉴权之后执行（防限流“退化成按 IP”）
+
+风险：若 user limiter 在 Auth 之前执行，拿不到 `userID`，会退化为按 IP 限流，
+导致同一用户跨 IP 绕限、或多用户共享出口 IP 时互相影响。
+
+落地方式（已实现）：
+- 私有路由中间件顺序调整为：`Auth -> UserRateLimit -> Handler`。
+
+### 1.11 清算侧禁止硬编码交易对资产与精度（防错账）
+
+风险：清算若硬编码 `USDT` 和固定 `1e8` 精度，遇到非 USDT 或不同精度交易对会算错 `quoteQty`，
+可能造成冻结/结算金额错误，属于资金一致性事故。
+
+落地方式（已实现）：
+- 成交流处理时改为从 `exchange_order.symbol_configs` 解析 `base_asset / quote_asset / qty_precision`。
+- 使用精度驱动的 `quoteQty` 计算（含溢出保护），替换硬编码逻辑。
+
+### 1.12 账户余额首写并发竞态需重试（防随机失败）
+
+风险：首次写入 `(user_id, asset)` 时并发请求可能同时 INSERT，
+其中一个会触发唯一键冲突并直接失败，导致“偶发下单/入账失败”。
+
+落地方式（已实现）：
+- 在余额仓储中将首写唯一键冲突识别为 `ErrOptimisticLockFailed`，交由上层重试流程处理。
+
+### 1.13 Admin API 必须在入口强制 RBAC（防高危操作被越权调用）
+
+风险：如果 admin 仅依赖 `Bearer + X-Admin-Token`，缺少每个接口的权限校验，
+则持有通用 admin token 的用户可能执行不属于自己职责的高危操作（如 kill switch、交易对配置修改）。
+
+落地方式（已实现）：
+- `exchange-admin` 新增入口 RBAC 中间件，对 `/admin/*` 按 `method + route` 强制权限检查。
+- 权限来自 `exchange_admin.user_roles -> roles.permissions` 聚合结果，支持 `*` 超级权限。
+- 采用默认拒绝（fail-closed）：新增 admin 路由若未配置权限规则，将直接拒绝，避免“忘记加鉴权即裸露”。
+
 ## 2. P1（不修会导致长期不稳定/难运维）
 
 ### 2.1 Redis Streams 消费稳定性
@@ -101,6 +147,13 @@
 - 消费组重启后 pending 消息处理策略（claim/重试/DLQ）需要明确并可观测。
 - 明确每个 consumer 的命名规则与部署副本数（防止同名 consumer 互相踢）。
 - 订单去重 TTL：`MATCHING_ORDER_DEDUP_TTL`（默认 24h），用于防止 Streams 重试导致重复下单。
+- 去重键状态采用 `processing -> done`，避免实例异常退出后“重复消息被误 ACK 丢弃”。
+
+### 2.1.1 撮合启动恢复（已补齐）
+
+- `exchange-matching` 已接入 `OrderLoader`，可在启动时从 `exchange_order.orders`
+  恢复 `NEW/PARTIALLY_FILLED` 的 LIMIT 挂单，降低“ACK 后进程异常”导致的挂单丢失风险。
+- 生产建议开启：`MATCHING_RECOVERY_ENABLED=true`（默认生产示例已开启）。
 
 ### 2.2 数据一致性与恢复演练
 
@@ -118,6 +171,17 @@
 - `/live`：仅表示进程存活，不依赖 DB/Redis/下游（用于容器 liveness/进程探活）。
 - `/ready`：包含依赖与消费循环健康（用于流量接入/编排就绪）。
 - 若使用编排系统，建议将 **liveness 指向 `/live`**，**readiness 指向 `/ready`**，避免下游短暂波动导致自身被重启。
+
+### 2.5 提现状态更新需使用条件更新（防并发覆盖状态）
+
+风险：如果提现状态更新仅按 `withdraw_id` 覆盖，审批/拒绝/完成在并发下会出现“后写覆盖先写”，
+进而造成资金状态与业务状态不一致（例如并发审批与拒绝）。
+
+落地方式（已实现）：
+- `wallet` 仓储新增 `UpdateWithdrawalStatusCAS`，SQL 条件包含 `status = ANY(expected_statuses)`。
+- 服务层统一走条件更新，若命中失败会回读最新状态：
+  - 已是目标状态：按幂等成功处理；
+  - 非目标状态：返回 `INVALID_WITHDRAW_STATE`，避免静默覆盖。
 
 ## 3. P2（质量门槛与文档）
 
