@@ -6,7 +6,7 @@
 
 - **应用**：Docker Compose（单机/少量机器）部署 8 个 Go 服务
 - **基础设施**：生产默认使用**托管 Postgres + 托管 Redis**（TLS + 密码）
-- **监控（推荐）**：Prometheus + Grafana（同机或内网），配置参考 `deploy/prod/prometheus.yml`，可选 compose `deploy/prod/docker-compose.monitoring.yml`
+- **监控（推荐）**：Prometheus + Alertmanager + Blackbox + Grafana（同机或内网），配置参考 `deploy/prod/prometheus.yml`，可选 compose `deploy/prod/docker-compose.monitoring.yml`
 - **对外暴露**：
   - `exchange-gateway`（HTTP 8080 + WS 8090）
   - （可选）`exchange-marketdata` 的 public WS 8094：需要你明确是否要对外；默认建议走内网或经反代限流
@@ -28,14 +28,19 @@
    - 复制 `deploy/prod/prod.env.example` → `deploy/prod/prod.env`，填入真实值
    - 特别注意：`API_KEY_SECRET_KEY` 必填且长度 >= 32（用于 API Key secret 加密）
    - 建议设置 `APP_VERSION=<tag>`（用于镜像打标与快速回滚）
+   - 若使用镜像仓库，设置 `IMAGE_REPOSITORY_PREFIX`（必须带 `/`，例如 `ghcr.io/your-org/`）
 2. 运行预检（会 fast-fail 防止误配）：
    - `bash exchange-common/scripts/prod-preflight.sh`
+   - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`（发布门禁：preflight + 迁移策略 + 镜像可拉取 + 验证）
+   - 首次上线前若环境尚未部署：`RUN_PROD_VERIFY=0 PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
 3. 部署：
    - 推荐一键脚本：`bash deploy/prod/deploy.sh`（默认 image-only，不会 `--build`；会先 preflight）
    - 如需源码构建（建议仅 dev/应急）：`BUILD_IMAGES=true ALLOW_SOURCE_BUILD_IN_NONDEV=true bash deploy/prod/deploy.sh`
    - 无侵入演练（不真正发布）：`DRY_RUN=true bash deploy/prod/deploy.sh`
+   - 非 dev 环境若跳过迁移，需显式确认：`RUN_MIGRATIONS=false MIGRATIONS_SKIP_ACK=true bash deploy/prod/deploy.sh`
    - 如需指定 env 文件：`PROD_ENV_FILE=deploy/prod/prod.env bash deploy/prod/deploy.sh`
    - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d`
+   - compose 自愈建议固化：`systemd` 模板见 `deploy/prod/systemd/exchange-restart-unhealthy.{service,timer}`
 4. 验证：
    - `curl -sf http://<gateway-host>:8080/live`
    - `curl -sf http://<gateway-host>:8080/health`
@@ -47,8 +52,13 @@
 - 启动（默认不暴露端口，仅内网可达）：
   - `cp deploy/prod/monitoring.env.example deploy/prod/monitoring.env`
   - 填写 `GRAFANA_ADMIN_PASSWORD`
+  - 在 `deploy/prod/alertmanager.yml` 配置真实通知通道
   - `docker compose -f deploy/prod/docker-compose.monitoring.yml --env-file deploy/prod/monitoring.env up -d`
   - 注意：该监控 compose 依赖 `exchange-prod-net`；先启动应用 compose（或手动 `docker network create exchange-prod-net`）
+  - 告警演练：`bash deploy/prod/alert-drill.sh fire`
+- 建议在 `deploy/prod/prod.env` 配置日志滚动（默认已给出）：
+  - `DOCKER_LOG_MAX_SIZE=20m`
+  - `DOCKER_LOG_MAX_FILE=5`
 
 如果你启用了 `METRICS_TOKEN`：
 - 将 token 写入 `deploy/prod/metrics.token`（该文件已被 gitignore）
@@ -57,7 +67,7 @@
 ## 快速回滚（最小动作）
 
 - 执行：`APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
-- 脚本会做 preflight 并按指定 tag 执行 image-only `up -d`
+- 脚本会做 preflight 并校验目标 tag 可拉取后执行 image-only `up -d`
 - 无侵入演练：`DRY_RUN=true APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
 
 ## 生产反代/TLS（建议）
@@ -70,3 +80,5 @@
 如果你暴露 `marketdata` 的 public WS（浏览器会带 `Origin`）：
 - 必须设置 `MARKETDATA_WS_ALLOW_ORIGINS`（禁止 `*`）
 - 建议保持 `MARKETDATA_WS_MAX_SUBSCRIPTIONS` 默认值，防止恶意订阅导致内存增长
+- 建议在边缘加连接与速率限制（示例：`deploy/prod/nginx.marketdata-ws.conf.example`）
+- 发布前执行：`bash scripts/check-public-exposure.sh`（确保仅 gateway / 可选 marketdata 暴露）

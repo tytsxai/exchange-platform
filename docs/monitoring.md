@@ -399,8 +399,9 @@ docker compose -f exchange-common/docker-compose.yml up -d
 
 ### Production Setup
 
-1. Configure external Prometheus/Grafana
-2. Set up alertmanager for notifications
-3. Configure log aggregation
-4. Set up distributed tracing collector
-5. Define SLOs and SLIs
+1. Use `deploy/prod/docker-compose.monitoring.yml` as baseline (Prometheus + Alertmanager + Blackbox + Grafana)
+2. Configure alert routing in `deploy/prod/alertmanager.yml` to real on-call channel
+3. Keep Prometheus rules in sync with `deploy/prod/alerts.yml`
+4. Run drill: `bash deploy/prod/alert-drill.sh fire` and confirm human notification
+5. Configure log aggregation and tracing collector
+6. Define SLOs and SLIs

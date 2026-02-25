@@ -14,6 +14,7 @@
 ## 1. 发布前预检（必做）
 
 - 准备生产环境变量：复制 `deploy/prod/prod.env.example` → `deploy/prod/prod.env`，填入真实值（特别注意 `API_KEY_SECRET_KEY` 必填且 >=32）
+- 若使用私有镜像仓库，设置 `IMAGE_REPOSITORY_PREFIX`（必须带结尾 `/`，例如 `ghcr.io/your-org/`）
 - 若生产 Redis 为 TLS-only（常见于托管 Redis），必须设置：
   - `REDIS_TLS=true`
   - 按需设置 `REDIS_SERVER_NAME`（SNI）、`REDIS_CACERT`（自签 CA）、`REDIS_CERT/REDIS_KEY`（mTLS）
@@ -27,6 +28,14 @@
   - 预检会强制校验密钥长度下限（默认 `32`，可通过 `MIN_SECRET_LENGTH` 覆盖）
   - 非 dev 环境下，`INTERNAL_TOKEN / AUTH_TOKEN_SECRET / API_KEY_SECRET_KEY / ADMIN_TOKEN` 任一不足最小长度都会 fast-fail
   - 非 dev 环境默认禁止 `APP_VERSION=latest`（避免不可追踪发布与回滚困难）；如需临时放行可设置 `ALLOW_LATEST_IMAGE_TAG=true`
+  - 非 dev 环境部署时，如跳过迁移需显式确认：`MIGRATIONS_SKIP_ACK=true`（防止“忘记迁移”静默上线）
+  - 非 dev 环境 image-only 发布会检查目标 tag 可拉取（`VERIFY_IMAGE_PULL=true`）
+- 运行发布门禁（建议发布流水线强制）：
+  - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+  - 首次上线前若目标环境尚未部署，可先执行：`RUN_PROD_VERIFY=0 PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+  - GitHub Actions 示例：`.github/workflows/prod-release-gate.yml`
+- 镜像发布流水线（不可变 tag）：
+  - GitHub Actions 示例：`.github/workflows/release-images.yml`
 - 精度一致性校验（资金口径）：确保 `price_precision == quote asset precision` 且 `qty_precision == base asset precision`
   - 如需修复存量数据：执行 `scripts/align-symbol-precision.sql`（务必先备份）
 
@@ -41,23 +50,33 @@
   - 需要执行迁移：
     - 自动：设置 `DB_URL` 且保持 `RUN_MIGRATIONS=auto`（默认）
     - 强制：`RUN_MIGRATIONS=true DB_URL=... bash deploy/prod/deploy.sh`
-    - 禁用：`RUN_MIGRATIONS=false bash deploy/prod/deploy.sh`
+    - 禁用（仅在已确认迁移完成时）：`RUN_MIGRATIONS=false MIGRATIONS_SKIP_ACK=true bash deploy/prod/deploy.sh`
   - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d`
 - 查看状态（含 healthcheck）：
   - `docker compose -f deploy/prod/docker-compose.yml ps`
   - 注意：`docker compose` 本身不会因 `unhealthy` 自动重启容器；建议配合外部编排/守护机制，或通过就绪检查告警 + 运维脚本执行重启
   - 可选最小守护：`bash deploy/prod/restart-unhealthy.sh`（重启 `running + unhealthy` 的服务）
+  - 建议生产固化为每分钟定时任务：
+    - `cron` 示例：`exchange-common/scripts/cron.example`
+    - `systemd timer` 示例：`deploy/prod/systemd/exchange-restart-unhealthy.{service,timer}`
+    - 启用示例：
+      - `sudo cp deploy/prod/systemd/exchange-restart-unhealthy.* /etc/systemd/system/`
+      - `sudo systemctl daemon-reload && sudo systemctl enable --now exchange-restart-unhealthy.timer`
 - 查看日志：
   - `docker compose -f deploy/prod/docker-compose.yml logs -f gateway`
+  - 生产建议配置日志滚动（`prod.env`）：`DOCKER_LOG_MAX_SIZE=20m`、`DOCKER_LOG_MAX_FILE=5`
 
 ## 2.1 监控（可选，但生产强烈建议）
 
-- 启动 Prometheus + Grafana（默认不暴露端口，仅内网可达）：
+- 启动 Prometheus + Alertmanager + Blackbox + Grafana（默认不暴露端口，仅内网可达）：
   - `cp deploy/prod/monitoring.env.example deploy/prod/monitoring.env`
   - 填写 `GRAFANA_ADMIN_PASSWORD`
-  - 按维护窗口显式确认 `PROMETHEUS_VERSION` / `GRAFANA_VERSION`（默认已固定版本，避免 `:latest` 漂移）
+  - 建议保留日志滚动默认值：`DOCKER_LOG_MAX_SIZE=20m`、`DOCKER_LOG_MAX_FILE=5`
+  - 按维护窗口显式确认 `PROMETHEUS_VERSION` / `ALERTMANAGER_VERSION` / `BLACKBOX_EXPORTER_VERSION` / `GRAFANA_VERSION`（默认已固定版本，避免 `:latest` 漂移）
+  - 将 `deploy/prod/alertmanager.yml` 替换成真实通知通道（PagerDuty/Slack/飞书等）
   - `docker compose -f deploy/prod/docker-compose.monitoring.yml --env-file deploy/prod/monitoring.env up -d`
   - 注意：该监控 compose 依赖 `exchange-prod-net`；先启动应用 compose（或手动 `docker network create exchange-prod-net`）
+  - 用于人工演练：`bash deploy/prod/alert-drill.sh fire` / `bash deploy/prod/alert-drill.sh resolve`
 
 如果启用了 `METRICS_TOKEN`：
 - 将 token 写入 `deploy/prod/metrics.token`（已被 gitignore）
@@ -80,6 +99,7 @@
 - 一键就绪检查（可在内网执行）：
   - `bash scripts/prod-verify.sh`（默认检查各服务 `/live` + `/ready`，可选 `CHECK_METRICS=1`）
   - 如启用指标鉴权：`CHECK_METRICS=1 METRICS_TOKEN=... bash scripts/prod-verify.sh`
+  - 如需验证公网 TLS：`PUBLIC_API_HTTPS_URL=https://api.example.com bash scripts/prod-verify.sh`
 - 指标可抓取（建议只在内网/反代后访问）：
   - `curl -sf http://<gateway-host>:8080/metrics`
   - Prometheus 抓取示例配置：`deploy/prod/prometheus.yml`（告警规则：`deploy/prod/alerts.yml`）
@@ -90,7 +110,7 @@
 
 - 推荐回滚方式（基于镜像 tag）：
   1. 执行：`APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
-  2. 脚本会复用 `deploy/prod/prod.env` 进行 preflight，并以指定 tag 直接 `up -d`（不源码构建）
+  2. 脚本会复用 `deploy/prod/prod.env` 进行 preflight，并校验目标镜像可拉取后再以指定 tag `up -d`（不源码构建）
   3. 如需仅演练流程：`DRY_RUN=true APP_VERSION=<previous-tag> bash deploy/prod/rollback.sh`
 - 回滚后检查：
   - `/ready` 恢复、关键链路通过、错误率回落
@@ -104,6 +124,7 @@
 - **服务是否还活着**：`docker compose ps`
 - **健康检查是否失败**：`docker compose ps` 的 `healthy/unhealthy`
 - **依赖是否异常**：各服务 `/ready` 返回 `degraded` 时查看 dependencies
+- **持续 ready 失败告警**：查看 `ServiceReadyProbeFailed`（由 blackbox 探测 `/ready`）
 - **链路追踪**：Jaeger UI（默认 http://localhost:16686）查看请求链路
 - **审计日志**：查询 `audit_logs` 表，按 `user_id`/`event_type`/`timestamp` 过滤
 - **Redis Streams backlog**：
@@ -119,16 +140,20 @@
 ## 6. 安全操作要点（最低基线）
 
 - 只允许 `exchange-gateway`（以及可选 marketdata WS）对公网暴露，其余服务仅内网可达
+- 发布前执行端口暴露门禁：`bash scripts/check-public-exposure.sh`
 - `ENABLE_DOCS=false`（除非明确需要并且有额外保护）
 - `/metrics` 建议只走内网抓取；如必须暴露，请配置 `METRICS_TOKEN`
 - 真实客户端 IP：网关仅在“可信上游代理”（loopback/私网）场景信任 `X-Forwarded-For`；若反代/LB 使用公网 IP，需配置 `TRUSTED_PROXY_CIDRS` 显式信任；生产需确保反代会覆盖/清理客户端传入的 XFF
 - 如暴露 `marketdata` public WS（8094），务必设置 `MARKETDATA_WS_ALLOW_ORIGINS`（禁止 `*`），并避免把它直接裸奔在公网
+- 如暴露 `marketdata` public WS，建议在边缘反代做连接数与速率限制（示例：`deploy/prod/nginx.marketdata-ws.conf.example`）
 - 定期轮换 `INTERNAL_TOKEN` / `AUTH_TOKEN_SECRET` / `API_KEY_SECRET_KEY` / `ADMIN_TOKEN` 并验证回滚路径
 
 ## 7. 备份与数据保鲜（必须落地）
 
 - **Postgres 备份**：`bash exchange-common/scripts/backup-db.sh`（生产建议/默认要求显式 `DB_URL`；`APP_ENV!=dev` 且未设置 `DB_URL` 时脚本会拒绝执行）
 - **Redis 备份**：`bash exchange-common/scripts/backup-redis.sh`（生产通常要求 `REDIS_PASSWORD`；如需 TLS，设置 `REDIS_TLS=true` 并按需提供 `REDIS_CACERT/REDIS_CERT/REDIS_KEY`）
+- **备份保留周期**：`KEEP_DAYS=<N>`（默认 30 天）自动清理旧备份，避免备份目录无限增长挤占磁盘
 - **Redis Streams 修剪**：避免 Stream 无上限增长导致 Redis 内存耗尽  
   - 例：`STREAMS="exchange:orders,exchange:events,exchange:events:dlq" MAX_LEN=1000000 bash exchange-common/scripts/trim-streams.sh`
   - 建议：设置定时任务（见 `exchange-common/scripts/cron.example`）
+- **恢复演练记录**：每次演练使用 `docs/ops/backup-restore-drill-template.md` 留档（含实际 RPO/RTO）

@@ -64,6 +64,7 @@
 落地方式（必须执行一次）：
 - 设置 `DB_URL=postgres://...` 后运行：`bash exchange-common/scripts/migrate.sh`
 - 或使用临时容器执行（无 `psql` 环境）：见 `docs/ops/runbook.md`
+- 若发布时确认“本次不跑迁移”，需显式设置：`RUN_MIGRATIONS=false MIGRATIONS_SKIP_ACK=true`（避免误跳过迁移）
 
 ### 1.6 反代/负载均衡下的真实客户端 IP（X-Forwarded-For）必须“可信”
 
@@ -144,6 +145,57 @@
 - 权限来自 `exchange_admin.user_roles -> roles.permissions` 聚合结果，支持 `*` 超级权限。
 - 采用默认拒绝（fail-closed）：新增 admin 路由若未配置权限规则，将直接拒绝，避免“忘记加鉴权即裸露”。
 
+### 1.14 告警必须闭环到值班人（防“只告警不通知”）
+
+风险：仅有 Prometheus 规则但未接通知通道时，异步链路故障可能长期无人感知。
+
+落地方式（已实现模板）：
+- 监控栈已包含 `Alertmanager`：`deploy/prod/docker-compose.monitoring.yml`
+- Prometheus 已接入告警路由：`deploy/prod/prometheus.yml` 的 `alerting` 段
+- 告警路由配置：`deploy/prod/alertmanager.yml`（需替换为真实 on-call 通道）
+- 人工触发演练脚本：`deploy/prod/alert-drill.sh fire|resolve`
+
+### 1.15 镜像发布/回滚必须校验“目标 tag 可拉取”（防回滚时镜像缺失）
+
+风险：`deploy.sh/rollback.sh` 可执行但目标镜像不可拉取，会导致发布/回滚在事故时失效。
+
+落地方式（已实现）：
+- 新增镜像可拉取校验：`deploy/prod/check-images.sh`
+- `deploy.sh` / `rollback.sh` 在非 dev 的 image-only 流程会默认执行可拉取检查（`VERIFY_IMAGE_PULL=true`）
+- 支持镜像仓库前缀：`IMAGE_REPOSITORY_PREFIX`（例如 `ghcr.io/your-org/`）
+- 镜像构建推送 workflow 示例：`.github/workflows/release-images.yml`
+
+### 1.16 Compose 自愈与持续 unhealthy 告警必须并行落地
+
+风险：`docker compose` 不会自动重启 `unhealthy`，消费者卡死可能长期挂起。
+
+落地方式（已实现模板）：
+- 自愈脚本：`deploy/prod/restart-unhealthy.sh`
+- 定时化模板：
+  - `cron` 示例：`exchange-common/scripts/cron.example`
+  - `systemd timer` 示例：`deploy/prod/systemd/exchange-restart-unhealthy.{service,timer}`
+- 持续 unhealthy 告警：
+  - 已引入 `blackbox-exporter` 探测 `/ready`
+  - 新增 `ServiceReadyProbeFailed` 告警规则（持续 3 分钟失败触发）
+
+### 1.17 网络边界与 TLS 必须纳入发布门禁
+
+风险：内部服务误暴露公网会扩大攻击面；TLS 未验收会引入中间人风险与合规风险。
+
+落地方式（已实现模板）：
+- 公网暴露端口门禁：`scripts/check-public-exposure.sh`（默认仅允许 gateway，marketdata 需显式允许）
+- TLS 验收可通过：`scripts/prod-verify.sh` 的 `PUBLIC_API_HTTPS_URL` / TLS 握手选项
+- 如暴露 marketdata WS，边缘限流示例：`deploy/prod/nginx.marketdata-ws.conf.example`
+- 发布门禁 workflow 示例：`.github/workflows/prod-release-gate.yml`
+
+### 1.18 备份恢复目标必须量化并留演练记录
+
+风险：未定义 RPO/RTO 与演练记录时，事故恢复无法验收。
+
+落地方式（已实现模板）：
+- `docs/ops/backup-restore.md` 已要求明确数值化 RPO/RTO
+- 演练记录模板：`docs/ops/backup-restore-drill-template.md`
+
 ## 2. P1（不修会导致长期不稳定/难运维）
 
 ### 2.1 Redis Streams 消费稳定性
@@ -162,6 +214,7 @@
 ### 2.2 数据一致性与恢复演练
 
 - 备份：Postgres 定时备份 + 恢复演练（至少月度）。
+- 备份保留：`backup-db.sh / backup-redis.sh` 默认支持 `KEEP_DAYS=30` 自动清理历史备份，避免磁盘被备份打满。
 - 对账：清算侧 reconciliation CLI 定期跑并告警（已有 cron 示例，可补齐运行说明）。
 
 ### 2.3 回滚与变更控制
@@ -187,6 +240,15 @@
   - 已是目标状态：按幂等成功处理；
   - 非目标状态：返回 `INVALID_WITHDRAW_STATE`，避免静默覆盖。
 
+### 2.6 容器日志必须滚动（防宿主机磁盘耗尽）
+
+风险：Docker 默认 `json-file` 日志不限制大小，长期运行后高概率打满宿主机磁盘，导致容器异常、节点不可用。
+
+落地方式（已实现）：
+- `deploy/prod/docker-compose.yml` 与 `deploy/prod/docker-compose.monitoring.yml` 已启用日志滚动：
+  - `DOCKER_LOG_MAX_SIZE`（默认 `20m`）
+  - `DOCKER_LOG_MAX_FILE`（默认 `5`）
+
 ## 3. P2（质量门槛与文档）
 
 - CI：`go test ./...` + `go vet ./...` + `gofmt -w` 作为合并门槛。
@@ -199,13 +261,17 @@
 1. 准备生产环境变量（不要复用 dev `.env`）。
 2. 运行预检：
    - `bash exchange-common/scripts/prod-preflight.sh`
-3. 部署基础设施（Postgres/Redis/Prometheus/Grafana/Jaeger）。
-4. 部署服务（先内部服务，再网关），并检查：
+3. 运行发布门禁：
+   - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+   - 首次上线前若环境尚未部署：`RUN_PROD_VERIFY=0 PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+4. 部署基础设施（Postgres/Redis/Prometheus/Alertmanager/Grafana/Jaeger）。
+   - 首次部署后执行一次：`bash deploy/prod/alert-drill.sh fire` 做通知链路演练
+5. 部署服务（先内部服务，再网关），并检查：
    - `/ready` 全绿
    - 关键链路 E2E（下单/撮合/清算/查询）
    - 可选：`bash scripts/prod-verify.sh` 做一键就绪检查
-5. 开启告警（实例存活、stream pending/DLQ、handler errors）。
-6. 做一次备份 + 恢复演练（至少在 staging）。
+6. 开启告警（实例存活、stream pending/DLQ、handler errors、ready probe）。
+7. 做一次备份 + 恢复演练（至少在 staging），并按模板留存记录。
 
 ## 5. 相关文档（建议一起看）
 
