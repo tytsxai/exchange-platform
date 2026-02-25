@@ -12,9 +12,15 @@ OUT_DIR=${OUT_DIR:-"./backups"}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 FILE="${OUT_DIR}/redis_${TIMESTAMP}.rdb"
 APP_ENV=${APP_ENV:-"dev"}
+KEEP_DAYS=${KEEP_DAYS:-30}
 
 if [ "$APP_ENV" != "dev" ] && [ -z "$REDIS_PASSWORD" ]; then
   echo "In non-dev environment, REDIS_PASSWORD is required for backup-redis.sh" >&2
+  exit 1
+fi
+
+if ! [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]]; then
+  echo "KEEP_DAYS must be a non-negative integer" >&2
   exit 1
 fi
 
@@ -50,4 +56,17 @@ if [ -n "$REDIS_PASSWORD" ]; then
 fi
 
 redis-cli -h "$HOST" -p "$PORT" "${args[@]}" --rdb "$FILE"
+if [ ! -s "$FILE" ]; then
+  echo "Redis snapshot file is empty: ${FILE}" >&2
+  exit 1
+fi
 echo "Redis snapshot saved to ${FILE}"
+
+if [ "$KEEP_DAYS" -gt 0 ]; then
+  old_files=$(find "$OUT_DIR" -maxdepth 1 -type f -name 'redis_*.rdb' -mtime +"$KEEP_DAYS" -print)
+  if [ -n "$old_files" ]; then
+    echo "Pruning Redis snapshots older than ${KEEP_DAYS} days:"
+    echo "$old_files"
+    find "$OUT_DIR" -maxdepth 1 -type f -name 'redis_*.rdb' -mtime +"$KEEP_DAYS" -delete
+  fi
+fi

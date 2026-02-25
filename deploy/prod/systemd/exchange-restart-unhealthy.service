@@ -1,0 +1,10 @@
+[Unit]
+Description=Restart unhealthy OpenExchange containers
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/exchange
+Environment=PROD_ENV_FILE=/opt/exchange/deploy/prod/prod.env
+ExecStart=/bin/bash /opt/exchange/deploy/prod/restart-unhealthy.sh

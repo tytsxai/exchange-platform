@@ -9,14 +9,19 @@ set -eu
 # Optional env:
 #   PROD_ENV_FILE=deploy/prod/prod.env
 #   ROLLBACK_VERSION=<previous-tag>   # fallback if APP_VERSION not set
+#   VERIFY_IMAGE_PULL=true             # require target tag pullability check
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-PROD_ENV_FILE="${PROD_ENV_FILE:-deploy/prod/prod.env}"
-DRY_RUN="${DRY_RUN:-false}"
 
 # Preserve CLI/runtime overrides that may be shadowed by env file.
 CLI_APP_VERSION="${APP_VERSION-}"
 CLI_ROLLBACK_VERSION="${ROLLBACK_VERSION-}"
+CLI_DRY_RUN="${DRY_RUN-}"
+CLI_VERIFY_IMAGE_PULL="${VERIFY_IMAGE_PULL-}"
+
+PROD_ENV_FILE="${PROD_ENV_FILE:-deploy/prod/prod.env}"
+DRY_RUN="${DRY_RUN:-false}"
+VERIFY_IMAGE_PULL="${VERIFY_IMAGE_PULL:-true}"
 
 ENV_FILE_PATH="$PROD_ENV_FILE"
 if [ ! -f "$ENV_FILE_PATH" ]; then
@@ -37,6 +42,12 @@ fi
 if [ -n "$CLI_ROLLBACK_VERSION" ]; then
   ROLLBACK_VERSION="$CLI_ROLLBACK_VERSION"
 fi
+if [ -n "$CLI_DRY_RUN" ]; then
+  DRY_RUN="$CLI_DRY_RUN"
+fi
+if [ -n "$CLI_VERIFY_IMAGE_PULL" ]; then
+  VERIFY_IMAGE_PULL="$CLI_VERIFY_IMAGE_PULL"
+fi
 
 APP_ENV="${APP_ENV:-dev}"
 TARGET_VERSION="${APP_VERSION:-${ROLLBACK_VERSION:-}}"
@@ -53,6 +64,11 @@ fi
 
 echo "[rollback] running preflight (env: ${PROD_ENV_FILE}, APP_VERSION=${TARGET_VERSION})..."
 (cd "$ROOT_DIR" && APP_VERSION="$TARGET_VERSION" bash exchange-common/scripts/prod-preflight.sh)
+
+if [ "$APP_ENV" != "dev" ] && [ "$VERIFY_IMAGE_PULL" = "true" ]; then
+  echo "[rollback] verifying target image tags are pullable..."
+  (cd "$ROOT_DIR" && PROD_ENV_FILE="$PROD_ENV_FILE" APP_VERSION="$TARGET_VERSION" DRY_RUN="$DRY_RUN" VERIFY_IMAGE_PULL="$VERIFY_IMAGE_PULL" bash deploy/prod/check-images.sh)
+fi
 
 echo "[rollback] deploying image tag: ${TARGET_VERSION}"
 cd "$ROOT_DIR"

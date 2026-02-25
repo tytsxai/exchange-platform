@@ -47,11 +47,37 @@ fi
 MIN_SECRET_LENGTH="${MIN_SECRET_LENGTH:-32}"
 APP_VERSION="${APP_VERSION:-latest}"
 ALLOW_LATEST_IMAGE_TAG="${ALLOW_LATEST_IMAGE_TAG:-false}"
+IMAGE_REPOSITORY_PREFIX="${IMAGE_REPOSITORY_PREFIX:-}"
+VERIFY_IMAGE_PULL="${VERIFY_IMAGE_PULL:-true}"
+ALLOW_MARKETDATA_PUBLIC_WS="${ALLOW_MARKETDATA_PUBLIC_WS:-false}"
 
 if [ "$ALLOW_LATEST_IMAGE_TAG" != "true" ] && [ "$APP_VERSION" = "latest" ]; then
   echo "APP_VERSION must not be 'latest' in non-dev deployments (set ALLOW_LATEST_IMAGE_TAG=true to override)" >&2
   exit 1
 fi
+
+if [ -n "$IMAGE_REPOSITORY_PREFIX" ] && [ "${IMAGE_REPOSITORY_PREFIX%/}" = "$IMAGE_REPOSITORY_PREFIX" ]; then
+  echo "IMAGE_REPOSITORY_PREFIX must end with '/'" >&2
+  exit 1
+fi
+
+case "$(echo "$VERIFY_IMAGE_PULL" | tr '[:upper:]' '[:lower:]')" in
+  true|1|false|0)
+    ;;
+  *)
+    echo "VERIFY_IMAGE_PULL must be true/false (or 1/0)" >&2
+    exit 1
+    ;;
+esac
+
+case "$(echo "$ALLOW_MARKETDATA_PUBLIC_WS" | tr '[:upper:]' '[:lower:]')" in
+  true|1|false|0)
+    ;;
+  *)
+    echo "ALLOW_MARKETDATA_PUBLIC_WS must be true/false (or 1/0)" >&2
+    exit 1
+    ;;
+esac
 
 require_set INTERNAL_TOKEN
 require_set AUTH_TOKEN_SECRET

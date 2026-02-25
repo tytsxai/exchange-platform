@@ -1,6 +1,14 @@
 groups:
   - name: exchange-minimal
     rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Watchdog"
+          description: "Always firing alert to verify notification pipeline health."
+
       - alert: InstanceDown
         expr: up == 0
         for: 1m
@@ -32,3 +40,12 @@ groups:
           severity: warning
         annotations:
           summary: "Stream handler errors detected (stream={{ $labels.stream }} group={{ $labels.group }})"
+
+      - alert: ServiceReadyProbeFailed
+        expr: probe_success{job="service-ready"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service readiness probe failed (target={{ $labels.instance }})"
+          description: "The /ready endpoint has been failing for more than 3 minutes."

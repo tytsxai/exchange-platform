@@ -1,3 +1,9 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-20m}
+    max-file: ${DOCKER_LOG_MAX_FILE:-5}
+
 services:
   prometheus:
     # Pin versions to avoid surprise upgrades from :latest.
@@ -13,10 +19,44 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - alertmanager
+      - blackbox-exporter
     # Keep it internal by default; expose only if you know what you're doing.
     # ports:
     #   - "9090:9090"
     restart: unless-stopped
+    logging: *default-logging
+    networks: [exchange-net]
+
+  alertmanager:
+    image: prom/alertmanager:${ALERTMANAGER_VERSION:-v0.27.0}
+    container_name: exchange-prod-alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    # Keep it internal by default; expose only if you know what you're doing.
+    # ports:
+    #   - "9093:9093"
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [exchange-net]
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:${BLACKBOX_EXPORTER_VERSION:-v0.25.0}
+    container_name: exchange-prod-blackbox
+    volumes:
+      - ./blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+    # Keep it internal by default; expose only if you know what you're doing.
+    # ports:
+    #   - "9115:9115"
+    restart: unless-stopped
+    logging: *default-logging
     networks: [exchange-net]
 
   grafana:
@@ -35,10 +75,12 @@ services:
     # ports:
     #   - "3000:3000"
     restart: unless-stopped
+    logging: *default-logging
     networks: [exchange-net]
 
 volumes:
   prometheus_data:
+  alertmanager_data:
   grafana_data:
 
 networks:

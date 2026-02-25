@@ -1,11 +1,18 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-20m}
+    max-file: ${DOCKER_LOG_MAX_FILE:-5}
+
 services:
   # NOTE:
   # - Default production posture: only expose gateway (and optionally marketdata WS) to the public internet.
   # - Postgres/Redis are expected to be managed/external in production (TLS + auth).
   # - For a full local stack, use `exchange-common/docker-compose.yml` for infra and run services via scripts.
+  # - IMAGE_REPOSITORY_PREFIX can be used to pull from registry, e.g. ghcr.io/your-org/
 
   gateway:
-    image: exchange-gateway:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-gateway:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -28,13 +35,14 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     depends_on: []
     networks: [exchange-net]
 
   user:
-    image: exchange-user:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-user:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -54,12 +62,13 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]
 
   order:
-    image: exchange-order:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-order:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -79,12 +88,13 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]
 
   matching:
-    image: exchange-matching:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-matching:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -104,12 +114,13 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]
 
   clearing:
-    image: exchange-clearing:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-clearing:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -129,12 +140,13 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]
 
   marketdata:
-    image: exchange-marketdata:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-marketdata:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -157,13 +169,14 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]
 
   # Admin/Wallet should not be public. Put behind VPN or internal ingress.
   admin:
-    image: exchange-admin:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-admin:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -183,12 +196,13 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]
 
   wallet:
-    image: exchange-wallet:${APP_VERSION:-latest}
+    image: ${IMAGE_REPOSITORY_PREFIX:-}exchange-wallet:${APP_VERSION:-latest}
     build:
       context: ../..
       dockerfile: deploy/prod/Dockerfile.go-service
@@ -208,6 +222,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 20s
     init: true
     networks: [exchange-net]

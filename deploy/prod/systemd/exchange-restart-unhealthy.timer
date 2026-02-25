@@ -1,0 +1,12 @@
+[Unit]
+Description=Run OpenExchange unhealthy-container restart guard every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=exchange-restart-unhealthy.service
+
+[Install]
+WantedBy=timers.target

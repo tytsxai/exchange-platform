@@ -4,10 +4,10 @@
 # Recommended: run in a dedicated "ops" host/container with least privilege.
 
 # Daily PostgreSQL backup at 03:00 (requires DB_URL with TLS in prod)
-0 3 * * * DB_URL="postgres://exchange:***@db:5432/exchange?sslmode=require" /bin/bash /opt/exchange/exchange-common/scripts/backup-db.sh >/var/log/exchange/backup-db.log 2>&1
+0 3 * * * DB_URL="postgres://exchange:***@db:5432/exchange?sslmode=require" KEEP_DAYS=30 /bin/bash /opt/exchange/exchange-common/scripts/backup-db.sh >/var/log/exchange/backup-db.log 2>&1
 
 # Daily Redis RDB backup at 03:30 (requires REDIS_ADDR + REDIS_PASSWORD; use REDIS_TLS=true for TLS)
-30 3 * * * REDIS_ADDR="redis:6379" REDIS_PASSWORD="***" /bin/bash /opt/exchange/exchange-common/scripts/backup-redis.sh >/var/log/exchange/backup-redis.log 2>&1
+30 3 * * * REDIS_ADDR="redis:6379" REDIS_PASSWORD="***" KEEP_DAYS=30 /bin/bash /opt/exchange/exchange-common/scripts/backup-redis.sh >/var/log/exchange/backup-redis.log 2>&1
 
 # Daily reconciliation at 04:00 (ensure alerting on failures)
 0 4 * * * /opt/exchange/exchange-clearing/bin/reconciliation >/var/log/exchange/reconciliation.log 2>&1

@@ -16,6 +16,11 @@ WALLET_URL=${WALLET_URL:-"http://localhost:8086"}
 RUN_E2E=${RUN_E2E:-0}
 CHECK_METRICS=${CHECK_METRICS:-0}
 METRICS_TOKEN=${METRICS_TOKEN:-""}
+PUBLIC_API_HTTPS_URL=${PUBLIC_API_HTTPS_URL:-""}
+PUBLIC_GATEWAY_TLS_HOST=${PUBLIC_GATEWAY_TLS_HOST:-""}
+PUBLIC_GATEWAY_TLS_PORT=${PUBLIC_GATEWAY_TLS_PORT:-443}
+PUBLIC_MARKETDATA_TLS_HOST=${PUBLIC_MARKETDATA_TLS_HOST:-""}
+PUBLIC_MARKETDATA_TLS_PORT=${PUBLIC_MARKETDATA_TLS_PORT:-443}
 
 # Avoid hanging indefinitely when one endpoint is unreachable.
 CURL_CONNECT_TIMEOUT=${CURL_CONNECT_TIMEOUT:-3}
@@ -49,6 +54,22 @@ check() {
     return 0
   fi
   log_error "${name} FAIL -> ${url}"
+  return 1
+}
+
+check_tls_host() {
+  local name=$1
+  local host=$2
+  local port=$3
+  if ! command -v openssl >/dev/null 2>&1; then
+    log_warn "openssl not found, skipping ${name}"
+    return 0
+  fi
+  if printf '' | openssl s_client -connect "${host}:${port}" -servername "${host}" -verify_return_error >/dev/null 2>&1; then
+    log_info "${name} OK -> ${host}:${port}"
+    return 0
+  fi
+  log_error "${name} FAIL -> ${host}:${port}"
   return 1
 }
 
@@ -94,6 +115,19 @@ fi
 if [ "${RUN_E2E}" = "1" ]; then
   log_warn "RUN_E2E=1 enabled; executing scripts/e2e-test.sh"
   bash scripts/e2e-test.sh
+fi
+
+if [ -n "${PUBLIC_API_HTTPS_URL}" ]; then
+  check "public api tls live" "${PUBLIC_API_HTTPS_URL%/}/live" --proto '=https' --tlsv1.2
+  check "public api tls ready" "${PUBLIC_API_HTTPS_URL%/}/ready" --proto '=https' --tlsv1.2
+fi
+
+if [ -n "${PUBLIC_GATEWAY_TLS_HOST}" ]; then
+  check_tls_host "public gateway tls handshake" "${PUBLIC_GATEWAY_TLS_HOST}" "${PUBLIC_GATEWAY_TLS_PORT}"
+fi
+
+if [ -n "${PUBLIC_MARKETDATA_TLS_HOST}" ]; then
+  check_tls_host "public marketdata tls handshake" "${PUBLIC_MARKETDATA_TLS_HOST}" "${PUBLIC_MARKETDATA_TLS_PORT}"
 fi
 
 log_info "Production readiness checks finished."

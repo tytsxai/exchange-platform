@@ -1,0 +1,30 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: oncall-webhook
+  group_by: [alertname, job, instance, stream, group]
+  group_wait: 10s
+  group_interval: 2m
+  repeat_interval: 2h
+  routes:
+    - matchers:
+        - alertname="Watchdog"
+      receiver: blackhole
+    - matchers:
+        - severity="critical"
+      receiver: oncall-webhook
+      repeat_interval: 30m
+    - matchers:
+        - severity="warning"
+      receiver: oncall-webhook
+      repeat_interval: 2h
+
+receivers:
+  - name: blackhole
+
+  # Replace with your real on-call relay endpoint (PagerDuty/Slack/Feishu/OpsGenie/etc.).
+  - name: oncall-webhook
+    webhook_configs:
+      - url: "http://replace-with-your-alert-relay.internal/alerts"
+        send_resolved: true
