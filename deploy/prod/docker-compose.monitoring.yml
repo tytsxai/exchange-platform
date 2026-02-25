@@ -1,6 +1,7 @@
 services:
   prometheus:
-    image: prom/prometheus:latest
+    # Pin versions to avoid surprise upgrades from :latest.
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v2.50.1}
     container_name: exchange-prod-prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -19,7 +20,8 @@ services:
     networks: [exchange-net]
 
   grafana:
-    image: grafana/grafana:latest
+    # Pin versions to avoid surprise upgrades from :latest.
+    image: grafana/grafana:${GRAFANA_VERSION:-10.4.5}
     container_name: exchange-prod-grafana
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}

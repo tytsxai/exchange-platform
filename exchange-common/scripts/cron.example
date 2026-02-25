@@ -15,5 +15,8 @@
 # Daily Redis Streams trimming (avoid unbounded growth)
 30 4 * * * REDIS_ADDR="redis:6379" REDIS_PASSWORD="***" STREAMS="exchange:orders,exchange:events,exchange:events:dlq" MAX_LEN=1000000 /bin/bash /opt/exchange/exchange-common/scripts/trim-streams.sh >/var/log/exchange/trim-streams.log 2>&1
 
+# Optional (docker compose): restart unhealthy services every minute
+# * * * * * PROD_ENV_FILE=/opt/exchange/deploy/prod/prod.env /bin/bash /opt/exchange/deploy/prod/restart-unhealthy.sh >/var/log/exchange/restart-unhealthy.log 2>&1
+
 # Weekly restore drill (stage environment only!) - manual trigger recommended
 # 0 5 * * 0 /bin/bash /opt/exchange/exchange-common/scripts/restore-db.sh /backups/latest.dump
