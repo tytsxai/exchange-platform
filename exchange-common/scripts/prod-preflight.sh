@@ -96,6 +96,23 @@ fi
 require_set REDIS_ADDR
 require_set REDIS_PASSWORD
 
+REDIS_TLS="${REDIS_TLS:-false}"
+case "$(echo "$REDIS_TLS" | tr '[:upper:]' '[:lower:]')" in
+  true|1|false|0)
+    ;;
+  *)
+    echo "REDIS_TLS must be true/false (or 1/0)" >&2
+    exit 1
+    ;;
+esac
+
+redis_cert="${REDIS_CERT:-}"
+redis_key="${REDIS_KEY:-}"
+if { [ -n "$redis_cert" ] && [ -z "$redis_key" ]; } || { [ -z "$redis_cert" ] && [ -n "$redis_key" ]; }; then
+  echo "REDIS_CERT and REDIS_KEY must be set together" >&2
+  exit 1
+fi
+
 ENABLE_DOCS="${ENABLE_DOCS:-false}"
 ALLOW_DOCS_IN_NONDEV="${ALLOW_DOCS_IN_NONDEV:-false}"
 if [ "$ENABLE_DOCS" = "true" ] && [ "$ALLOW_DOCS_IN_NONDEV" != "true" ]; then

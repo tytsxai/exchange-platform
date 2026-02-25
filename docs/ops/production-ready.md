@@ -30,6 +30,8 @@
 - 非 `dev` 环境默认禁止使用 `APP_VERSION=latest` 直接发布（避免版本不可追踪、回滚不可控）。
 - 非 `dev` 环境强制 `DB_SSL_MODE != disable`、`DB_PASSWORD != exchange123`。
 - 非 `dev` 环境强制设置 `REDIS_PASSWORD`（避免“内网裸奔”配置被错误带到公网/跨机环境）。
+- 若生产 Redis 为 TLS-only（托管 Redis 常见），需开启 `REDIS_TLS=true`；服务已支持 `REDIS_CACERT/REDIS_CERT/REDIS_KEY/REDIS_SERVER_NAME`。
+  - 预检会校验 `REDIS_TLS` 为合法布尔值，且 `REDIS_CERT/REDIS_KEY` 必须成对配置。
  - API Key secret 以对称加密方式存储；切换加密密钥需评估已有 Key 的迁移或重置流程。
 
 落地方式：

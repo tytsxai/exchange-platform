@@ -39,9 +39,17 @@ DB_MAX_CONN_LIFETIME=30m
 REDIS_ADDR=localhost:6380
 REDIS_PASSWORD=
 REDIS_DB=0
+
+# TLS (for managed Redis / cross-network deployments)
 REDIS_TLS=false
+REDIS_CACERT=/etc/ssl/certs/redis-ca.pem
+REDIS_CERT=/etc/ssl/certs/redis-client.pem
+REDIS_KEY=/etc/ssl/private/redis-client.key
+REDIS_SERVER_NAME=redis.internal
+
+# Client pool (used by shared redis package)
 REDIS_POOL_SIZE=10
-REDIS_MIN_IDLE_CONS=5
+REDIS_MIN_IDLE_CONNS=5
 ```
 
 ### Authentication

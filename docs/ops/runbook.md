@@ -14,6 +14,9 @@
 ## 1. 发布前预检（必做）
 
 - 准备生产环境变量：复制 `deploy/prod/prod.env.example` → `deploy/prod/prod.env`，填入真实值（特别注意 `API_KEY_SECRET_KEY` 必填且 >=32）
+- 若生产 Redis 为 TLS-only（常见于托管 Redis），必须设置：
+  - `REDIS_TLS=true`
+  - 按需设置 `REDIS_SERVER_NAME`（SNI）、`REDIS_CACERT`（自签 CA）、`REDIS_CERT/REDIS_KEY`（mTLS）
 - 初始化/迁移数据库（必须做一次，避免缺表/缺 schema 导致服务启动即异常）：
   - 有 `psql`：设置 `DB_URL=postgres://...` 后运行 `bash exchange-common/scripts/migrate.sh`
   - 没有 `psql`：用临时容器执行（示例）：
