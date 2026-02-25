@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "**/*.go"
+      - "**/*.sh"
+      - "deploy/**/*.yml"
+      - "deploy/**/*.yaml"
       - "go.mod"
       - "go.sum"
       - "go.work"
@@ -25,6 +28,10 @@ jobs:
           set -euo pipefail
           bash -n scripts/test-helpers.sh
           bash -n scripts/e2e-test.sh
+          bash -n scripts/prod-verify.sh
+          bash -n deploy/prod/deploy.sh
+          bash -n deploy/prod/rollback.sh
+          bash -n deploy/prod/restart-unhealthy.sh
           bash -n exchange-common/scripts/start-all.sh
           bash -n exchange-common/scripts/migrate.sh
           bash -n exchange-common/scripts/prod-preflight.sh

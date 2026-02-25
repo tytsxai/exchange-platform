@@ -42,6 +42,8 @@
   - 或手工：`docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/prod.env up -d`
 - 查看状态（含 healthcheck）：
   - `docker compose -f deploy/prod/docker-compose.yml ps`
+  - 注意：`docker compose` 本身不会因 `unhealthy` 自动重启容器；建议配合外部编排/守护机制，或通过就绪检查告警 + 运维脚本执行重启
+  - 可选最小守护：`bash deploy/prod/restart-unhealthy.sh`（重启 `running + unhealthy` 的服务）
 - 查看日志：
   - `docker compose -f deploy/prod/docker-compose.yml logs -f gateway`
 
@@ -50,6 +52,7 @@
 - 启动 Prometheus + Grafana（默认不暴露端口，仅内网可达）：
   - `cp deploy/prod/monitoring.env.example deploy/prod/monitoring.env`
   - 填写 `GRAFANA_ADMIN_PASSWORD`
+  - 按维护窗口显式确认 `PROMETHEUS_VERSION` / `GRAFANA_VERSION`（默认已固定版本，避免 `:latest` 漂移）
   - `docker compose -f deploy/prod/docker-compose.monitoring.yml --env-file deploy/prod/monitoring.env up -d`
   - 注意：该监控 compose 依赖 `exchange-prod-net`；先启动应用 compose（或手动 `docker network create exchange-prod-net`）
 
@@ -68,10 +71,12 @@
 - 网关私有推送链路：
   - `gateway` 的 `/ready` 会包含 `privateEventsConsumer`（Redis Pub/Sub 消费循环活性）；down 时私有 WS 推送可能中断
   - 私有 WS 路径：`/ws/private`（默认端口：8090）
+  - 网关已实现私有事件消费者异常退出自动重启；若仍持续 `down`，优先排查 Redis 连接与 token 配置
 - 关键链路 E2E（建议复用项目自带脚本/用例）：
   - 注册/登录 → 下单 → 撮合 → 清算 → 查询资产/订单
 - 一键就绪检查（可在内网执行）：
-  - `bash scripts/prod-verify.sh`（会检查各服务 /ready；可选 `RUN_E2E=1`）
+  - `bash scripts/prod-verify.sh`（默认检查各服务 `/live` + `/ready`，可选 `CHECK_METRICS=1`）
+  - 如启用指标鉴权：`CHECK_METRICS=1 METRICS_TOKEN=... bash scripts/prod-verify.sh`
 - 指标可抓取（建议只在内网/反代后访问）：
   - `curl -sf http://<gateway-host>:8080/metrics`
   - Prometheus 抓取示例配置：`deploy/prod/prometheus.yml`（告警规则：`deploy/prod/alerts.yml`）

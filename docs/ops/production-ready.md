@@ -52,6 +52,8 @@
 
 落地方式（已实现）：
 - `matching/order/clearing/marketdata` 的 `/ready` 会额外检查 **Stream 消费循环是否在最近 45s 内 tick**；否则返回 `degraded`/`503`，触发容器编排的重启与告警。
+- `gateway` 私有事件消费者（用于 `/ws/private` 推送）异常退出后会自动重连，避免“推送链路静默中断”长期悬挂。
+- 注意：`docker compose` 不会因为 `unhealthy` 自动重启容器；若生产仍使用 compose，需配合外部守护或告警自动化执行重启。
 
 ### 1.5 数据库 schema 初始化/迁移必须纳入发布流程
 
