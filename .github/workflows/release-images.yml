@@ -1,0 +1,109 @@
+name: Release Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Immutable image tag (for example: 2026-02-25-rc1)"
+        required: true
+        type: string
+      registry:
+        description: "Image registry host"
+        required: true
+        default: "ghcr.io"
+        type: string
+      namespace:
+        description: "Registry namespace/org"
+        required: false
+        default: ""
+        type: string
+      push_latest:
+        description: "Also push :latest (not recommended for prod)"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: gateway
+            service_dir: exchange-gateway
+            cmd_dir: gateway
+          - service: user
+            service_dir: exchange-user
+            cmd_dir: user
+          - service: order
+            service_dir: exchange-order
+            cmd_dir: order
+          - service: matching
+            service_dir: exchange-matching
+            cmd_dir: matching
+          - service: clearing
+            service_dir: exchange-clearing
+            cmd_dir: clearing
+          - service: marketdata
+            service_dir: exchange-marketdata
+            cmd_dir: marketdata
+          - service: admin
+            service_dir: exchange-admin
+            cmd_dir: admin
+          - service: wallet
+            service_dir: exchange-wallet
+            cmd_dir: wallet
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login GHCR
+        if: ${{ inputs.registry == 'ghcr.io' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login custom registry
+        if: ${{ inputs.registry != 'ghcr.io' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Prepare image tags
+        id: prep
+        run: |
+          set -euo pipefail
+          namespace="${{ inputs.namespace }}"
+          if [ -z "$namespace" ]; then
+            namespace="${{ github.repository_owner }}"
+          fi
+          base="${{ inputs.registry }}/${namespace}/exchange-${{ matrix.service }}"
+          tags="${base}:${{ inputs.image_tag }}"
+          if [ "${{ inputs.push_latest }}" = "true" ]; then
+            tags="${tags},${base}:latest"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/prod/Dockerfile.go-service
+          push: true
+          tags: ${{ steps.prep.outputs.tags }}
+          build-args: |
+            SERVICE_DIR=${{ matrix.service_dir }}
+            CMD_DIR=${{ matrix.cmd_dir }}

@@ -29,9 +29,14 @@ jobs:
           bash -n scripts/test-helpers.sh
           bash -n scripts/e2e-test.sh
           bash -n scripts/prod-verify.sh
+          bash -n scripts/migration-policy-check.sh
+          bash -n scripts/check-public-exposure.sh
+          bash -n scripts/prod-release-gate.sh
           bash -n deploy/prod/deploy.sh
           bash -n deploy/prod/rollback.sh
           bash -n deploy/prod/restart-unhealthy.sh
+          bash -n deploy/prod/check-images.sh
+          bash -n deploy/prod/alert-drill.sh
           bash -n exchange-common/scripts/start-all.sh
           bash -n exchange-common/scripts/migrate.sh
           bash -n exchange-common/scripts/prod-preflight.sh

@@ -1,0 +1,93 @@
+name: Prod Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label (use self-hosted runner for private environments)"
+        required: true
+        default: "ubuntu-latest"
+        type: string
+      prod_env_file:
+        description: "Path to production env file on runner"
+        required: true
+        default: "deploy/prod/prod.env"
+        type: string
+      run_prod_verify:
+        description: "Run runtime endpoint checks via scripts/prod-verify.sh"
+        required: true
+        default: true
+        type: boolean
+      run_image_check:
+        description: "Verify all target images are pullable"
+        required: true
+        default: true
+        type: boolean
+      run_public_exposure_check:
+        description: "Validate compose public exposure policy"
+        required: true
+        default: true
+        type: boolean
+      run_migration_policy_check:
+        description: "Validate migration strategy policy"
+        required: true
+        default: true
+        type: boolean
+      api_url:
+        description: "Optional override for API_URL used by prod-verify (for example: https://api.example.com)"
+        required: false
+        default: ""
+        type: string
+      public_api_https_url:
+        description: "Optional HTTPS endpoint for TLS verification (for example: https://api.example.com)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run release gate
+        env:
+          PROD_ENV_FILE: ${{ inputs.prod_env_file }}
+          API_URL: ${{ inputs.api_url }}
+          PUBLIC_API_HTTPS_URL: ${{ inputs.public_api_https_url }}
+          RUN_PROD_VERIFY_INPUT: ${{ inputs.run_prod_verify }}
+          RUN_IMAGE_CHECK_INPUT: ${{ inputs.run_image_check }}
+          RUN_PUBLIC_EXPOSURE_CHECK_INPUT: ${{ inputs.run_public_exposure_check }}
+          RUN_MIGRATION_POLICY_CHECK_INPUT: ${{ inputs.run_migration_policy_check }}
+        run: |
+          set -euo pipefail
+
+          if [ "$RUN_PROD_VERIFY_INPUT" = "true" ]; then
+            export RUN_PROD_VERIFY=1
+          else
+            export RUN_PROD_VERIFY=0
+          fi
+
+          if [ "$RUN_IMAGE_CHECK_INPUT" = "true" ]; then
+            export RUN_IMAGE_CHECK=1
+          else
+            export RUN_IMAGE_CHECK=0
+          fi
+
+          if [ "$RUN_PUBLIC_EXPOSURE_CHECK_INPUT" = "true" ]; then
+            export RUN_PUBLIC_EXPOSURE_CHECK=1
+          else
+            export RUN_PUBLIC_EXPOSURE_CHECK=0
+          fi
+
+          if [ "$RUN_MIGRATION_POLICY_CHECK_INPUT" = "true" ]; then
+            export RUN_MIGRATION_POLICY_CHECK=1
+          else
+            export RUN_MIGRATION_POLICY_CHECK=0
+          fi
+
+          bash scripts/prod-release-gate.sh
