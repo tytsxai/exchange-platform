@@ -21,6 +21,7 @@ import (
 	commonerrors "github.com/exchange/common/pkg/errors"
 	"github.com/exchange/common/pkg/health"
 	"github.com/exchange/common/pkg/logger"
+	commonredis "github.com/exchange/common/pkg/redis"
 	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/tracing"
 	"github.com/exchange/gateway/internal/config"
@@ -82,9 +83,15 @@ func main() {
 	userLimiter := middleware.NewRateLimiter(cfg.UserRateLimit, time.Second)
 
 	// Redis client (private events)
+	redisTLSConfig, err := commonredis.TLSConfigFromEnv()
+	if err != nil {
+		l.Error(fmt.Sprintf("Invalid Redis TLS config: %v", err))
+		os.Exit(1)
+	}
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
+		TLSConfig:    redisTLSConfig,
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,

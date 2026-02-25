@@ -3,6 +3,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,6 +14,7 @@ type Config struct {
 	Addr         string        `json:"addr" yaml:"addr"`
 	Password     string        `json:"password" yaml:"password"`
 	DB           int           `json:"db" yaml:"db"`
+	TLSConfig    *tls.Config   `json:"-" yaml:"-"`
 	PoolSize     int           `json:"poolSize" yaml:"poolSize"`
 	MinIdleConns int           `json:"minIdleConns" yaml:"minIdleConns"`
 	DialTimeout  time.Duration `json:"dialTimeout" yaml:"dialTimeout"`
@@ -45,6 +47,7 @@ func NewClient(cfg *Config) (*Client, error) {
 		Addr:         cfg.Addr,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
+		TLSConfig:    cfg.TLSConfig,
 		PoolSize:     cfg.PoolSize,
 		MinIdleConns: cfg.MinIdleConns,
 		DialTimeout:  cfg.DialTimeout,

@@ -23,6 +23,7 @@ import (
 	clearingws "github.com/exchange/clearing/internal/ws"
 	commonerrors "github.com/exchange/common/pkg/errors"
 	"github.com/exchange/common/pkg/health"
+	commonredis "github.com/exchange/common/pkg/redis"
 	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	_ "github.com/lib/pq"
@@ -80,9 +81,14 @@ func main() {
 	log.Printf("Connected to PostgreSQL")
 
 	// 连接 Redis
+	redisTLSConfig, err := commonredis.TLSConfigFromEnv()
+	if err != nil {
+		log.Fatalf("Invalid Redis TLS config: %v", err)
+	}
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
+		TLSConfig:    redisTLSConfig,
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,

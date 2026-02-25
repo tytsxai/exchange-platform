@@ -16,6 +16,7 @@ import (
 	"time"
 
 	commonerrors "github.com/exchange/common/pkg/errors"
+	commonredis "github.com/exchange/common/pkg/redis"
 	commonresp "github.com/exchange/common/pkg/response"
 	"github.com/exchange/common/pkg/snowflake"
 	"github.com/exchange/order/internal/client"
@@ -59,9 +60,14 @@ func main() {
 	log.Printf("Connected to PostgreSQL")
 
 	// 连接 Redis
+	redisTLSConfig, err := commonredis.TLSConfigFromEnv()
+	if err != nil {
+		log.Fatalf("Invalid Redis TLS config: %v", err)
+	}
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
+		TLSConfig:    redisTLSConfig,
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,

@@ -84,10 +84,16 @@ func main() {
 	defer auditLogger.Close()
 	svc.SetAuditLogger(auditLogger)
 
+	redisTLSConfig, err := commonredis.TLSConfigFromEnv()
+	if err != nil {
+		log.Fatalf("Invalid Redis TLS config: %v", err)
+	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
 		DB:           cfg.RedisDB,
+		TLSConfig:    redisTLSConfig,
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,
