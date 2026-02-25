@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -104,11 +105,7 @@ func main() {
 	hub := ws.NewHub()
 	consumer := ws.NewConsumer(redisClient, hub, cfg.PrivateUserEventChannel)
 	var privateEventLoop health.LoopMonitor
-	go func() {
-		if err := consumer.RunWithMonitor(ctx, &privateEventLoop); err != nil && err != context.Canceled {
-			l.Error(fmt.Sprintf("private consumer stopped: %v", err))
-		}
-	}()
+	go runPrivateConsumer(ctx, consumer, &privateEventLoop, l)
 
 	// 创建路由
 	mux := http.NewServeMux()
@@ -782,3 +779,27 @@ func (c *loopChecker) Check(ctx context.Context) health.CheckResult {
 }
 
 // trusted proxy evaluation lives in middleware.IsTrustedProxyIP
+
+func runPrivateConsumer(ctx context.Context, consumer *ws.Consumer, loop *health.LoopMonitor, l *logger.Logger) {
+	const restartDelay = 2 * time.Second
+	for {
+		err := consumer.RunWithMonitor(ctx, loop)
+		if err == nil {
+			err = errors.New("private consumer exited")
+		}
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return
+		}
+		if loop != nil {
+			loop.SetError(err)
+		}
+		if l != nil {
+			l.Error(fmt.Sprintf("private consumer stopped: %v; restarting in %s", err, restartDelay))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(restartDelay):
+		}
+	}
+}

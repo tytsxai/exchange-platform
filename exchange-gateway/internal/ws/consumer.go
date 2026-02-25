@@ -80,7 +80,7 @@ func (c *Consumer) run(ctx context.Context, monitor *health.LoopMonitor) error {
 				if monitor != nil {
 					monitor.SetError(errors.New("pubsub channel closed"))
 				}
-				return nil
+				return errors.New("pubsub channel closed")
 			}
 			if monitor != nil {
 				monitor.Tick()
