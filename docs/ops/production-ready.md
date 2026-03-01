@@ -153,6 +153,7 @@
 - 监控栈已包含 `Alertmanager`：`deploy/prod/docker-compose.monitoring.yml`
 - Prometheus 已接入告警路由：`deploy/prod/prometheus.yml` 的 `alerting` 段
 - 告警路由配置：`deploy/prod/alertmanager.yml`（需替换为真实 on-call 通道）
+- 发布门禁默认会执行：`scripts/check-alertmanager-config.sh`（阻止占位符 webhook 地址误上线）
 - 人工触发演练脚本：`deploy/prod/alert-drill.sh fire|resolve`
 
 ### 1.15 镜像发布/回滚必须校验“目标 tag 可拉取”（防回滚时镜像缺失）
@@ -264,6 +265,7 @@
 3. 运行发布门禁：
    - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
    - 首次上线前若环境尚未部署：`RUN_PROD_VERIFY=0 PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+   - 若使用外部监控系统且不依赖仓库内 Alertmanager 配置：`RUN_ALERTMANAGER_CHECK=0`
 4. 部署基础设施（Postgres/Redis/Prometheus/Alertmanager/Grafana/Jaeger）。
    - 首次部署后执行一次：`bash deploy/prod/alert-drill.sh fire` 做通知链路演练
 5. 部署服务（先内部服务，再网关），并检查：

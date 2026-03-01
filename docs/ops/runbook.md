@@ -33,6 +33,9 @@
 - 运行发布门禁（建议发布流水线强制）：
   - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
   - 首次上线前若目标环境尚未部署，可先执行：`RUN_PROD_VERIFY=0 PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+  - 发布门禁默认包含 Alertmanager 配置检查（防止告警接收地址仍是占位符）：
+    - `scripts/check-alertmanager-config.sh`
+    - 若该环境不使用仓库内 `deploy/prod/alertmanager.yml`，可显式跳过：`RUN_ALERTMANAGER_CHECK=0 ...`
   - GitHub Actions 示例：`.github/workflows/prod-release-gate.yml`
 - 镜像发布流水线（不可变 tag）：
   - GitHub Actions 示例：`.github/workflows/release-images.yml`
@@ -74,6 +77,7 @@
   - 建议保留日志滚动默认值：`DOCKER_LOG_MAX_SIZE=20m`、`DOCKER_LOG_MAX_FILE=5`
   - 按维护窗口显式确认 `PROMETHEUS_VERSION` / `ALERTMANAGER_VERSION` / `BLACKBOX_EXPORTER_VERSION` / `GRAFANA_VERSION`（默认已固定版本，避免 `:latest` 漂移）
   - 将 `deploy/prod/alertmanager.yml` 替换成真实通知通道（PagerDuty/Slack/飞书等）
+  - 可先执行：`bash scripts/check-alertmanager-config.sh`
   - `docker compose -f deploy/prod/docker-compose.monitoring.yml --env-file deploy/prod/monitoring.env up -d`
   - 注意：该监控 compose 依赖 `exchange-prod-net`；先启动应用 compose（或手动 `docker network create exchange-prod-net`）
   - 用于人工演练：`bash deploy/prod/alert-drill.sh fire` / `bash deploy/prod/alert-drill.sh resolve`

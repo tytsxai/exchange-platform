@@ -28,6 +28,11 @@ on:
         required: true
         default: true
         type: boolean
+      run_alertmanager_check:
+        description: "Validate Alertmanager on-call receiver config is not placeholder"
+        required: true
+        default: true
+        type: boolean
       run_migration_policy_check:
         description: "Validate migration strategy policy"
         required: true
@@ -62,6 +67,7 @@ jobs:
           RUN_PROD_VERIFY_INPUT: ${{ inputs.run_prod_verify }}
           RUN_IMAGE_CHECK_INPUT: ${{ inputs.run_image_check }}
           RUN_PUBLIC_EXPOSURE_CHECK_INPUT: ${{ inputs.run_public_exposure_check }}
+          RUN_ALERTMANAGER_CHECK_INPUT: ${{ inputs.run_alertmanager_check }}
           RUN_MIGRATION_POLICY_CHECK_INPUT: ${{ inputs.run_migration_policy_check }}
         run: |
           set -euo pipefail
@@ -82,6 +88,12 @@ jobs:
             export RUN_PUBLIC_EXPOSURE_CHECK=1
           else
             export RUN_PUBLIC_EXPOSURE_CHECK=0
+          fi
+
+          if [ "$RUN_ALERTMANAGER_CHECK_INPUT" = "true" ]; then
+            export RUN_ALERTMANAGER_CHECK=1
+          else
+            export RUN_ALERTMANAGER_CHECK=0
           fi
 
           if [ "$RUN_MIGRATION_POLICY_CHECK_INPUT" = "true" ]; then

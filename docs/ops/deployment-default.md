@@ -31,8 +31,9 @@
    - 若使用镜像仓库，设置 `IMAGE_REPOSITORY_PREFIX`（必须带 `/`，例如 `ghcr.io/your-org/`）
 2. 运行预检（会 fast-fail 防止误配）：
    - `bash exchange-common/scripts/prod-preflight.sh`
-   - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`（发布门禁：preflight + 迁移策略 + 镜像可拉取 + 验证）
+   - `PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`（发布门禁：preflight + 迁移策略 + 镜像可拉取 + 暴露面 + Alertmanager 配置 + 运行验收）
    - 首次上线前若环境尚未部署：`RUN_PROD_VERIFY=0 PROD_ENV_FILE=deploy/prod/prod.env bash scripts/prod-release-gate.sh`
+   - 若该环境不使用仓库内 `deploy/prod/alertmanager.yml`，可显式设置：`RUN_ALERTMANAGER_CHECK=0`
 3. 部署：
    - 推荐一键脚本：`bash deploy/prod/deploy.sh`（默认 image-only，不会 `--build`；会先 preflight）
    - 如需源码构建（建议仅 dev/应急）：`BUILD_IMAGES=true ALLOW_SOURCE_BUILD_IN_NONDEV=true bash deploy/prod/deploy.sh`
@@ -53,6 +54,7 @@
   - `cp deploy/prod/monitoring.env.example deploy/prod/monitoring.env`
   - 填写 `GRAFANA_ADMIN_PASSWORD`
   - 在 `deploy/prod/alertmanager.yml` 配置真实通知通道
+  - 可先执行：`bash scripts/check-alertmanager-config.sh`
   - `docker compose -f deploy/prod/docker-compose.monitoring.yml --env-file deploy/prod/monitoring.env up -d`
   - 注意：该监控 compose 依赖 `exchange-prod-net`；先启动应用 compose（或手动 `docker network create exchange-prod-net`）
   - 告警演练：`bash deploy/prod/alert-drill.sh fire`
