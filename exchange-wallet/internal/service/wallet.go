@@ -249,16 +249,18 @@ func (s *WalletService) RequestWithdraw(ctx context.Context, req *WithdrawReques
 	// 2. 创建提现记录
 
 	if err := s.repo.CreateWithdrawal(ctx, withdrawal); err != nil {
-		// 资金已冻结但记录创建失败：尽力补偿解冻
-		_ = s.clearingCli.Unfreeze(ctx, &client.UnfreezeRequest{
-			IdempotencyKey: fmt.Sprintf("withdraw:create_failed:%s", req.IdempotencyKey),
-			UserID:         req.UserID,
-			Asset:          req.Asset,
-			Amount:         req.Amount,
-			RefType:        "WITHDRAW_CREATE_FAILED",
-			RefID:          req.IdempotencyKey,
-		})
-		return nil, err
+		// 并发竞态下可能已由其他请求写入；回查后按幂等成功处理。
+		existing, lookupErr := s.repo.GetWithdrawalByIdempotencyKey(ctx, req.IdempotencyKey)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("create withdrawal: %w (lookup idempotency key failed: %v)", err, lookupErr)
+		}
+		if existing != nil {
+			return &WithdrawResponse{Withdrawal: existing}, nil
+		}
+		// 不能在此处自动解冻：冻结幂等键已被占用，自动解冻会导致同幂等键重试时
+		// 可能出现“提现单创建成功但资金未冻结”的不一致状态。
+		log.Printf("[CRITICAL] create withdrawal failed after freeze, funds remain frozen: userID=%d key=%s err=%v", req.UserID, req.IdempotencyKey, err)
+		return nil, fmt.Errorf("create withdrawal after freeze: %w", err)
 	}
 
 	return &WithdrawResponse{Withdrawal: withdrawal}, nil

@@ -32,6 +32,9 @@ type mockWalletRepository struct {
 	createDepositErr    error
 	listDepositsErr     error
 	createWithdrawalErr error
+	// createWithdrawalPersistBeforeErr simulates "written but returned error"
+	// scenarios such as race-induced conflict/timeout on create.
+	createWithdrawalPersistBeforeErr bool
 	getWithdrawalErr    error
 	updateStatusErr     error
 	forceCASNoUpdate    bool
@@ -152,6 +155,10 @@ func (m *mockWalletRepository) ListDeposits(ctx context.Context, userID int64, l
 }
 
 func (m *mockWalletRepository) CreateWithdrawal(ctx context.Context, w *repository.Withdrawal) error {
+	if m.createWithdrawalPersistBeforeErr {
+		m.withdrawals[w.WithdrawID] = w
+		m.withdrawalsByKey[w.IdempotencyKey] = w
+	}
 	if m.createWithdrawalErr != nil {
 		return m.createWithdrawalErr
 	}

@@ -5,8 +5,45 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/exchange/wallet/internal/client"
 	"github.com/exchange/wallet/internal/repository"
 )
+
+type idempotentFreezeClearingClient struct {
+	freezeCalls int
+	seenFreeze  map[string]struct{}
+	frozenByUID map[int64]int64
+}
+
+func newIdempotentFreezeClearingClient() *idempotentFreezeClearingClient {
+	return &idempotentFreezeClearingClient{
+		seenFreeze:  make(map[string]struct{}),
+		frozenByUID: make(map[int64]int64),
+	}
+}
+
+func (m *idempotentFreezeClearingClient) Freeze(_ context.Context, req *client.FreezeRequest) error {
+	m.freezeCalls++
+	if _, ok := m.seenFreeze[req.IdempotencyKey]; ok {
+		return nil
+	}
+	m.seenFreeze[req.IdempotencyKey] = struct{}{}
+	m.frozenByUID[req.UserID] += req.Amount
+	return nil
+}
+
+func (m *idempotentFreezeClearingClient) Unfreeze(_ context.Context, req *client.UnfreezeRequest) error {
+	m.frozenByUID[req.UserID] -= req.Amount
+	return nil
+}
+
+func (m *idempotentFreezeClearingClient) Deduct(_ context.Context, _ *client.DeductRequest) error {
+	return nil
+}
+
+func (m *idempotentFreezeClearingClient) Credit(_ context.Context, _ *client.CreditRequest) error {
+	return nil
+}
 
 func TestWalletService_ProcessDeposit_CreditsOnConfirmations(t *testing.T) {
 	repo := newMockWalletRepository()
@@ -37,7 +74,7 @@ func TestWalletService_ProcessDeposit_CreditsOnConfirmations(t *testing.T) {
 	}
 }
 
-func TestWalletService_RequestWithdraw_UnfreezesOnCreateFailure(t *testing.T) {
+func TestWalletService_RequestWithdraw_DoesNotUnfreezeOnCreateFailure(t *testing.T) {
 	repo := newMockWalletRepository()
 	repo.networks = []*repository.Network{
 		{
@@ -69,8 +106,102 @@ func TestWalletService_RequestWithdraw_UnfreezesOnCreateFailure(t *testing.T) {
 	if len(clearing.freezeCalls) != 1 {
 		t.Fatalf("expected freeze called")
 	}
-	if len(clearing.unfreezeCalls) != 1 {
-		t.Fatalf("expected unfreeze called")
+	if len(clearing.unfreezeCalls) != 0 {
+		t.Fatalf("did not expect auto unfreeze on create failure")
+	}
+}
+
+func TestWalletService_RequestWithdraw_RetrySameIdempotencyAfterCreateFailureKeepsFundsFrozen(t *testing.T) {
+	repo := newMockWalletRepository()
+	repo.networks = []*repository.Network{
+		{
+			Asset:           "USDT",
+			Network:         "TRON",
+			DepositEnabled:  true,
+			WithdrawEnabled: true,
+			MinWithdraw:     1,
+			WithdrawFee:     1,
+			Status:          1,
+		},
+	}
+	repo.createWithdrawalErr = errors.New("db down")
+
+	clearing := newIdempotentFreezeClearingClient()
+	svc := NewWalletService(repo, &mockIDGen{}, clearing, nil)
+
+	req := &WithdrawRequest{
+		IdempotencyKey: "k1",
+		UserID:         1,
+		Asset:          "USDT",
+		Network:        "TRON",
+		Amount:         10,
+		Address:        "Txxx",
+	}
+
+	if _, err := svc.RequestWithdraw(context.Background(), req); err == nil {
+		t.Fatalf("expected first attempt error")
+	}
+	if got := clearing.frozenByUID[1]; got != 10 {
+		t.Fatalf("expected funds to stay frozen after create failure, got %d", got)
+	}
+
+	repo.createWithdrawalErr = nil
+	resp, err := svc.RequestWithdraw(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retry request withdraw: %v", err)
+	}
+	if resp == nil || resp.Withdrawal == nil {
+		t.Fatalf("expected withdrawal on retry")
+	}
+	if got := clearing.frozenByUID[1]; got != 10 {
+		t.Fatalf("expected frozen amount to remain 10 on same-key retry, got %d", got)
+	}
+	if clearing.freezeCalls != 2 {
+		t.Fatalf("expected two freeze attempts (second idempotent), got %d", clearing.freezeCalls)
+	}
+}
+
+func TestWalletService_RequestWithdraw_CreateFailureButRecordExistsReturnsIdempotentSuccess(t *testing.T) {
+	repo := newMockWalletRepository()
+	repo.networks = []*repository.Network{
+		{
+			Asset:           "USDT",
+			Network:         "TRON",
+			DepositEnabled:  true,
+			WithdrawEnabled: true,
+			MinWithdraw:     1,
+			WithdrawFee:     1,
+			Status:          1,
+		},
+	}
+	repo.createWithdrawalPersistBeforeErr = true
+	repo.createWithdrawalErr = errors.New("duplicate key")
+
+	clearing := newMockClearingClient()
+	svc := NewWalletService(repo, &mockIDGen{}, clearing, nil)
+
+	resp, err := svc.RequestWithdraw(context.Background(), &WithdrawRequest{
+		IdempotencyKey: "k1",
+		UserID:         1,
+		Asset:          "USDT",
+		Network:        "TRON",
+		Amount:         10,
+		Address:        "Txxx",
+	})
+	if err != nil {
+		t.Fatalf("expected idempotent success, got error: %v", err)
+	}
+	if resp == nil || resp.Withdrawal == nil {
+		t.Fatalf("expected withdrawal in response")
+	}
+	if resp.Withdrawal.IdempotencyKey != "k1" {
+		t.Fatalf("unexpected idempotency key: %s", resp.Withdrawal.IdempotencyKey)
+	}
+	if len(clearing.freezeCalls) != 1 {
+		t.Fatalf("expected one freeze call, got %d", len(clearing.freezeCalls))
+	}
+	if len(clearing.unfreezeCalls) != 0 {
+		t.Fatalf("did not expect unfreeze call")
 	}
 }
 
